@@ -1,0 +1,1081 @@
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>VERONICA COMMAND - Artificial Consciousness</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&amp;family=JetBrains+Mono:wght@400;500;700&amp;family=Geist:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary": "#77dfff",
+                        "error-container": "#93000a",
+                        "on-tertiary-container": "#005a33",
+                        "inverse-primary": "#805600",
+                        "surface-tint": "#ffba43",
+                        "on-secondary-fixed": "#001f27",
+                        "on-secondary-container": "#004e5f",
+                        "surface-container-lowest": "#0c0e13",
+                        "on-error-container": "#ffdad6",
+                        "inverse-surface": "#e2e2e9",
+                        "tertiary-fixed": "#57ffa5",
+                        "primary-fixed-dim": "#ffba43",
+                        "on-primary-container": "#6a4700",
+                        "surface-container-high": "#282a2f",
+                        "surface-bright": "#37393f",
+                        "on-primary-fixed": "#281800",
+                        "surface-container-low": "#1a1b21",
+                        "on-secondary": "#003642",
+                        "error": "#ffb4ab",
+                        "tertiary-container": "#00db83",
+                        "on-tertiary-fixed": "#00210f",
+                        "on-background": "#e2e2e9",
+                        "surface": "#111318",
+                        "tertiary": "#00fb97",
+                        "primary-container": "#ffb000",
+                        "on-surface-variant": "#d7c4ac",
+                        "on-secondary-fixed-variant": "#004e5f",
+                        "on-primary-fixed-variant": "#614000",
+                        "outline": "#9f8e78",
+                        "secondary-fixed-dim": "#37d7ff",
+                        "surface-container": "#1e1f25",
+                        "primary": "#ffd597",
+                        "inverse-on-surface": "#2e3036",
+                        "background": "#111318",
+                        "on-surface": "#e2e2e9",
+                        "on-tertiary-fixed-variant": "#00522e",
+                        "on-primary": "#432c00",
+                        "secondary-container": "#01c6ee",
+                        "on-error": "#690005",
+                        "surface-container-highest": "#33353a",
+                        "outline-variant": "#524533",
+                        "tertiary-fixed-dim": "#00e388",
+                        "surface-dim": "#111318",
+                        "surface-variant": "#33353a",
+                        "on-tertiary": "#00391e",
+                        "primary-fixed": "#ffddaf",
+                        "secondary-fixed": "#b3ebff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "unit": "4px",
+                        "gutter": "24px",
+                        "margin-safe": "40px",
+                        "panel-gap": "1px"
+                    },
+                    "fontFamily": {
+                        "headline-lg-mobile": ["Space Grotesk"],
+                        "body-md": ["Geist"],
+                        "data-mono": ["JetBrains Mono"],
+                        "headline-lg": ["Space Grotesk"],
+                        "label-caps": ["JetBrains Mono"],
+                        "display-xl": ["Space Grotesk"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+    body {
+        background-color: #0B0D12;
+        color: #e2e2e9;
+        overflow: hidden;
+    }
+    .glass-panel {
+        background: rgba(255, 186, 67, 0.02);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 186, 67, 0.15);
+        border-image: linear-gradient(135deg, rgba(255, 186, 67, 0.3) 0%, rgba(255, 186, 67, 0.05) 100%) 1;
+    }
+    .hud-text {
+        text-shadow: 0 0 8px rgba(53, 215, 255, 0.4);
+    }
+    .primary-glow {
+        text-shadow: 0 0 12px rgba(255, 186, 67, 0.6);
+    }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 186, 67, 0.2); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 186, 67, 0.4); }
+
+    @keyframes orbit {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    .orbital-ring {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        border: 1px dashed rgba(53, 215, 255, 0.1);
+        border-radius: 50%;
+        pointer-events: none;
+    }
+    .ring-1 { width: 400px; height: 400px; animation: orbit 60s linear infinite; }
+    .ring-2 { width: 550px; height: 550px; border-style: solid; border-color: rgba(255, 186, 67, 0.05); animation: orbit 90s linear infinite reverse; }
+
+    /* FIX: Remove all artificial clipping on the core canvas container.
+       Particles must flow freely to the screen edges. */
+    #core-canvas-container {
+        overflow: visible !important;
+        clip-path: none !important;
+        mask: none !important;
+        -webkit-mask: none !important;
+    }
+    #core-canvas-container canvas {
+        overflow: visible !important;
+    }
+    /* The center core wrapper must also not clip */
+    .core-wrapper {
+        overflow: visible !important;
+        clip-path: none !important;
+    }
+
+    /* Chat messages */
+    .msg-user {
+        background: rgba(30, 33, 40, 0.85);
+        border: 1px solid rgba(255, 186, 67, 0.18);
+        border-right: none;
+        border-radius: 0 6px 6px 0;
+    }
+    .msg-ultron {
+        background: rgba(20, 24, 34, 0.75);
+        border: 1px solid rgba(255, 186, 67, 0.12);
+        border-left: 2px solid rgba(255, 186, 67, 0.4);
+        border-radius: 6px 0 0 6px;
+    }
+    .msg-activity {
+        border-left: 2px solid rgba(53, 215, 255, 0.4);
+        padding-left: 12px;
+    }
+
+    /* Mic active pulse */
+    .mic-active {
+        color: #00fb97 !important;
+        animation: micPulse 1.2s ease-in-out infinite;
+    }
+    @keyframes micPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    .mic-processing {
+        color: #77dfff !important;
+        animation: micSpin 0.8s linear infinite;
+    }
+    @keyframes micSpin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    /* State indicator colors */
+    .state-idle { color: #00fb97; }
+    .state-thinking { color: #77dfff; }
+    .state-listening { color: #00fb97; }
+    .state-searching { color: #77dfff; }
+    .state-learning { color: #ffb000; }
+    .state-executing { color: #ffba43; }
+    .state-speaking { color: #00fb97; }
+    .state-success { color: #00fb97; }
+    .state-error { color: #ffb4ab; }
+
+    /* Task progress */
+    .task-bar-bg { background: rgba(255,186,67,0.08); border:1px solid rgba(255,186,67,0.15); border-radius:0.25rem; height:8px; overflow:hidden; }
+    .task-bar-fill { height:100%; width:0%; background:linear-gradient(90deg,#ffb000,#ffba43); border-radius:0.25rem; transition:width 0.3s ease; }
+    .task-progress-card { background:rgba(255,186,67,0.05); border:1px solid rgba(255,186,67,0.15); border-radius:0.5rem; padding:8px 12px; }
+    @keyframes pulse-soft { 0%,100%{opacity:1} 50%{opacity:.6} }
+    .task-step-done { color:#00fb97; }
+    .task-step-pend { color:#77dfff; }
+
+    @keyframes slide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(200%); }
+    }
+</style>
+</head>
+<body class="h-screen w-screen flex font-body-md text-body-md bg-background selection:bg-primary/30 selection:text-primary">
+<!-- TopAppBar -->
+<header class="fixed top-0 right-0 w-[calc(100%-80px)] z-40 flex justify-between items-center px-gutter h-16 bg-transparent border-b border-white/5 backdrop-blur-sm">
+<div class="font-label-caps text-label-caps tracking-[0.2em] text-primary">VERONICA COMMAND</div>
+<div class="flex items-center space-x-gutter">
+<!-- HUD Stats (Data Mono) -->
+<div class="hidden lg:flex space-x-6 font-data-mono text-data-mono text-secondary hud-text text-xs">
+<div>CPU: <span id="hud-cpu" class="text-white">--</span></div>
+<div>RAM: <span id="hud-ram" class="text-white">--</span></div>
+<div>NET: <span id="hud-net" class="text-tertiary">--</span></div>
+</div>
+<div class="flex space-x-4">
+<button class="text-on-surface-variant hover:text-secondary glow-sm transition-colors opacity-80 group" title="System status">
+<span class="material-symbols-outlined text-[20px] group-hover:drop-shadow-[0_0_8px_rgba(53,215,255,0.6)]">sensors</span>
+</button>
+<button class="text-on-surface-variant hover:text-secondary glow-sm transition-colors opacity-80 group" title="Memory">
+<span class="material-symbols-outlined text-[20px] group-hover:drop-shadow-[0_0_8px_rgba(53,215,255,0.6)]">memory</span>
+</button>
+<button class="text-on-surface-variant hover:text-secondary glow-sm transition-colors opacity-80 group" title="Automations">
+<span class="material-symbols-outlined text-[20px] group-hover:drop-shadow-[0_0_8px_rgba(53,215,255,0.6)]">account_tree</span>
+</button>
+</div>
+<!-- Avatar placeholder -->
+<div class="h-8 w-8 rounded-full border border-primary/30 overflow-hidden relative group cursor-pointer">
+<div class="absolute inset-0 bg-primary/10 group-hover:bg-primary/20 transition-colors"></div>
+<div class="w-full h-full flex items-center justify-center font-data-mono text-data-mono text-primary bg-primary/10">V</div>
+</div>
+</div>
+</header>
+<!-- SideNavBar -->
+<nav class="fixed left-0 top-0 h-full z-50 flex flex-col overflow-hidden bg-surface/80 backdrop-blur-xl h-screen w-20 hover:w-64 transition-all duration-300 border-r border-white/10 group border-r border-white/10 bg-surface/40 backdrop-blur-md">
+<!-- Logo Area -->
+<div class="h-24 flex items-center justify-center group-hover:justify-start group-hover:px-6 border-b border-white/5 w-full shrink-0">
+<div class="flex items-center space-x-4">
+<div class="font-headline-lg text-headline-lg font-bold tracking-tighter text-primary drop-shadow-[0_0_8px_rgba(255,186,67,0.4)] relative">
+                    V
+                    <div class="absolute -right-2 top-0 w-1.5 h-1.5 bg-tertiary rounded-sm animate-pulse shadow-[0_0_6px_rgba(0,251,151,0.6)]"></div>
+</div>
+<div class="opacity-0 group-hover:opacity-100 transition-opacity duration-300 w-0 group-hover:w-auto overflow-hidden whitespace-nowrap">
+<div class="font-headline-lg text-headline-lg-mobile font-bold tracking-tighter text-primary drop-shadow-[0_0_8px_rgba(255,186,67,0.4)]">VERONICA</div>
+<div class="font-label-caps text-label-caps text-[8px] text-secondary/60">SYSTEM ONLINE</div>
+</div>
+</div>
+</div>
+<!-- Nav Items -->
+<div class="flex-1 py-8 flex flex-col gap-2 px-2 overflow-y-auto overflow-x-hidden">
+<a class="flex items-center h-12 px-3 rounded-lg text-primary border-r-2 border-primary bg-primary/10 transition-transform scale-95" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">chat_bubble</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Conversation</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">home</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Home</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">psychology</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Memory</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">folder_open</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Files</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">terminal</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">System</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">account_tree</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Automations</span>
+</a>
+<a class="flex items-center h-12 px-3 rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-colors mt-auto" href="#">
+<span class="material-symbols-outlined w-8 text-center shrink-0">settings</span>
+<span class="font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 ml-2 whitespace-nowrap">Settings</span>
+</a>
+</div>
+<!-- CTA / Footer -->
+<div class="p-4 border-t border-white/5 shrink-0 h-16 flex items-center justify-center">
+<div class="font-data-mono text-[10px] text-tertiary/60 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2">
+<div class="w-1.5 h-1.5 bg-tertiary rounded-sm animate-pulse shadow-[0_0_6px_rgba(0,251,151,0.6)]"></div>
+                 AI CORE ACTIVE
+             </div>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="ml-20 flex-1 flex h-full pt-16 relative">
+<!-- Center Area (3D Core) -->
+<div class="flex-1 relative flex flex-col items-center justify-center overflow-visible">
+<!-- Orbital Rings Background -->
+<div class="orbital-ring ring-1"></div>
+<div class="orbital-ring ring-2"></div>
+<!-- Top Title -->
+<div class="absolute top-margin-safe left-1/2 -translate-x-1/2 text-center z-10 pointer-events-none">
+<h1 id="core-title" class="font-display-xl text-display-xl text-primary primary-glow tracking-[0.2em] mb-2 font-light">VERONICA</h1>
+<h2 id="core-subtitle" class="font-label-caps text-label-caps text-secondary/70 tracking-[0.3em]">ARTIFICIAL CONSCIOUSNESS</h2>
+</div>
+<!-- Center HUD Elements (Left/Right data) -->
+<div class="absolute left-12 top-1/3 flex flex-col gap-4 font-data-mono text-data-mono text-xs opacity-60">
+<div class="flex items-center gap-2"><div class="w-4 h-[1px] bg-secondary"></div> NEURAL SYNC: <span class="text-secondary">98%</span></div>
+<div class="flex items-center gap-2"><div class="w-4 h-[1px] bg-secondary"></div> COGNITIVE LOAD: <span class="text-primary" id="hud-cogload">24%</span></div>
+<div class="flex items-center gap-2"><div class="w-4 h-[1px] bg-secondary"></div> DATA STREAM: <span class="text-tertiary">STABLE</span></div>
+</div>
+<div class="absolute right-12 top-1/3 flex flex-col gap-4 font-data-mono text-data-mono text-xs opacity-60 items-end">
+<div class="flex items-center gap-2"><span class="text-secondary">OPTIMAL</span> :CORE TEMP <div class="w-4 h-[1px] bg-secondary"></div></div>
+<div class="flex items-center gap-2"><span class="text-primary">720 YB/s</span> :BANDWIDTH <div class="w-4 h-[1px] bg-secondary"></div></div>
+<div class="flex items-center gap-2"><span class="text-tertiary">ACTIVE</span> :SEC PROTOCOL <div class="w-4 h-[1px] bg-secondary"></div></div>
+</div>
+<!-- The 3D Core Animation -- NO overflow clipping -->
+<div class="w-[600px] h-[600px] relative z-0 flex items-center justify-center core-wrapper" style="overflow:visible;">
+<div class="absolute inset-0 w-full h-full" id="core-canvas-container" style="overflow:visible;"></div>
+<div class="absolute inset-0 rounded-full shadow-[inset_0_0_100px_rgba(255,186,67,0.1)] pointer-events-none"></div>
+</div>
+<!-- Bottom State Indicator -->
+<div class="absolute bottom-margin-safe left-1/2 -translate-x-1/2 text-center z-10 flex flex-col items-center gap-2 pointer-events-none">
+<div class="flex items-center gap-2 px-4 py-1.5 border border-tertiary/30 bg-tertiary/5 rounded-sm">
+<div id="state-dot" class="w-1.5 h-1.5 bg-tertiary rounded-sm animate-pulse shadow-[0_0_6px_rgba(0,251,151,0.6)]"></div>
+<span id="state-label" class="font-label-caps text-label-caps text-tertiary tracking-widest text-[10px]">SYSTEM READY</span>
+</div>
+<span id="state-sub" class="font-data-mono text-[10px] text-on-surface-variant/50">IDLE</span>
+</div>
+</div>
+<!-- Right Command Console / Chat Panel -->
+<aside class="w-[480px] h-full flex flex-col border-l border-white/5 bg-surface/30 backdrop-blur-2xl relative shrink-0">
+<!-- Glass edge highlight -->
+<div class="absolute left-0 top-0 w-[1px] h-full bg-gradient-to-b from-primary/30 via-transparent to-transparent"></div>
+<!-- Header -->
+<div class="h-16 border-b border-white/5 flex items-center px-6 shrink-0 justify-between">
+<div class="font-label-caps text-label-caps text-primary flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">terminal</span>
+                    COMMAND CONSOLE
+                </div>
+<div class="flex gap-2">
+<span class="w-1 h-4 bg-primary/20"></span>
+<span class="w-1 h-4 bg-primary/40"></span>
+<span class="w-1 h-4 bg-primary/80"></span>
+</div>
+</div>
+<!-- Multi-step Task Progress (hidden until a task starts) -->
+<div id="task-panel" class="shrink-0 px-4 py-3 border-b border-white/5 hidden">
+<div class="task-progress-card">
+<div class="flex items-center justify-between mb-2">
+<div class="font-label-caps text-[10px] text-primary flex items-center gap-2">
+<span class="material-symbols-outlined text-[14px]" style="font-variation-settings: 'FILL' 1;">account_tree</span>
+<span id="task-title">MULTI-STEP TASK</span>
+</div>
+<div class="flex items-center gap-2">
+<span id="task-status" class="font-data-mono text-[10px] text-secondary" style="animation:pulse-soft 1.2s ease-in-out infinite;">PLANNING</span>
+<button id="task-cancel-btn" class="text-error/70 hover:text-error transition-colors" title="Cancel task" style="display:none;">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+<div class="task-bar-bg mb-1"><div id="task-bar" class="task-bar-fill"></div></div>
+<div class="flex justify-between font-data-mono text-[9px] text-on-surface-variant/50">
+<span id="task-goal" class="truncate pr-3"></span>
+<span id="task-count" class="shrink-0">0 / 0</span>
+</div>
+<div id="task-steps" class="mt-2 space-y-1"></div>
+</div>
+</div>
+<!-- Chat History -->
+<div id="chat-history" class="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col">
+<!-- Session ID -->
+<div class="text-center font-data-mono text-[10px] text-on-surface-variant/30 pb-4 border-b border-white/5" id="session-header">
+                    SESSION_ID: VER-001 // PROTOCOL: NEURAL_LINK
+                </div>
+</div>
+<!-- Input Area -->
+<div class="p-4 border-t border-white/5 shrink-0 bg-surface/50">
+<div class="glass-panel flex items-end p-2 gap-2 relative focus-within:border-primary/50 transition-colors">
+<!-- Mic Toggle -->
+<button id="mic-btn" class="w-10 h-10 flex items-center justify-center text-primary/50 hover:text-primary transition-colors shrink-0" title="Toggle microphone">
+<span id="mic-icon" class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">mic_off</span>
+</button>
+<!-- Text Input -->
+<div class="flex-1 relative">
+<textarea id="chat-input" class="w-full bg-transparent border-0 border-b border-transparent focus:border-secondary focus:ring-0 text-on-surface font-body-md resize-none py-2 px-0 placeholder:text-on-surface-variant/30 placeholder:font-data-mono focus:outline-none" placeholder="Command VERONICA..." rows="1"></textarea>
+</div>
+<!-- Send Button -->
+<button id="send-btn" class="w-10 h-10 flex items-center justify-center text-secondary hover:text-white hover:bg-secondary/20 transition-colors shrink-0 rounded-sm" title="Send command">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+</button>
+<!-- Plan & Run Button (multi-step agentic task) -->
+<button id="plan-btn" class="w-10 h-10 flex items-center justify-center text-tertiary hover:text-white hover:bg-tertiary/20 transition-colors shrink-0 rounded-sm" title="Plan and run as a multi-step task">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">account_tree</span>
+</button>
+<!-- Corner accent -->
+<div class="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-secondary/50"></div>
+</div>
+</div>
+</aside>
+</main>
+
+<!-- ============================================================================
+     THREE.JS CONSCIOUSNESS CORE
+     Particles are NOT clipped at any boundary -- they travel freely to the
+     visible canvas/screen edges. (Ported unchanged from the Stitch GUI.)
+     ============================================================================ -->
+<script>
+  // -- Three.js Setup --
+  const container = document.getElementById('core-canvas-container');
+  const width = container.clientWidth || 600;
+  const height = container.clientHeight || 600;
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x000000, 0.015);
+
+  const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
+  camera.position.z = 15;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setClearColor(0x000000, 0);
+  container.appendChild(renderer.domElement);
+
+  renderer.domElement.style.overflow = 'visible';
+  renderer.domElement.style.position = 'absolute';
+  renderer.domElement.style.top = '0';
+  renderer.domElement.style.left = '0';
+  renderer.domElement.style.pointerEvents = 'none';
+
+  // -- Colors --
+  const coreColor = new THREE.Color(0xFFC84A);
+  const outerColor = new THREE.Color(0xAA7700);
+  const cyanColor = new THREE.Color(0x35D7FF);
+  const greenColor = new THREE.Color(0x00FB97);
+  const errorColor = new THREE.Color(0xFF6E5A);
+
+  const coreGroup = new THREE.Group();
+  const outerGroup = new THREE.Group();
+  scene.add(coreGroup);
+  scene.add(outerGroup);
+
+  // -- 1. Inner Core (Nucleus) --
+  const coreParticleCount = 300;
+  const coreGeometry = new THREE.BufferGeometry();
+  const corePositions = new Float32Array(coreParticleCount * 3);
+  const coreVelocities = new Float32Array(coreParticleCount * 3);
+
+  for (let i = 0; i < coreParticleCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos((Math.random() * 2) - 1);
+    const radius = 1.5 + Math.random() * 0.5;
+    corePositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+    corePositions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    corePositions[i * 3 + 2] = radius * Math.cos(phi);
+    coreVelocities[i * 3] = (Math.random() - 0.5) * 0.002;
+    coreVelocities[i * 3 + 1] = (Math.random() - 0.5) * 0.002;
+    coreVelocities[i * 3 + 2] = (Math.random() - 0.5) * 0.002;
+  }
+  coreGeometry.setAttribute('position', new THREE.BufferAttribute(corePositions, 3));
+  const coreMaterial = new THREE.PointsMaterial({
+    color: coreColor, size: 0.15, transparent: true,
+    opacity: 0.9, blending: THREE.AdditiveBlending,
+  });
+  const coreParticles = new THREE.Points(coreGeometry, coreMaterial);
+  coreGroup.add(coreParticles);
+
+  const centralLight = new THREE.PointLight(0xFFC84A, 3, 20);
+  coreGroup.add(centralLight);
+  scene.add(new THREE.AmbientLight(0x222222));
+
+  // -- 2. Outer Network (Fragmented Sphere) --
+  const outerParticleCount = 1500;
+  const outerGeometry = new THREE.BufferGeometry();
+  const outerPositions = new Float32Array(outerParticleCount * 3);
+  const outerVelocities = new Float32Array(outerParticleCount * 3);
+
+  for (let i = 0; i < outerParticleCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos((Math.random() * 2) - 1);
+    const radius = 6 + Math.random() * 2;
+    outerPositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+    outerPositions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    outerPositions[i * 3 + 2] = radius * Math.cos(phi);
+    outerVelocities[i * 3] = (Math.random() - 0.5) * 0.001;
+    outerVelocities[i * 3 + 1] = (Math.random() - 0.5) * 0.001;
+    outerVelocities[i * 3 + 2] = (Math.random() - 0.5) * 0.001;
+  }
+  outerGeometry.setAttribute('position', new THREE.BufferAttribute(outerPositions, 3));
+  const outerMaterial = new THREE.PointsMaterial({
+    color: outerColor, size: 0.08, transparent: true,
+    opacity: 0.6, blending: THREE.AdditiveBlending,
+  });
+  const outerParticles = new THREE.Points(outerGeometry, outerMaterial);
+  outerGroup.add(outerParticles);
+
+  // -- 3. Neural Pathways (core -> outer connections) --
+  const pathwayCount = 100;
+  const pathwayGeometry = new THREE.BufferGeometry();
+  const pathwayPositions = new Float32Array(pathwayCount * 6);
+  for (let i = 0; i < pathwayCount; i++) {
+    const idx = Math.floor(Math.random() * coreParticleCount) * 3;
+    const px1 = corePositions[idx], py1 = corePositions[idx + 1], pz1 = corePositions[idx + 2];
+    const theta = Math.atan2(py1, px1);
+    const phi = Math.acos(pz1 / Math.sqrt(px1 * px1 + py1 * py1 + pz1 * pz1));
+    const outR = 6 + Math.random();
+    const outT = theta + (Math.random() - 0.5) * 0.5;
+    const outP = phi + (Math.random() - 0.5) * 0.5;
+    pathwayPositions[i * 6] = px1;
+    pathwayPositions[i * 6 + 1] = py1;
+    pathwayPositions[i * 6 + 2] = pz1;
+    pathwayPositions[i * 6 + 3] = outR * Math.sin(outP) * Math.cos(outT);
+    pathwayPositions[i * 6 + 4] = outR * Math.sin(outP) * Math.sin(outT);
+    pathwayPositions[i * 6 + 5] = outR * Math.cos(outP);
+  }
+  pathwayGeometry.setAttribute('position', new THREE.BufferAttribute(pathwayPositions, 3));
+  const pathwayMaterial = new THREE.LineBasicMaterial({
+    color: coreColor, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending,
+  });
+  coreGroup.add(new THREE.LineSegments(pathwayGeometry, pathwayMaterial));
+
+  // -- 4. Outer Network Connections --
+  const outerLinesGeom = new THREE.BufferGeometry();
+  const outerLinePos = [];
+  for (let i = 0; i < outerParticleCount; i += 2) {
+    for (let j = i + 1; j < outerParticleCount; j += 15) {
+      const dx = outerPositions[i * 3] - outerPositions[j * 3];
+      const dy = outerPositions[i * 3 + 1] - outerPositions[j * 3 + 1];
+      const dz = outerPositions[i * 3 + 2] - outerPositions[j * 3 + 2];
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 1.8) {
+        outerLinePos.push(
+          outerPositions[i * 3], outerPositions[i * 3 + 1], outerPositions[i * 3 + 2],
+          outerPositions[j * 3], outerPositions[j * 3 + 1], outerPositions[j * 3 + 2],
+        );
+      }
+    }
+  }
+  outerLinesGeom.setAttribute('position', new THREE.Float32BufferAttribute(outerLinePos, 3));
+  outerGroup.add(new THREE.LineSegments(outerLinesGeom, new THREE.LineBasicMaterial({
+    color: outerColor, transparent: true, opacity: 0.15,
+    blending: THREE.AdditiveBlending,
+  })));
+
+  // -- 5. Free-Flying Particles --
+  const freeParticleCount = 200;
+  const freeGeometry = new THREE.BufferGeometry();
+  const freePos = new Float32Array(freeParticleCount * 3);
+  const freeLifetimes = new Float32Array(freeParticleCount);
+  const freeSpeeds = new Float32Array(freeParticleCount);
+  for (let i = 0; i < freeParticleCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos((Math.random() * 2) - 1);
+    const r = 5 + Math.random() * 4;
+    freePos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    freePos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    freePos[i * 3 + 2] = r * Math.cos(phi);
+    freeLifetimes[i] = Math.random();
+    freeSpeeds[i] = 0.002 + Math.random() * 0.008;
+  }
+  freeGeometry.setAttribute('position', new THREE.BufferAttribute(freePos, 3));
+  const freeMaterial = new THREE.PointsMaterial({
+    color: coreColor, size: 0.06, transparent: true,
+    opacity: 0.5, blending: THREE.AdditiveBlending,
+  });
+  scene.add(new THREE.Points(freeGeometry, freeMaterial));
+
+  // -- Resize --
+  window.addEventListener('resize', function () {
+    var w = container.clientWidth || 600;
+    var h = container.clientHeight || 600;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  });
+
+  // -- State Management --
+  var coreState = 'idle';
+  var stateColors = {
+    idle: coreColor, listening: greenColor, thinking: cyanColor, searching: cyanColor,
+    learning: new THREE.Color(0xFFB000), executing: coreColor, speaking: greenColor,
+    success: greenColor, error: errorColor, offline: new THREE.Color(0x333333),
+  };
+  var stateIntensity = {
+    idle: 1.0, listening: 1.3, thinking: 1.6, searching: 1.4, learning: 1.5,
+    executing: 1.8, speaking: 1.4, success: 1.2, error: 0.6, offline: 0.3,
+  };
+
+  window.setCoreState = function (state) {
+    if (coreState === state) return;
+    coreState = state;
+    var c = stateColors[state] || coreColor;
+    var intensity = stateIntensity[state] || 1.0;
+    coreMaterial.color.copy(c);
+    outerMaterial.color.copy(c.clone().multiplyScalar(0.7));
+    pathwayMaterial.color.copy(c);
+    freeMaterial.color.copy(c);
+    centralLight.color.copy(c);
+    centralLight.intensity = 3 * intensity;
+  };
+
+  // -- Animation Loop --
+  var time = 0;
+  function animate() {
+    requestAnimationFrame(animate);
+    time += 0.01;
+    var intensity = stateIntensity[coreState] || 1.0;
+    coreGroup.rotation.y = time * 0.5 * intensity;
+    coreGroup.rotation.x = time * 0.3 * intensity;
+    outerGroup.rotation.y = -time * 0.1;
+    outerGroup.rotation.z = time * 0.05;
+    var pulse = 1 + Math.sin(time * 3) * 0.1 * intensity;
+    coreGroup.scale.set(pulse, pulse, pulse);
+    centralLight.intensity = 3 * intensity + Math.sin(time * 5) * 0.5;
+    pathwayMaterial.opacity = 0.2 * intensity + Math.sin(time * 2) * 0.15;
+
+    var cp = coreGeometry.attributes.position;
+    for (var i = 0; i < coreParticleCount; i++) {
+      cp.array[i * 3] += coreVelocities[i * 3] * intensity;
+      cp.array[i * 3 + 1] += coreVelocities[i * 3 + 1] * intensity;
+      cp.array[i * 3 + 2] += coreVelocities[i * 3 + 2] * intensity;
+    }
+    cp.needsUpdate = true;
+
+    var op = outerGeometry.attributes.position;
+    for (var i = 0; i < outerParticleCount; i++) {
+      op.array[i * 3] += outerVelocities[i * 3];
+      op.array[i * 3 + 1] += outerVelocities[i * 3 + 1];
+      op.array[i * 3 + 2] += outerVelocities[i * 3 + 2];
+    }
+    op.needsUpdate = true;
+
+    var fp = freeGeometry.attributes.position;
+    for (var i = 0; i < freeParticleCount; i++) {
+      freeLifetimes[i] += freeSpeeds[i] * intensity;
+      if (freeLifetimes[i] > 1.0) {
+        var t2 = Math.random() * Math.PI * 2;
+        var p2 = Math.acos((Math.random() * 2) - 1);
+        var r2 = 3 + Math.random() * 6;
+        fp.array[i * 3] = r2 * Math.sin(p2) * Math.cos(t2);
+        fp.array[i * 3 + 1] = r2 * Math.sin(p2) * Math.sin(t2);
+        fp.array[i * 3 + 2] = r2 * Math.cos(p2);
+        freeLifetimes[i] = 0;
+      } else {
+        var x = fp.array[i * 3], y = fp.array[i * 3 + 1], z = fp.array[i * 3 + 2];
+        var len = Math.sqrt(x * x + y * y + z * z) || 1;
+        var spd = freeSpeeds[i] * intensity;
+        fp.array[i * 3] += (x / len) * spd;
+        fp.array[i * 3 + 1] += (y / len) * spd;
+        fp.array[i * 3 + 2] += (z / len) * spd;
+      }
+    }
+    fp.needsUpdate = true;
+    freeMaterial.opacity = 0.5 * intensity;
+    renderer.render(scene, camera);
+  }
+  animate();
+  console.log('[VERONICA] Three.js consciousness core initialized');
+</script>
+
+<!-- ============================================================================
+     VERONICA BRIDGE
+     Connects the Stitch GUI page to the Python backend over HTTP + SSE.
+       Client -> Server:  POST /api  {method, args}
+       Server -> Client:  GET  /events (Server-Sent Events, signal -> dispatcher)
+     Transport replaces the original console.log QWebChannel; the signal
+     vocabulary (show_ultron_message, set_core_state, …) is preserved unchanged
+     so the page works with the same dispatcher the original Stitch GUI used.
+     ============================================================================ -->
+<script>
+(function () {
+  'use strict';
+
+  var chatHistory  = document.getElementById('chat-history');
+  var chatInput    = document.getElementById('chat-input');
+  var sendBtn      = document.getElementById('send-btn');
+  var planBtn      = document.getElementById('plan-btn');
+  var micBtn       = document.getElementById('mic-btn');
+  var micIcon      = document.getElementById('mic-icon');
+  var stateLabel   = document.getElementById('state-label');
+  var stateDot     = document.getElementById('state-dot');
+  var stateSub     = document.getElementById('state-sub');
+  var hudCpu       = document.getElementById('hud-cpu');
+  var hudRam       = document.getElementById('hud-ram');
+  var hudNet       = document.getElementById('hud-net');
+  var coreSubtitle = document.getElementById('core-subtitle');
+
+  var micActive = false;
+  var busyCount = 0;
+
+  var STATE_LABELS = {
+    idle: 'IDLE', listening: 'LISTENING', thinking: 'THINKING', searching: 'SEARCHING',
+    learning: 'LEARNING', executing: 'EXECUTING', speaking: 'SPEAKING', success: 'SUCCESS',
+    error: 'ERROR', offline: 'OFFLINE',
+  };
+  var STATE_COLORS = {
+    idle: '#00fb97', listening: '#00fb97', thinking: '#77dfff', searching: '#77dfff',
+    learning: '#ffb000', executing: '#ffba43', speaking: '#00fb97', success: '#00fb97',
+    error: '#ffb4ab', offline: '#666',
+  };
+
+  // -----------------------------------------------------------------------
+  // Chat Helpers
+  // -----------------------------------------------------------------------
+  function addUserMessage(text) {
+    var d = document.createElement('div');
+    d.className = 'flex flex-col items-end gap-2';
+    d.innerHTML =
+      '<div class="font-label-caps text-[10px] text-on-surface-variant/50">USER</div>' +
+      '<div class="msg-user px-4 py-3 max-w-[85%] text-on-surface font-body-md">' + escHtml(text) + '</div>';
+    chatHistory.appendChild(d);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  function addVeronicaMessage(text, status) {
+    var sc = status === 'error' ? 'text-error' : status === 'success' ? 'text-tertiary' : 'text-primary';
+    var d = document.createElement('div');
+    d.className = 'flex flex-col items-start gap-2';
+    d.innerHTML =
+      '<div class="font-label-caps text-[10px] text-primary flex items-center gap-1">' +
+        '<span class="material-symbols-outlined text-[12px]">memory</span> VERONICA ' +
+        '<span class="text-[9px] ' + sc + ' ml-2">' + (status ? status.toUpperCase() : '') + '</span>' +
+      '</div>' +
+      '<div class="msg-ultron px-4 py-3 max-w-[90%] text-on-surface font-body-md relative overflow-hidden group">' +
+        '<div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"></div>' +
+        '<div class="ultron-msg-body">' + (text ? fmtMd(text) : '<span class="text-on-surface-variant/40">Thinking...</span>') + '</div>' +
+      '</div>';
+    chatHistory.appendChild(d);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+    return d;
+  }
+
+  function updateVeronicaMessage(d, text, status) {
+    if (!d) return;
+    var b = d.querySelector('.ultron-msg-body');
+    if (b) b.innerHTML = fmtMd(text);
+    // Update the status badge
+    var spans = d.querySelectorAll('.text-\\[9px\\]');
+    for (var i = 0; i < spans.length; i++) {
+      spans[i].textContent = status ? status.toUpperCase() : '';
+      spans[i].className = 'text-[9px] ' + (status === 'error' ? 'text-error' : status === 'success' ? 'text-tertiary' : 'text-primary') + ' ml-2';
+    }
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  function addToolActivity(text) {
+    var d = document.createElement('div');
+    d.className = 'msg-activity flex flex-col gap-1 pl-4 ml-4 py-1';
+    d.innerHTML =
+      '<div class="font-data-mono text-[10px] text-secondary flex items-center gap-2">' +
+        '<span class="material-symbols-outlined text-[12px] animate-spin">sync</span> ' +
+        escHtml(text) +
+      '</div>';
+    chatHistory.appendChild(d);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+    return d;
+  }
+
+  function updateToolActivity(d, text) {
+    if (!d) return;
+    var mono = d.querySelector('.font-data-mono');
+    if (!mono) return;
+    mono.innerHTML = '<span class="material-symbols-outlined text-[12px]">check_circle</span> ' + escHtml(text);
+    mono.classList.remove('text-secondary');
+    mono.classList.add('text-tertiary');
+  }
+
+  function fmtMd(t) {
+    if (!t) return '';
+    var h = escHtml(t);
+    h = h.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#ffe082;">$1</strong>');
+    h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    h = h.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;border:1px solid rgba(255,186,67,0.12);overflow-x:auto;"><code>$1</code></pre>');
+    h = h.replace(/`(.+?)`/g, '<code style="background:rgba(255,186,67,0.12);color:#ffe082;padding:1px 4px;border-radius:3px;">$1</code>');
+    h = h.replace(/\n/g, '<br>');
+    return h;
+  }
+
+  function escHtml(t) {
+    var d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
+  }
+
+  function setCoreStateJS(state) {
+    if (window.setCoreState) window.setCoreState(state);
+    var l = STATE_LABELS[state] || state.toUpperCase();
+    var c = STATE_COLORS[state] || '#00fb97';
+    stateLabel.textContent = l;
+    stateLabel.style.color = c;
+    stateSub.textContent = l;
+    stateDot.style.background = c;
+    stateDot.style.boxShadow = '0 0 6px ' + c;
+    coreSubtitle.textContent = 'VERONICA // ' + l;
+  }
+
+  function setSystemStats(data) {
+    try {
+      var s = typeof data === 'string' ? JSON.parse(data) : data;
+      hudCpu.textContent = s.cpu + '%';
+      hudRam.textContent = s.ram + '%';
+      hudNet.textContent = s.net || 'Unknown';
+      hudNet.style.color = s.net === 'Online' ? '#00fb97' : '#ffb4ab';
+    } catch (e) {
+      console.warn('[VERONICA] Stats parse error:', e);
+    }
+  }
+
+  function setVoiceState(s) {
+    if (s === 'listening') {
+      micActive = true;
+      micIcon.textContent = 'mic';
+      micIcon.classList.add('mic-active');
+    } else if (s === 'stopping') {
+      micIcon.classList.remove('mic-active');
+      micIcon.classList.add('mic-processing');
+    } else {
+      micActive = false;
+      micIcon.textContent = 'mic_off';
+      micIcon.classList.remove('mic-active', 'mic-processing');
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Multi-step Task Progress UI
+  // -----------------------------------------------------------------------
+  var taskPanel = document.getElementById('task-panel');
+  var taskTitle = document.getElementById('task-title');
+  var taskStatus = document.getElementById('task-status');
+  var taskGoal = document.getElementById('task-goal');
+  var taskCount = document.getElementById('task-count');
+  var taskBar = document.getElementById('task-bar');
+  var taskSteps = document.getElementById('task-steps');
+  var taskCancelBtn = document.getElementById('task-cancel-btn');
+  var currentTaskId = null;
+
+  function showTaskStarted(taskId, goal, total) {
+    currentTaskId = taskId;
+    taskPanel.classList.remove('hidden');
+    taskTitle.textContent = 'TASK ' + taskId;
+    taskGoal.textContent = goal;
+    taskSteps.innerHTML = '';
+    taskCancelBtn.style.display = 'inline-flex';
+    setTaskProgress(0, total, goal);
+  }
+
+  taskCancelBtn.addEventListener('click', function () {
+    if (currentTaskId) api('cancelTask', [currentTaskId]);
+  });
+
+  function setTaskProgress(current, total, desc) {
+    var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    taskBar.style.width = pct + '%';
+    taskCount.textContent = current + ' / ' + total;
+    if (desc) taskGoal.textContent = desc;
+    // Render the step list: mark completed steps done, highlight the active one.
+    var items = taskSteps.children;
+    for (var i = 0; i < items.length; i++) {
+      var cls = (i < current) ? 'task-step-done' : 'task-step-pend';
+      items[i].className = 'flex items-center gap-2 font-data-mono text-[10px] ' + cls;
+      var ic = items[i].querySelector('span');
+      if (ic) ic.textContent = (i < current) ? 'check_circle' : 'radio_button_unchecked';
+    }
+  }
+
+  function renderTaskSteps(steps) {
+    taskSteps.innerHTML = '';
+    (steps || []).forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'flex items-center gap-2 font-data-mono text-[10px] task-step-pend';
+      row.innerHTML =
+        '<span class="material-symbols-outlined text-[12px]">radio_button_unchecked</span>' +
+        '<span class="truncate">' + escHtml(s.description || '') + '</span>';
+      taskSteps.appendChild(row);
+    });
+  }
+
+  function endTask(statusText, color) {
+    taskStatus.textContent = statusText;
+    taskStatus.style.color = color;
+    taskStatus.style.animation = 'none';
+    taskCancelBtn.style.display = 'none';
+  }
+
+  function submitTask() {
+    var text = chatInput.value.trim();
+    if (!text) return;
+    chatInput.value = '';
+    addUserMessage(text);
+    busyCount++;
+    setCoreStateJS('thinking');
+    api('startTask', [text]);
+  }
+
+  // -----------------------------------------------------------------------
+  // Transport: POST /api (replaces the old console.log QWebChannel bridge)
+  // -----------------------------------------------------------------------
+  function api(method, args) {
+    return fetch('/api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: method, args: args || [] }),
+    })
+      .then(function (r) { return r.json(); })
+      .catch(function (e) { console.error('[VERONICA] API error:', e); });
+  }
+
+  function submitCommand() {
+    var text = chatInput.value.trim();
+    if (!text) return;
+    chatInput.value = '';
+    addUserMessage(text);
+    busyCount++;
+    setCoreStateJS('thinking');
+    api('sendCommand', [text]);
+  }
+
+  sendBtn.addEventListener('click', submitCommand);
+  planBtn.addEventListener('click', submitTask);
+  chatInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitCommand();
+    }
+  });
+
+  micBtn.addEventListener('click', function () {
+    if (micActive) {
+      api('stopListening', []);
+    } else {
+      api('startListening', []);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // SSE: Server -> Client events
+  // -----------------------------------------------------------------------
+  function connectSSE() {
+    var es = new EventSource('/events');
+    es.onmessage = function (ev) {
+      try { dispatchSignal(JSON.parse(ev.data)); }
+      catch (e) { console.warn('[VERONICA] Bad SSE payload:', ev.data); }
+    };
+    es.onerror = function () {
+      setCoreStateJS('offline');
+      stateSub.textContent = 'DISCONNECTED';
+    };
+  }
+
+  function dispatchSignal(env) {
+    var signal = env.signal;
+    var args = env.args || [];
+    switch (signal) {
+      case 'show_user_message':
+        addUserMessage(args[0]);
+        break;
+      case 'show_ultron_message':
+        onAssistantMessage(args[0], args[1]);
+        break;
+      case 'show_tool_activity':
+        addToolActivity(args[0]);
+        break;
+      case 'update_tool_result':
+        var acts = chatHistory.querySelectorAll('.msg-activity');
+        if (acts.length > 0) updateToolActivity(acts[acts.length - 1], args[0]);
+        break;
+      case 'set_core_state':
+        setCoreStateJS(args[0]);
+        break;
+      case 'set_system_status':
+        stateSub.textContent = args[0];
+        break;
+      case 'set_voice_state':
+        setVoiceState(args[0]);
+        break;
+      case 'show_error':
+        busyCount = Math.max(0, busyCount - 1);
+        addVeronicaMessage(args[0], 'error');
+        setCoreStateJS('error');
+        setTimeout(function () { setCoreStateJS('idle'); }, 2400);
+        break;
+      case 'clear_processing':
+        busyCount = Math.max(0, busyCount - 1);
+        setCoreStateJS('idle');
+        break;
+      case 'system_stats':
+        setSystemStats(args[0]);
+        break;
+      case 'show_activity':
+        var act = document.createElement('div');
+        act.className = 'text-center font-data-mono text-[10px] text-secondary/60 py-2 border-t border-white/5';
+        act.textContent = args[0];
+        chatHistory.appendChild(act);
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+        break;
+      case 'task_started':
+        // args: [task_id, goal, total_steps]
+        showTaskStarted(args[0], args[1], args[2]);
+        taskStatus.textContent = 'RUNNING';
+        taskStatus.style.color = '#77dfff';
+        taskStatus.style.animation = 'pulse-soft 1.2s ease-in-out infinite';
+        setCoreStateJS('executing');
+        break;
+      case 'task_progress':
+        // args: [task_id, current, total, desc]
+        if (args[0] === currentTaskId) setTaskProgress(args[1], args[2], args[3]);
+        break;
+      case 'task_completed':
+        // args: [task_id, task_dict]
+        busyCount = Math.max(0, busyCount - 1);
+        endTask('COMPLETE', '#00fb97');
+        taskBar.style.width = '100%';
+        if (args[1] && args[1].steps) renderTaskSteps(args[1].steps);
+        setCoreStateJS('success');
+        break;
+      case 'task_failed':
+        // args: [task_id, task_dict, error]
+        busyCount = Math.max(0, busyCount - 1);
+        endTask('FAILED', '#ffb4ab');
+        setCoreStateJS('error');
+        break;
+      case 'task_cancelled':
+        // args: [task_id, task_dict]
+        busyCount = Math.max(0, busyCount - 1);
+        endTask('CANCELLED', '#ffb000');
+        setCoreStateJS('idle');
+        break;
+      case 'backend_ready':
+        onBackendReady(args[0]);
+        break;
+      default:
+        console.warn('[VERONICA] Unknown signal:', signal);
+    }
+  }
+
+  function onAssistantMessage(text, status) {
+    busyCount = Math.max(0, busyCount - 1);
+    // Check if the last message is still the "Thinking..." placeholder and update in-place
+    var all = chatHistory.querySelectorAll('.msg-ultron');
+    if (all.length > 0) {
+      var last = all[all.length - 1];
+      var body = last.querySelector('.ultron-msg-body');
+      if (body && body.textContent.indexOf('Thinking...') !== -1) {
+        updateVeronicaMessage(last.closest('.flex'), text, status);
+        return;
+      }
+    }
+    addVeronicaMessage(text, status);
+  }
+
+  function onBackendReady(status) {
+    if (status === 'ready') {
+      stateLabel.textContent = 'SYSTEM READY';
+      stateLabel.style.color = '#00fb97';
+      stateDot.style.background = '#00fb97';
+      stateDot.style.boxShadow = '0 0 6px #00fb97';
+      stateSub.textContent = 'CONNECTED';
+      addVeronicaMessage(
+        'VERONICA online. State subsystems engaged. Backend connected.\n\nHow may I assist you?',
+        'success',
+      );
+    } else if (status && status.indexOf('error') === 0) {
+      stateLabel.textContent = 'BACKEND ERROR';
+      stateLabel.style.color = '#ffb4ab';
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Initial state + periodic stats refresh
+  // -----------------------------------------------------------------------
+  stateLabel.textContent = 'CONNECTING';
+  stateLabel.style.color = '#77dfff';
+  stateSub.textContent = 'CONNECTING';
+  console.log('[VERONICA WEB] UI loaded, establishing backend connection...');
+  setCoreStateJS('idle');
+  api('requestSystemStatus').then(function (r) { if (r) setSystemStats(r); });
+  connectSSE();
+
+  // Refresh system stats every 2 seconds for live HUD updates.
+  setInterval(function () {
+    api('requestSystemStatus').then(function (r) { if (r) setSystemStats(r); });
+  }, 2000);
+})();
+</script>
+</body>
+</html>

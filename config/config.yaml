@@ -1,0 +1,94 @@
+# VERONICA configuration — non-secret settings. Secrets/keys go in config/.env instead.
+# Everything here has a working default that requires NO paid API key.
+
+assistant:
+  name: "VERONICA"
+  wake_phrase: "veronica"
+  persona: >
+    You are VERONICA, a capable, calm, and precise personal AI assistant inspired by
+    JARVIS. You are concise, proactive, and never pretend to have done something you
+    have not actually done. When a tool is available for a task, you use it instead of
+    guessing — including run_shell_command, read_file, write_file, and delete_file for
+    anything the other tools don't cover. Every action you take is confirmed with the
+    user first, automatically, before it runs, so you don't need to ask for permission
+    yourself in words — just call the tool and the system will handle confirmation.
+
+llm:
+  provider: "ollama"              # "ollama" (local, free, default) | "openai_compatible" | "echo" (tests)
+  model: "llama3.1:8b"
+  base_url: "http://localhost:11434"
+  api_key_env: "VERONICA_LLM_API_KEY"   # only read if provider is openai_compatible
+  temperature: 0.4
+  max_history_turns: 12
+  request_timeout_s: 60
+
+stt:
+  # "google_free" (default; free, needs internet) uses SpeechRecognition's Microphone,
+  # which needs PyAudio — an *optional* install (VERONICA installs no mic package by
+  # default; voice mode is off unless you add one). "faster_whisper" / "vosk" are fully
+  # offline and capture audio via sounddevice instead.
+  backend: "google_free"          # "google_free" | "faster_whisper" (offline, CPU/CUDA) | "vosk" (offline) | "none"
+  vosk_model_path: "models/vosk-model-small-en-us"
+  faster_whisper_model: "base"    # faster-whisper model: tiny/base/small/medium/large-v3 (only when backend is faster_whisper)
+  faster_whisper_compute_type: "float32"   # float16 (CUDA) | int8 | float32
+  language: "en-IN"
+  energy_threshold: 300
+  pause_threshold: 0.8
+
+tts:
+  backend: "edge_tts"             # "edge_tts" (free, needs internet) | "piper" (offline neural) | "pyttsx3" (offline) | "none"
+  voice: "en-US-AriaNeural"
+  rate: "+0%"
+  piper_model: "en_US-lessac-medium"   # piper voice model (only used when backend is "piper")
+  cache_dir: "data/tts_cache"
+
+wake_word:
+  enabled: false
+  mode: "push_to_talk"            # "push_to_talk" | "energy_spike"
+  spike_ratio: 3.0
+
+memory:
+  long_term_path: "data/memory.json"
+  short_term_max_messages: 20
+
+safety:
+  # SAFE means "confirm literally everything, including read-only actions" — VERONICA
+  # asks before it does anything at all. Loosen to MODERATE/SENSITIVE later once you
+  # trust the fast-path commands you use daily (see docs/GETTING_STARTED.md).
+  require_confirmation_above: "SAFE"       # SAFE | MODERATE | SENSITIVE | CRITICAL
+  dry_run: false
+
+learning:
+  # Experience-based learning v1: records task outcomes (what worked / what failed),
+  # extracts learning signals, and tracks evidence-based confidence. Set enabled: false
+  # to turn it off entirely — task execution is unaffected either way.
+  enabled: true
+  experience_path: "data/experiences.jsonl"   # append-only JSONL experience log
+  confidence_path: "data/confidence.json"     # per-strategy success/failure counts
+
+  # Phase 4 — controlled behavioral adaptation. The learning system may recommend or
+  # transform an EXECUTION PLAN only; it never executes tools directly. Actual tool
+  # execution always stays in TaskExecutor → ToolRegistry.dispatch() → permission gate.
+  adaptation_enabled: true
+  # Confidence floor: below this, no adaptation at all. THESE ARE THE ONLY confidence
+  # thresholds used — the adapter reuses the existing ConfidenceTracker values.
+  adaptation_min_confidence: 0.80       # < 0.80: never adapt
+  # At or above this AND with sufficient repeated evidence, the preference is "strong"
+  # and may change which tool a plan step calls (safety/gate permitting).
+  adaptation_strong_confidence: 0.90
+  # Repeated independent successes required before a strong preference is applied.
+  adaptation_min_evidence: 3
+
+  # Phase 5 — learning effectiveness & strategy evolution (deterministic, observational).
+  # Metrics derive every statistic from the stored experiences — no second source of truth.
+  metrics_enabled: true                 # compute learning analytics from experience data
+  strategy_evolution_enabled: true      # track strategy states (OBSERVED → PROMISING → VALIDATED → DEGRADED)
+  # Evidence thresholds for strategy promotion. Conservative and configurable; the module
+  # defaults (also conservative) match these values when the config is silent.
+  evidence_weak: 2                      # 2+ successes/recoveries → PROMISING
+  evidence_normal: 3                    # 3+ successes/recoveries → eligible for normal confidence
+  evidence_strong: 5                    # 5+ successes/recoveries → eligible for VALIDATED
+  evidence_high: 10                     # 10+ successes/recoveries → high-evidence strategy
+
+log_level: "INFO"
+log_file: "data/veronica.log"

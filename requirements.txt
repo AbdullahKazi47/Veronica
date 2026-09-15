@@ -1,0 +1,38 @@
+# --- core (always required) ---
+pyyaml>=6.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# --- voice: text-to-speech ---
+# Audio playback does NOT require pygame anymore: on Windows, VERONICA plays
+# cached speech with the stdlib (winsound for WAV, winmm MCI via ctypes for MP3),
+# so nothing here needs to compile a C extension.
+edge-tts>=6.1.0        # free, natural TTS (default)
+pyttsx3>=2.90           # fully offline TTS fallback
+# pygame>=2.5.0         # optional: audio playback on non-Windows platforms only
+# piper-tts>=1.2.0       # optional: offline neural TTS — uncomment + set tts.backend: piper
+
+# --- voice: speech-to-text ---
+# Microphone capture is NOT a hard dependency: text mode and the Stitch GUI work
+# with no mic package at all. The default google_free backend only needs PyAudio
+# for the microphone, but PyAudio has no prebuilt wheel for every Python version
+# (it would build from source and require MSVC), so it is optional. The offline
+# backends (faster_whisper / vosk) capture audio via `sounddevice` instead.
+SpeechRecognition>=3.10.0   # free Google Web Speech backend (default)
+# PyAudio>=0.2.13            # optional: mic for the google_free backend only — install a prebuilt wheel for your Python, or use faster_whisper/vosk (which need sounddevice)
+# faster-whisper>=1.1.0      # optional: offline Whisper STT (CPU/CUDA) — set stt.backend: faster_whisper
+# vosk>=0.3.45                # optional: fully offline STT — uncomment if you want it
+# sounddevice>=0.4.6          # optional: mic capture for faster_whisper/vosk STT and the energy-spike wake word
+
+# --- system tools ---
+psutil>=5.9.0
+pyautogui>=0.9.54
+# pycaw>=20230407              # optional: Windows volume control
+# comtypes>=1.2.0               # optional: required by pycaw
+
+# --- vision (optional) ---
+Pillow>=10.0.0
+# pytesseract>=0.3.10           # optional: needs the Tesseract binary installed separately
+
+# --- testing ---
+pytest>=7.4.0

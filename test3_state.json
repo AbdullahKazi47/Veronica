@@ -1,0 +1,64 @@
+{
+  "status": "VALIDATED",
+  "notepad": {
+    "name": "Untitled - Notepad",
+    "pid": 15656,
+    "class_name": "Notepad"
+  },
+  "editor": {
+    "name": "Text editor",
+    "class_name": "RichEditD2DPT",
+    "bounding_box": {
+      "x": 104,
+      "y": 185,
+      "width": 1035,
+      "height": 313
+    }
+  },
+  "validated_rect": {
+    "x": 104,
+    "y": 185,
+    "width": 1035,
+    "height": 313
+  },
+  "click_target": {
+    "x": 621,
+    "y": 341
+  },
+  "validation": {
+    "result": "valid",
+    "message": "Notepad Text editor: validation passed",
+    "validated": {
+      "x": 104,
+      "y": 185,
+      "width": 1035,
+      "height": 313
+    },
+    "details": {
+      "original": [
+        104,
+        185,
+        1035,
+        313
+      ],
+      "validated": [
+        104,
+        185,
+        1035,
+        313
+      ],
+      "center": [
+        621,
+        341
+      ],
+      "screen_bounds": [
+        0,
+        0,
+        1920,
+        1080
+      ]
+    }
+  },
+  "permission_level": "MODERATE",
+  "timestamp": 1789472308.5363467
+}

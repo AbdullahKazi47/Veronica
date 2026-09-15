@@ -1,0 +1,42 @@
+{
+  "stage": "OBSERVED",
+  "notepad": {
+    "name": "Untitled - Notepad",
+    "pid": 15656,
+    "process_name": "Notepad.exe",
+    "window_id": "window_8931685704286174347",
+    "bounding_box": {
+      "x": 37,
+      "y": 114,
+      "width": 1115,
+      "height": 497
+    }
+  },
+  "editor": {
+    "name": "Text editor",
+    "control_type": "DataItem",
+    "automation_id": null,
+    "class_name": "RichEditD2DPT",
+    "element_id": "elem_457664563974353044",
+    "bounding_box": {
+      "x": 43,
+      "y": 188,
+      "width": 1096,
+      "height": 310
+    }
+  },
+  "validated": {
+    "status": "VALID",
+    "center": [
+      591,
+      343
+    ],
+    "rect": [
+      43,
+      188,
+      1096,
+      310
+    ]
+  },
+  "click_required": false
+}
