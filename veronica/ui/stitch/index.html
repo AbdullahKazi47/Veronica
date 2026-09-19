@@ -383,6 +383,11 @@
 <button id="send-btn" class="w-10 h-10 flex items-center justify-center text-secondary hover:text-white hover:bg-secondary/20 transition-colors shrink-0 rounded-sm" title="Send command">
 <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
 </button>
+<!-- Stop Streaming (Streaming LLM V1): cancels the live response stream. Hidden until
+     a stream is started; the backend emits an honest stream_cancelled terminal. -->
+<button id="stop-stream-btn" class="w-10 h-10 flex items-center justify-center text-error/80 hover:text-error hover:bg-error/10 transition-colors shrink-0 rounded-sm" title="Stop response" style="display:none;">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">stop</span>
+</button>
 <!-- Plan & Run Button (multi-step agentic task) -->
 <button id="plan-btn" class="w-10 h-10 flex items-center justify-center text-tertiary hover:text-white hover:bg-tertiary/20 transition-colors shrink-0 rounded-sm" title="Plan and run as a multi-step task">
 <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">account_tree</span>
@@ -683,15 +688,21 @@
   var micActive = false;
   var busyCount = 0;
 
+  // Streaming LLM V1 — live-delta paint state. Only ever touches the message box;
+  // the backend remains the single source of truth for text, memory, and status.
+  var streamActive = false;     // a stream is currently painting deltas into streamBox
+  var streamBox = null;         // the .msg-ultron element being painted
+  var streamRaw = '';           // raw accumulated markdown (the recorded final text)
+
   var STATE_LABELS = {
     idle: 'IDLE', listening: 'LISTENING', thinking: 'THINKING', searching: 'SEARCHING',
     learning: 'LEARNING', executing: 'EXECUTING', speaking: 'SPEAKING', success: 'SUCCESS',
-    error: 'ERROR', offline: 'OFFLINE',
+    error: 'ERROR', offline: 'OFFLINE', streaming: 'STREAMING',
   };
   var STATE_COLORS = {
     idle: '#00fb97', listening: '#00fb97', thinking: '#77dfff', searching: '#77dfff',
     learning: '#ffb000', executing: '#ffba43', speaking: '#00fb97', success: '#00fb97',
-    error: '#ffb4ab', offline: '#666',
+    error: '#ffb4ab', offline: '#666', streaming: '#ffba43',
   };
 
   // -----------------------------------------------------------------------
@@ -736,6 +747,46 @@
       spans[i].className = 'text-[9px] ' + (status === 'error' ? 'text-error' : status === 'success' ? 'text-tertiary' : 'text-primary') + ' ml-2';
     }
     chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  // -- Streaming LLM V1: progressive md paint ----------------------------------
+  // Deltas append to streamRaw and re-render the box's markdown each time, so code
+  // blocks and emphasis appear as they arrive. The box is finalized only on a
+  // terminal SSE event (completed/cancelled/error) or the final show_ultron_message —
+  // never on a delta.
+  function startStreamBox() {
+    if (streamActive && streamBox) return streamBox;     // reuse the live box
+    streamActive = true;
+    streamRaw = '';
+    streamBox = addVeronicaMessage('', '');
+    return streamBox;
+  }
+
+  function appendStreamDelta(delta) {
+    if (!streamActive) startStreamBox();
+    if (!delta) return;
+    streamRaw += delta;
+    var b = streamBox.querySelector('.ultron-msg-body');
+    if (b) b.innerHTML = fmtMd(streamRaw);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  function endStreamBox(status) {
+    if (!streamActive) return;
+    var sc = status === 'error' ? 'text-error' : status === 'success' ? 'text-tertiary' : 'text-primary';
+    if (streamBox) {
+      var b = streamBox.querySelector('.ultron-msg-body');
+      if (b && streamRaw) b.innerHTML = fmtMd(streamRaw);
+      var spans = streamBox.querySelectorAll('.text-\\[9px\\]');
+      for (var i = 0; i < spans.length; i++) {
+        spans[i].textContent = status ? status.toUpperCase() : '';
+        spans[i].className = 'text-[9px] ' + sc + ' ml-2';
+      }
+      chatHistory.scrollTop = chatHistory.scrollHeight;
+    }
+    streamActive = false;
+    streamBox = null;
+    streamRaw = '';
   }
 
   function addToolActivity(text) {
@@ -919,6 +970,17 @@
     }
   });
 
+  // Streaming LLM V1 — Stop button. Visible only while a stream is live; the backend
+  // turns it into an honest stream_cancelled terminal (never a fake "model stopped").
+  var stopStreamBtn = document.getElementById('stop-stream-btn');
+  stopStreamBtn.addEventListener('click', function () {
+    api('cancelStream', []);
+  });
+
+  function showStopBtn(v) {
+    stopStreamBtn.style.display = v ? 'inline-flex' : 'none';
+  }
+
   micBtn.addEventListener('click', function () {
     if (micActive) {
       api('stopListening', []);
@@ -951,6 +1013,52 @@
         break;
       case 'show_ultron_message':
         onAssistantMessage(args[0], args[1]);
+        break;
+      // Streaming LLM V1 — progressive output. Display-only: the backend remains the
+      // authority on final text, memory, and lifecycle.
+      case 'stream_started':
+        startStreamBox();
+        showStopBtn(true);
+        setCoreStateJS('streaming');
+        break;
+      case 'response_delta':
+        appendStreamDelta(args[0] && args[0].delta);
+        break;
+      case 'stream_status':
+        if (args[0] && args[0].status === 'streaming') setCoreStateJS('streaming');
+        break;
+      case 'stream_completed':
+        busyCount = Math.max(0, busyCount - 1);
+        showStopBtn(false);
+        var fin = args[0] || {};
+        if (fin.final_text) appendStreamDelta(fin.final_text);
+        endStreamBox('success');
+        setCoreStateJS('idle');
+        break;
+      case 'stream_cancelled':
+        busyCount = Math.max(0, busyCount - 1);
+        showStopBtn(false);
+        appendStreamDelta('');
+        if (streamBox) {
+          var cbody = streamBox.querySelector('.ultron-msg-body');
+          if (cbody && !streamRaw) cbody.innerHTML = '<span class="text-on-surface-variant/40">[stream cancelled]</span>';
+          else if (cbody && streamRaw) cbody.innerHTML = fmtMd(streamRaw) + '<span class="text-on-surface-variant/40">&nbsp;·&nbsp;[cancelled]</span>';
+        }
+        endStreamBox('cancelled');
+        setCoreStateJS('idle');
+        break;
+      case 'stream_error':
+        busyCount = Math.max(0, busyCount - 1);
+        showStopBtn(false);
+        appendStreamDelta('');
+        var err = args[0] || {};
+        if (streamBox) {
+          var ebody = streamBox.querySelector('.ultron-msg-body');
+          if (ebody) ebody.innerHTML = '<span class="text-error">[stream failed]</span> ' + escHtml(err.error || '');
+        }
+        endStreamBox('error');
+        setCoreStateJS('error');
+        setTimeout(function () { setCoreStateJS('idle'); }, 2400);
         break;
       case 'show_tool_activity':
         addToolActivity(args[0]);
@@ -1032,8 +1140,15 @@
     busyCount = Math.max(0, busyCount - 1);
     // Check if the last message is still the "Thinking..." placeholder and update in-place
     var all = chatHistory.querySelectorAll('.msg-ultron');
-    if (all.length > 0) {
-      var last = all[all.length - 1];
+    // Streaming: the box is already painted with live deltas — finalize it here instead
+    // of creating a duplicate message.
+    if (streamActive && streamBox) {
+      streamRaw = text || '';
+      endStreamBox(status === 'error' ? 'error' : 'success');
+      return;
+    }
+    var last = all.length > 0 ? all[all.length - 1] : null;
+    if (last) {
       var body = last.querySelector('.ultron-msg-body');
       if (body && body.textContent.indexOf('Thinking...') !== -1) {
         updateVeronicaMessage(last.closest('.flex'), text, status);

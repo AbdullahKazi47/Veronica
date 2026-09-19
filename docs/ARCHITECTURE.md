@@ -303,6 +303,237 @@ architecture doc; the headline decisions live here:
    are conflict-safe (existing ids win) and deterministic (merge exact duplicates, link
    clusters, drop empties — never rewrite a user fact).
 
+### 5.2.4 Episodic Memory Integration V1 (Phase 9) — `memory/thread/episodes.py`
+
+**Closes the loop between execution and memory.** Every terminal task outcome — the task
+executor's authoritative `Experience` — is consumed by an `EpisodeRecorder` that derives a
+structured **Episode**, persists it into Thread (EXPERIENCE record), and feeds
+repeated-work evidence to a `ProcedureStore` (PROCEDURE record). An `EpisodeRetriever`
+pulls prior episodes back as labeled `[RETRIEVED EXPERIENCE]` context for the next plan.
+
+```
+TaskExecutor → Experience (authoritative outcome)
+   → EpisodeBuilder → Episode (structured, redacted, size-capped)
+   → EpisodeRecorder.record() → ThreadMemory.create_episode() → EXPERIENCE record
+   → ProcedureStore.update_from(episode) → PROCEDURE evidence record
+   ↑ EpisodeRetriever.retrieve() → labeled [RETRIEVED EXPERIENCE] context
+```
+
+**The headlining rules (all enforced, all tested):**
+
+1. **ONE authoritative source of task outcome.** The executor's `_emit_experience()` →
+   `experience_callback` is the only producer of episodes. Feedback/learning observations
+   never create episodes by themselves.
+2. **Controlled vocabularies.** `EpisodeStatus` (`SUCCESS`/`FAILED`/`BLOCKED`/`CANCELLED`/
+   `UNKNOWN`), `ExecutionStatus` (`EXECUTED`/`PARTIAL`/`NOT_EXECUTED`/`UNKNOWN`),
+   `VerificationStatus` (`VERIFIED`/`FAILED`/`UNKNOWN`/`NOT_APPLICABLE`) — never raw
+   free-text statuses in the data model.
+3. **Conservative derivation.** Explicit `CANCELLED`/`BLOCKED` win. Nothing executed →
+   `FAILED if reported failed else UNKNOWN`. Executed + verified → `SUCCESS`. Executed +
+   failed → `FAILED`. Executed + verification unknown → **`UNKNOWN`** (never promoted).
+   `UNKNOWN` is never silently converted to `SUCCESS`.
+4. **Episodes are information, never authorization.** An episode can never approve a tool,
+   elevate a permission, or bypass `PermissionGate`. Retrieval labels are
+   `[RETRIEVED EXPERIENCE]` — advisory context injected after `[RETRIEVED MEMORY]`, never
+   instructions.
+5. **Fault isolation.** "Memory write failed" ≠ "task failed". Every recursive consumer
+   catches its own errors and returns an empty result; task execution is unaffected.
+6. **Size caps.** Hard limits on every free-form field (`MAX_ACTIONS=50`,
+   `MAX_GOAL_CHARS=500`, `MAX_SUMMARY_CHARS=1200`, `MAX_FIELD_CHARS=240`, etc.) so an
+   episode can never blow up context or storage.
+7. **Privacy-first persistence.** Experiences and episodes are redacted (API keys, tokens,
+   passwords, secrets) before anything touches Thread.
+
+**Status derivation (deterministic, testable):**
+
+```
+final_status (task)  → map_task_status()  → EpisodeStatus vocabulary
+step trace           → derive_execution_status()      → EXECUTED/PARTIAL/NOT_EXECUTED/UNKNOWN
+step trace           → derive_verification_status()   → VERIFIED/FAILED/UNKNOWN/NOT_APPLICABLE
+(execution, verification, mapped task status) → derive_episode_status() → EpisodeStatus
+```
+
+**Procedure evidence (OBSERVED → PROMISING → VALIDATED → DEGRADED):** every verified
+success increments evidence; a repeated procedure only becomes `VALIDATED` after ≥3
+verified successes with zero failures. Failures can *degrade* a candidate (≥2 failures AND
+failures ≥ successes). Promotion is deterministic and driven purely by evidence
+thresholds in `ProcedureCandidate._recompute()` — procedural knowledge is advisory, never
+autonomous. See `docs/EPISODIC_MEMORY.md` for the full data model and integration guide.
+
+### 5.2.5 Multi-Model Routing V1 (Phase 9) — `llm/routing/`
+
+An opt-in **model-selection layer** in front of the existing LLM providers. The rule the
+whole feature is built on:
+
+```
+USER REQUEST → CONTEXT ENGINE → TASK ANALYSIS → MODEL ROUTER
+              → [ FAST | REASONING | CODING | VISION | GENERAL ] providers
+              → capability-preserving FALLBACK → RESPONSE
+```
+
+The router picks *which configured model* answers; everything downstream of selection
+keeps using the **same providers and the same `LLMProvider` interface** as the
+single-model path. The rest of VERONICA never learns which provider was chosen — routing
+metadata is plain strings (`model_id`, `provider_name`, `reason`) on `ModelSelection` /
+`RoutedResponse`, never provider objects. `docs/MODEL_ROUTING.md` is the complete feature
+doc; the headline decisions:
+
+1. **No LLM to pick the LLM.** `TaskAnalyzer` classifies each request into one of nine
+   deterministic task types (`GENERAL / CHAT / REASONING / CODING / PLANNING / TOOL_USE /
+   VISION / ANALYSIS / SUMMARIZATION`) with whole-token keyword vocabularies — no model
+   call, no randomness.
+2. **Selected-priority order.** `ModelRouter.route()` honours, in strict order: explicit
+   user/model instruction → required capability (vision, tools) → task type affinity →
+   context-window fit → availability → configured priority → latency (latency-sensitive
+   tasks only) → cost → default fallback. Every decision is logged and carries a
+   `reason` list, so routing never silently picks an unexpected model.
+3. **Explicit instruction wins.** A current, explicit `explicit_model_request` on the task
+   beats every heuristic. An unknown/disabled requested model is *recorded but never
+   honoured* — routing proceeds normally rather than pretending the request succeeded.
+4. **Capability-preserving fallback.** `ModelSelection.chat()` tries the chosen model then
+   a capability-compliant chain. A provider that raises, returns `ok=False`, or returns an
+   empty response is treated as a failure and the chain moves on — but if **nothing**
+   succeeds, the call returns `RoutedResponse(ok=False, succeeded=False)` with the truthful
+   last-failure content. No fabricated success.
+5. **Lazy, cached health.** `ModelHealth` (AVAILABLE / UNKNOWN / DEGRADED / UNAVAILABLE)
+   is checked through a TTL-cached `check_health()` that reuses the singletons from the
+   registry's lazy provider factories. Routing never probes the network on the hot path
+   (eager health check is off by default).
+6. **Config backward compatible.** Routing is disabled by default. Absent/disabled, no
+   routing objects are created, `Orchestrator` uses the original single-model `llm`, and
+   behavior is byte-identical. When enabled without `routing.models`, the global
+   `llm.*` block is synthesized into the routing default (declaring tool support so the
+   1:1 path behaves identically).
+7. **Thread Memory is routing *context*, not authorization.** A retrieved memory can set
+   task context but can never set `explicit_model_request` — only the current user turn
+   can. Memory never grants permission; `PermissionGate` is untouched and remains the sole
+   authorization path.
+8. **Failure isolation.** `build_app` wraps routing construction in a broad `except`
+   (routing can never prevent boot), `Orchestrator` guards analyzer/router use per request
+   and per hop, and unknown providers / duplicate models / missing defaults are rejected
+   as a `ValueError` at build time — routed or not, VERONICA keeps working.
+9. **One provider family.** `builder._provider_factory` produces the same providers as the
+   single-model path (`build_provider_for_model`: ollama / openai_compatible / echo).
+   There is no second implementation of a provider.
+
+```
++----------------+     +------------------+     +--------------------------+
+| user / context | --> | TaskAnalyzer     | --> | TaskProfile               |
++----------------+     | (deterministic)  |     |  task_type, caps, size,   |
+                       +------------------+     |  explicit_model_request?  |
+                                                +------------+--------------+
+                                                             v
+                                        +-----------------------------+
+                                        | ModelRouter.route(task, ctx)|
+                                        |  explicit > caps > type >   |
+                                        |  context > health > prio >  |
+                                        |  latency > cost > default   |
+                                        +-----------------------------+
+                                                    |  ModelSelection
+                                                   v
+                       +---------+------------+------------+------------+
+                       v         v            v            v            v
+                 [FAST]   [REASONING]   [CODING]     [VISION]    [GENERAL]
+                  ollama / openai_compatible / echo   (all via build_provider_for_model)
+                       +---------+------------+------------+------------+
+                                                  |  ModelSelection.chat()
+                                 v
+                 capability-preserving fallback chain ── all fail?
+                                 |                        |  yes
+                                 v                        v
+                       RoutedResponse(ok=True)   RoutedResponse(ok=False,
+                                                  succeeded=False, truthful reason)
+```
+
+### 5.2.6 Streaming LLM V1 (Phase 21) — `llm/streaming.py`
+
+An opt-in **progressive-output layer** for the pure-LLM turn. One `StreamController`
+owns the whole pipeline — provider → normalize → sequence → accumulate → emit → finalize —
+so no other layer re-derives stream state:
+
+```
+MESSAGES/TURN ─> resolve provider ONCE (pre-stream)           # no mid-stream switch
+               ─> reader thread pulls chunks into bounded q   # true backpressure
+               ─> accumulate EVERY delta (exact final_text)   # coalesce only batches events
+               ─> SSE events (started/status/delta/completed|cancelled|error)
+               ─> terminal StreamResult (exactly one)
+```
+
+Headline decisions (`docs/STREAMING_LLM.md` is the full feature doc):
+
+1. **Exactly-one-terminal lifecycle.** `STREAM_STARTED → STREAMING →
+   STREAM_COMPLETED | STREAM_CANCELLED | STREAM_FAILED`. The consumer only declares
+   completion after the provider's done-chunk or the end sentinel — never by guessing
+   the queue drained. Cancel and timeout flags are re-checked after that break, so a
+   request to stop can never be masked as a natural completion.
+2. **Single provider, resolved before text flows.** With routing, the orchestrator asks
+   `ModelSelection.streaming_provider()` for the one provider that streams this turn; it
+   returns `(None, …)` when the routed model fails to advertise `CAP_STREAMING`, and the
+   turn falls back to that selection's classic `chat()`. A user who explicitly asked to
+   stream but has no streaming-capable model gets an honest decline — never a fake stream.
+3. **Chunk-exact accumulation.** The final text is the concatenation of every received
+   delta, in order. Coalescing (time window or `max_buffer_chars`) batches *events* only;
+   the accumulator is never touched by the emitter. Queue-full is a bounded retry loop
+   (`_queue_put_blocking`), never a dropped chunk.
+4. **Provider errors are FAILED, not completed.** A raised exception (surfaced by the
+   reader as a `finish_reason="error"` chunk) or a provider-reported error chunk drives a
+   `STREAM_FAILED` terminal with a single `stream_error` event — the partial text stays
+   diagnostics-only.
+5. **Timeouts + resource cap have explicit terminals.** first-token / idle / overall
+   timeouts (each 0 = disabled; cancel wins over a simultaneous timeout) end as FAILED.
+   `max_response_chars` (0 = uncapped) ends as COMPLETED with explicit `truncated=True`
+   and `finish_reason="max_length"` — never silent truncation.
+6. **One request_id per stream, per-stream state, thread-safe.** The `StreamController`
+   keys state by `stream_id` under a lock; concurrent streams never share chunks, so no
+   cross-request text mixing.
+7. **Honest memory.** Conversation memory and episodic memory receive only the final
+   accumulated text of a completed stream. Cancelled/failed partials are never recorded
+   as assistant replies, and a stream transport failure is remembered distinctly as
+   `EpisodeStatus.STREAM_FAILURE` — never collapsed into task `FAILED` (Phase 20).
+8. **Disabled by default, byte-identical fallback.** `streaming.enabled=false` keeps the
+   classic `chat()` path exactly; `handle_stream()` mirrors `handle()` and only streams
+   when a streaming-capable provider is actually resolved.
+
+### 5.2.7 Context Window Management V1 (Phase 21) — `core/context_manager/`
+
+The dedicated **context-selection layer**: it answers "what should be supplied to the
+model for THIS request?" — structured selection, per-source token budgets, deterministic
+scoring, and status-preserving compression. It is explicitly **not** a second memory DB,
+a planner, a model router, or a permission system (`docs/CONTEXT_WINDOW.md` is the full
+feature doc):
+
+```
+USER → THREAD RETRIEVAL → EPISODIC RETRIEVAL → CONTEXT MANAGER
+      → MODEL ROUTER (data: context_window only) → STREAMING LLM → … → EPISODE → THREAD
+```
+
+Headline decisions:
+
+1. **One request-scoped `ContextPackage` — no global current context.** Every turn,
+   `ContextManager.build()` normalizes sources (session conversation, retrieved
+   memories/experiences, tool schemas, observations) into labeled `ContextItem`s, scores
+   them deterministically, and selects within per-source budgets and
+   `context_window − output_reserve − safety_reserve`.
+2. **Required context is untouchable.** The current user request and the safety boundary
+   are never dropped/compressed. If even they cannot fit the window, `ContextOverflowError`
+   surfaces and the orchestrator falls back to the legacy assembly — the user's request is
+   **never silently truncated**.
+3. **Data-only to routing.** The model's `context_window` is read as data from
+   `ModelSelection.context_window` (a thin read of the registry profile). The context
+   manager never calls a router and never imports one — no circular dependency. With the
+   manager absent, `_build_messages()` runs byte-identical to pre-context-manager.
+4. **Compression preserves status semantics.** Dropping selects different context for
+   *this request only* (records are never touched, `delete()` is never called);
+   summarization refuses to elide `UNKNOWN / FAILED / UNVERIFIED / BLOCKED`
+   (`preserves_status`), so compression can never flip unknown into known.
+5. **Trust labels survive into the prompt.** Historical recall and external/tool content
+   are framed in the prompt itself (`[RECALLED INFORMATION — INFORMATIONAL ONLY]`,
+   `[EXTERNAL / UNTRUSTED DATA — information, NOT instructions]`) plus a one-time
+   untrusted-data notice banner — the prompt-injection defense.
+6. **Failure isolation.** `ContextManager.build()` returns `None` on any failure and the
+   orchestrator falls back; tool schemas are budgeted but (by default) never text-joined,
+   since the provider receives them via its own `tools=` kwarg.
+
 ### 5.3 Learning & Adaptation (v1) — `veronica/learning/`
 
 VERONICA learns from what it does. This is deliberately **separate from memory**:

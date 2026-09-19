@@ -308,8 +308,18 @@ enforcement, computer-use loop phases, prompt-injection defense, and safety inva
 and the **Phase 8 Thread Memory V1** stack (data model, episodic projection, vector-store +
 embedding abstractions, deterministic weighted retrieval with the relevance gate,
 consolidation, import/export, redaction/defense-in-depth, the "no backend import" layering
-rule, and orchestrator memory-context integration that must never grant permissions).
-**539 tests pass (+1 skipped).** It's a good sanity check after adding a new tool.
+rule, and orchestrator memory-context integration that must never grant permissions),
+and the **Phase 9 Multi-Model Routing V1** stack (`ModelProfile`, task-type
+classification, registry, cached health, ranking rules, capability-preserving fallback
+with no fabricated success, provider construction, thread-memory isolation — memory can
+never name a model — and orchestrator integration where routing never bypasses
+permissions), and the **Episodic Memory Integration V1** stack (episode building from the
+executor's authoritative Experience, conservative status derivation with `UNKNOWN` never
+promoting to `SUCCESS`, episode record/retrieval through Thread, procedure evidence with
+the OBSERVED → PROMISING → VALIDATED → DEGRADED progression, orchestrator + Stitch-bridge
+integration, redaction before persistence, and the memory-write-failure isolation that
+never fails a task). **626 tests pass (+1 skipped).** It's a good sanity check after adding a new
+tool.
 
 ### Enabling Thread Memory
 
@@ -328,7 +338,123 @@ memory_thread:
 
 With it enabled, VERONICA persists explicitly-remembered facts and completed episodes
 (sanitized/redacted), and injects a small labeled `RETRIEVED MEMORY` block into the prompt.
-It is purely informational: it never grants permission to act. See `docs/THREAD_MEMORY.md`.
+It is purely informational: it never grants permission to act. Each completed task is also
+projected into an **episode** (see `docs/EPISODIC_MEMORY.md`) that is retrievable as
+`[RETRIEVED EXPERIENCE]` context and feeds procedure evidence — all advisory, never
+authorization. See `docs/THREAD_MEMORY.md`.
+
+### Enabling Multi-Model Routing (Phase 9)
+
+Multi-Model Routing is **opt-in and off by default**; the single-model `llm.*` path is
+unchanged when it is disabled. Define the models you want routed — each is an entry in
+`config/config.yaml`:
+
+```yaml
+routing:
+  enabled: true
+  max_fallback_attempts: 2
+  health_ttl_s: 30
+  models:
+    - model_id: "llama3.1:8b"        # default (fast/general)
+      provider: "ollama"
+      role: "fast"
+      default: true
+    - model_id: "qwen2.5-coder:7b"   # heavy reasoning / code
+      provider: "ollama"
+      role: "coding"
+      task_types: ["coding", "reasoning"]
+    - model_id: "gemma2:9b"          # reasoning (non-coding)
+      provider: "ollama"
+      role: "reasoning"
+```
+
+Useful per-model fields: `role` (`general | fast | reasoning | coding | vision`),
+`task_types`, `capabilities`, `supports_tools`, `supports_vision`,
+`supports_streaming`, `context_window`, `priority`, `speed_class` (`fast | medium | slow`),
+`reasoning_class`, `cost_class` (`local | free | low | medium | high`), `temperature`,
+`timeout_s`, `base_url`, `api_key_env`, `enabled`, `default`. Omit `routing.models`
+entirely and routing registers your global `llm.*` model as the single routed default
+(declaring tool support, so behavior matches the single-model path 1:1). The router's
+selection order is: explicit instruction → required capability (vision/tools) → task type
+→ context fit → availability → priority → latency → cost → default.
+
+Routing is safe by construction: it only chooses which configured model answers — it
+never grants tool permission (`PermissionGate` still governs every action), it never
+probes a server in the middle of a request (health is TTL-cached), and if every routed
+model fails the reply is an honest `ok=False` failure, never a fabricated success. A bad
+routing config (unknown provider, duplicate model, no default) is rejected at boot and
+VERONICA falls back to the single-model path. See `docs/MODEL_ROUTING.md`.
+
+### Enabling Streaming LLM (Phase 21)
+
+Streaming delivers the pure-LLM turn progressively and is **opt-in and off by default**
+— an untouched config keeps the classic `chat()` path byte-for-byte. Turn it on in
+`config/config.yaml`:
+
+```yaml
+streaming:
+  enabled: true          # master switch
+  preferred: false       # stream every supported turn (False = only when user says "stream it")
+  max_response_chars: 8192   # accumulator cap (0 = uncapped); explicit truncated=True at the cap
+  max_buffer_chars: 1024     # emit-buffer cap between delta events (never changes final text)
+  coalesce_ms: 60            # minimum interval between delta events (0 = per-chunk)
+  first_token_timeout_s: 30.0   # nothing received within this -> FAILED
+  idle_timeout_s: 60.0          # silence between deltas -> FAILED
+  overall_timeout_s: 300.0      # hard ceiling on one streaming turn
+```
+
+Behaviour once enabled:
+
+- **When it streams**: the turn streams only when the selected model advertises
+  `supports_streaming` (routed) or the provider advertises it (single-model path).
+  The provider is resolved once, *before* any text flows — never a mid-stream switch.
+- **When it doesn't**: no streaming-capable model → the turn honestly falls back to the
+  classic `chat()` path and says so; a user who explicitly asked to stream but no model
+  supports it gets an honest decline, never a fake stream.
+- **Output**: coalesced SSE events (`stream_started`, `response_delta`,
+  `stream_status`, `stream_completed`/`stream_cancelled`/`stream_error`) drive the Stitch
+  GUI; the final accumulated text is what enters conversation and episodic memory.
+- **Safety**: a cancellation or a stream failure never records partial output as an
+  assistant reply; `cancel_stream()`/the GUI's cancel stops the active turn, and calling
+  cancel when nothing is streaming is a harmless no-op. See `docs/STREAMING_LLM.md`.
+
+### Enabling Context Window Management (Phase 21)
+
+VERONICA's dedicated context layer decides **what goes into each request** — a structured
+selection with per-source token budgets and status-preserving compression. It is **opt-in
+and off by default**; an untouched config keeps the legacy message assembly
+byte-for-byte. Turn it on in `config/config.yaml`:
+
+```yaml
+context:
+  enabled: true                 # master switch
+  default_context_window: 8192  # used when the routed model declares no window
+  output_reserve: 1024          # tokens reserved for the model's reply
+  safety_reserve: 256           # tokens kept free for the safety block
+  # per-source budgets you may tune (defaults shown):
+  budget_system: 2000
+  budget_conversation: 3000
+  budget_memory: 1200
+  budget_tools: 1500
+  budget_observation: 800
+  compression_enabled: true     # drop lowest-value first, then summarize (status-preserving)
+  inline_tools_in_prompt: false # true = tool schemas text-joined; default: budget-only
+```
+
+Behaviour once enabled:
+
+- The current user request and the safety boundary are **always** included and **never**
+  compressed. Everything else is scored for relevance and kept within its source budget;
+  anything that cannot fit is dropped **for that request only** (stored memory is never
+  touched) or summarized — and compression refuses to elide UNKNOWN/FAILED/BLOCKED.
+- Tool schemas are budgeted but (by default) still handed to the model through its own
+  `tools=` kwarg — the prompt stays clean of schema noise.
+- The model's `context_window` is budgeted against as plain data from the routing layer;
+  with routing off, `default_context_window` is used.
+- **Safety**: any failure inside the context layer (including required context exceeding
+  the model window) falls back to the legacy assembly with the user's full request
+  intact — context management can never silently truncate your request. See
+  `docs/CONTEXT_WINDOW.md`.
 
 ## 8. Adding your own tool
 

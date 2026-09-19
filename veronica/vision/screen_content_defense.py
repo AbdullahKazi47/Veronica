@@ -188,6 +188,9 @@ class ScreenContentDefense:
             perception_sources=state.perception_sources,
             confidence_overall=state.confidence_overall
         )
+        # Copy over raw_screenshot if present (used in tests)
+        if hasattr(state, 'raw_screenshot'):
+            safe_state.raw_screenshot = state.raw_screenshot
 
         # Filter desktop elements
         for element in state.desktop_elements:

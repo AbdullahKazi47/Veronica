@@ -26,7 +26,7 @@ from veronica.core.context import SessionContext
 from veronica.core.loop_guard import LoopGuard, LoopGuardConfig
 from veronica.learning.lesson import format_lessons_for_prompt, get_relevant_lessons
 from veronica.learning.policy import SAFETY_SENSITIVE_TOOLS
-from veronica.llm.base import ChatMessage, LLMProvider
+from veronica.llm.base import ChatMessage, LLMProvider, LLMResponse, ToolCall
 from veronica.logging_setup import get_logger
 from veronica.memory.long_term import LongTermMemory
 from veronica.memory.short_term import ShortTermMemory
@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from veronica.automation.closed_loop import ClosedLoopController
     from veronica.learning.adaptation import AdaptationResult, BehavioralAdapter
-    from veronica.memory.thread import ThreadMemory
+    from veronica.llm.routing.router import ModelRouter
+    from veronica.llm.routing.task import TaskAnalyzer
+    from veronica.llm.streaming import StreamController
+    from veronica.memory.thread import (EpisodeRecorder, EpisodeRetriever, ProcedureStore,
+                                        ThreadMemory)
 
 logger = get_logger("core.orchestrator")
 
@@ -53,6 +57,10 @@ class OrchestratorResponse:
     # Agentic path: when a goal was planned and executed as a multi-step task, this
     # carries the full task state (steps, progress, status) for front-ends to render.
     task: Optional[dict] = None
+    # Multi-Model Routing V1: when a router handled this turn, routing carries the
+    # selection metadata (model_id, decision, attempts, fallback trace, latency).
+    # None means routing was not active; every pre-routing caller works unchanged.
+    routing: Optional[dict] = field(default=None, repr=False)
 
 
 class Orchestrator:
@@ -74,6 +82,31 @@ class Orchestrator:
         # absent (or disabled), the orchestrator behaves exactly as before. It can never
         # break the assistant: every access is wrapped and degrades to empty context.
         thread_memory: Optional["ThreadMemory"] = None,
+        # Multi-Model Routing V1 (OPTIONAL, opt-in): when both are set the orchestrator
+        # asks the router which model should handle each turn instead of always calling
+        # self.llm directly. When either is None, behavior is byte-identical to
+        # pre-routing.  NEVER let routing break the assistant: every routed step is
+        # wrapped and degrades to calling self.llm.
+        router: Optional["ModelRouter"] = None,
+        analyzer: Optional["TaskAnalyzer"] = None,
+        # Episodic Memory Integration V1 (OPTIONAL): the recorder persists the executor's
+        # authoritative Experience to Thread; the retriever pulls prior experiences back
+        # as labeled context. Both are discovered/lifted in main.py. When absent the
+        # orchestrator is behavior-identical to before.
+        episode_recorder: Optional["EpisodeRecorder"] = None,
+        episode_retriever: Optional["EpisodeRetriever"] = None,
+        procedure_store: Optional["ProcedureStore"] = None,
+        # Streaming LLM V1 (OPTIONAL, opt-in via config.streaming.enabled): a
+        # StreamController that coordinates progressive output. When absent, streaming
+        # turns simply run through the ordinary chat() path — behavior-identical.
+        stream_controller: Optional["StreamController"] = None,
+        # Context Window Management V1 (OPTIONAL, opt-in via config.context.enabled): a
+        # ContextManager that answers "what should be supplied to the model for THIS
+        # request?" When absent (or disabled), the orchestrator keeps the legacy
+        # message assembly byte-identical. Context never breaks the assistant: ANY
+        # failure falls back to the legacy path; required-context overflow also falls
+        # back rather than silently truncating the user request.
+        context_manager: Optional["object"] = None,
     ) -> None:
         self.config = config
         self.llm = llm
@@ -110,6 +143,43 @@ class Orchestrator:
         # and enabled, a small number of relevant memories are injected into the prompt —
         # clearly separated from the live conversation context. It grants NO permissions.
         self.thread_memory = thread_memory
+        # Multi-Model Routing V1 (optional, opt-in): routes each turn to a selected
+        # model. NONE = routing disabled; orchestrator uses self.llm directly.
+        self.router = router
+        self.analyzer = analyzer
+        # Episodic Memory Integration V1 (optional): the recorder consumes the executor's
+        # terminal Experience; the retriever feeds prior experiences back as informational
+        # prompt context. Never grants permissions; never breaks the assistant.
+        self.episode_recorder = episode_recorder
+        self.episode_retriever = episode_retriever
+        self.procedure_store = procedure_store
+        # Streaming LLM V1: coordination lives here (streaming is not a second brain).
+        # This controller ONLY consumes chunks, emits events, and returns the final
+        # accumulated text — it never plans, selects models, grants permission, writes
+        # memory, or touches the GUI.
+        self.stream_controller = stream_controller
+        # Context Window Management V1 (optional): the dedicated context selection layer.
+        # It consumes session + retrieval results and produces a structured ContextPackage.
+        # Never writes to memory, never grants permission — pure selection.
+        self.context_manager = context_manager
+        # Optional live stream-event hook (bridge installs it like tool_event_callback).
+        # Events are display-only: stream_started / response_delta / stream_status /
+        # stream_completed / stream_cancelled / stream_error, correlated by request_id.
+        self.stream_event_callback: Optional[Callable[[str, dict], None]] = None
+        # Streaming LLM V1 cancellation: the stream_id the GUI may cancel while it is
+        # live. Set by _stream_one_hop before run() and cleared when the turn ends. The
+        # controller owns the actual flag; this is only a thread-safe pointer for the
+        # bridge's cancelStream -> orchestrator.cancel_stream() path.
+        self._active_stream: Optional[str] = None
+
+    def cancel_stream(self) -> bool:
+        """Request cancellation of the stream currently running, if any. Returns False
+        when no stream is active (a stream already terminated, or none started). The
+        terminal CANCELLED event is emitted by the worker thread, never here — so a
+        cancelled stream is reported as CANCELLED, never as a model that just stopped."""
+        if self.stream_controller is None or self._active_stream is None:
+            return False
+        return self.stream_controller.cancel(self._active_stream)
 
     def new_session(self) -> SessionContext:
         return SessionContext(short_term=ShortTermMemory(max_messages=self.config.memory.short_term_max_messages))
@@ -133,6 +203,42 @@ class Orchestrator:
             return self._run_compound(clauses, session)
 
         return self._handle_single(text, session)
+
+    # -- streaming (Streaming LLM V1, opt-in) -------------------------------------
+    def handle_stream(self, text: str, session: SessionContext) -> OrchestratorResponse:
+        """Same single-method entry as ``handle``, but the pure-LLM turn delivers its
+        output progressively. Fast-path tools, compound commands, and agentic tasks are
+        handled exactly as before (their replies are not raw model streams); only the
+        LLM text turn streams. When streaming is unavailable (disabled, or no
+        streaming-capable model) it falls back to the ordinary path and is honest
+        about it — never a fake stream."""
+        text = text.strip()
+        if not text:
+            return OrchestratorResponse(text="I didn't catch anything.")
+
+        # Agentic / compound / fast-path: identical to handle(); not model streams.
+        if self._is_agentic_request(text):
+            return self._handle_agentic(text, session)
+        clauses = split_compound_command(text)
+        if len(clauses) > 1:
+            return self._run_compound(clauses, session)
+        # Record the single user turn exactly like _handle_single would (handle_stream
+        # bypasses _handle_single so the LLM path can stream). Stream chunks are NOT
+        # recorded — the final accumulated text alone enters the conversation below.
+        session.turn_count += 1
+        session.short_term.add("user", text)
+        tool = self.tools.find_fast_match(text)
+        if tool is not None:
+            args = tool.extract_arguments(text)
+            if self.tool_event_callback:
+                self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
+            result = self.tools.dispatch(tool.name, **args)
+            session.last_tool_used = tool.name
+            reply = result.message
+            session.short_term.add("assistant", reply)
+            return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
+
+        return self._handle_via_llm(text, session, stream=True)
 
     # -- agentic helpers -----------------------------------------------------------
     # Substrings that mark a request as "plan this whole thing for me", as opposed to
@@ -329,12 +435,27 @@ class Orchestrator:
         logger.info("Agentic task '%s' planned as %d steps (adapted=%s)",
                     text, len(plan_dicts), adaptation_applied)
 
+        # Episodic Integration V1 — observational metadata for this task: task_type from
+        # the analyzer, model/provider from config (the agentic path executes through the
+        # primary provider; per-turn routing decides chat turns, not plan steps). Purely
+        # advisory context recorded on the Experience — it never changes execution and
+        # never authorizes anything.
+        task_meta: dict = {}
+        if self.analyzer is not None:
+            try:
+                task_meta["task_type"] = self.analyzer.analyze(text).task_type
+            except Exception:  # noqa: BLE001 — analysis failure must not break the task
+                pass
+        task_meta["model_id"] = self.config.llm.model
+        task_meta["provider"] = self.config.llm.provider
+
         # Execute the (possibly adapted) plan
         task = self.task_executor.create_task(
             goal=text,
             steps=plan_dicts,
             adaptation_applied=adaptation_applied,
             adaptation_result=adaptation_result,
+            task_meta=task_meta,
         )
 
         last_tool: Optional[str] = None
@@ -412,21 +533,95 @@ class Orchestrator:
         # ---- 2. LLM path (with tool-calling) -----------------------------------
         return self._handle_via_llm(text, session)
 
-    def _handle_via_llm(self, text: str, session: SessionContext) -> OrchestratorResponse:
-        messages = self._build_messages(session, text=text)
+    def _handle_via_llm(self, text: str, session: SessionContext, *, stream: bool = False) -> OrchestratorResponse:
         tool_schemas = self.tools.schemas()
+
+        # ---- Multi-Model Routing V1: ask the router once per turn (guarded) ----
+        routing_meta: Optional[dict] = None
+        routing_selection = None
+        if self.router is not None and self.analyzer is not None:
+            try:
+                history_tokens = sum(len(str(m.get("content", ""))) for m in session.short_term.as_messages()) // 4
+                task_profile = self.analyzer.analyze(text, context={
+                    "tools_available": bool(tool_schemas),
+                    "history_tokens": history_tokens,
+                })
+                routing_selection = self.router.route(task_profile, context={
+                    "tools_available": bool(tool_schemas),
+                    "latency_sensitive": getattr(task_profile, "latency_sensitive", False),
+                    "history_tokens": history_tokens,
+                })
+                routing_meta = routing_selection.to_metadata()
+            except Exception:  # noqa: BLE001 — routing failure must never break the assistant
+                logger.exception(
+                    "Model routing failed; falling back to primary model. text=%r",
+                    text[:80],
+                )
+                routing_selection = None
+
+        # Assemble messages AFTER routing so the ContextManager can budget against the
+        # routed model's context_window (passed as DATA). When either path is unused the
+        # selection is None and the build falls back to the default window / legacy path.
+        messages = self._build_messages(session, text=text, model_profile=routing_selection)
+
+        # ---- Streaming LLM V1: decide whether THIS turn streams ------------------
+        # Stream only when the feature is on AND (preferred, or the user explicitly
+        # asked for output as it arrives). A streaming-capable provider is resolved
+        # BEFORE any text flows (fallback-before-streaming; no mid-stream model switch).
+        # If nothing can stream, fall through to the ordinary chat() path unchanged —
+        # never a fake stream.
+        stream_provider = None
+        stream_result_meta: Optional[dict] = None
+        if stream and self._streaming_enabled():
+            stream_provider, stream_result_meta = self._resolve_stream_provider(
+                routing_selection, text, tool_schemas
+            )
 
         collected_results: list[dict] = []
         last_tool_name: Optional[str] = None
         guard = LoopGuard(LoopGuardConfig(max_turns=_MAX_TOOL_HOPS))
 
         for _hop in range(_MAX_TOOL_HOPS):
-            response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+            if stream_provider is not None:
+                response, stream_meta = self._stream_one_hop(
+                    stream_provider, messages, tool_schemas, routing_meta
+                )
+                stream_meta = stream_meta or {}
+                if stream_meta.get("terminal") == "cancelled":
+                    return self._stream_terminal_response(
+                        "cancelled", stream_meta.get("error"), collected_results,
+                        last_tool_name, routing_meta, stream_meta)
+                if stream_meta.get("terminal") == "failed":
+                    return self._stream_terminal_response(
+                        "failed", stream_meta.get("error"), collected_results,
+                        last_tool_name, routing_meta, stream_meta)
+                # completed stream: use the accumulated authoritative text
+                attest_meta = stream_meta
+            else:
+                if routing_selection is not None:
+                    try:
+                        response = routing_selection.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                    except Exception:  # noqa: BLE001 — routing execution must not break the assistant
+                        logger.exception("Routing execution failed; falling back to primary for this hop.")
+                        response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                else:
+                    response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                attest_meta = None
 
             if not response.tool_calls:
                 reply = response.content or "I'm not sure how to respond to that."
                 session.short_term.add("assistant", reply)
-                return OrchestratorResponse(text=reply, tool_used=last_tool_name, tool_results=collected_results)
+                hop_routing = routing_meta.copy() if routing_meta else None
+                if hop_routing is not None:
+                    hop_routing["succeeded"] = getattr(response, "ok", True)
+                if attest_meta:
+                    hop_routing = self._add_stream_meta(hop_routing, attest_meta)
+                return OrchestratorResponse(
+                    text=reply,
+                    tool_used=last_tool_name,
+                    tool_results=collected_results,
+                    routing=hop_routing,
+                )
 
             # Model wants to call one or more tools.
             messages.append(ChatMessage(role="assistant", content=response.content or ""))
@@ -469,7 +664,146 @@ class Orchestrator:
             r.get("message", "") for r in collected_results
         )
         session.short_term.add("assistant", fallback)
-        return OrchestratorResponse(text=fallback, tool_used=last_tool_name, tool_results=collected_results)
+        return OrchestratorResponse(
+            text=fallback,
+            tool_used=last_tool_name,
+            tool_results=collected_results,
+            routing=routing_meta,
+        )
+
+    # -- streaming helpers (Streaming LLM V1) --------------------------------------
+    def _streaming_enabled(self) -> bool:
+        cfg = self.config.streaming
+        return bool(getattr(cfg, "enabled", False)) and self.stream_controller is not None
+
+    def _user_requests_streaming(self, text: str) -> bool:
+        """Deterministic check (no routing required): did the user ask for progressive
+        output? Mirrors the analyzer's conservative vocabulary."""
+        try:
+            from veronica.llm.routing.task import TaskAnalyzer
+            return TaskAnalyzer().analyze(text, context={}).requires_streaming
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _resolve_stream_provider(self, routing_selection, text: str, tool_schemas) -> tuple:
+        """Pick the SINGLE provider that will stream, BEFORE any text flows. Streams
+        only through providers that advertise supports_streaming; never mid-stream
+        switches. Returns (provider_or_None, meta_or_None)."""
+        cfg = self.config.streaming
+        want_stream = bool(getattr(cfg, "preferred", False)) or self._user_requests_streaming(text)
+        if not want_stream:
+            return None, None
+
+        if routing_selection is not None:
+            try:
+                if (not routing_selection.satisfied
+                        and any("streaming" in g for g in routing_selection.capability_gaps)):
+                    # Router honestly reported no streaming model in the registry.
+                    return None, None
+                provider, model_id, provider_name = routing_selection.streaming_provider()
+            except Exception:  # noqa: BLE001 — a broken router must not break the turn
+                logger.exception("Streaming provider resolution failed; using non-streaming path.")
+                return None, None
+            if provider is None:
+                return None, None
+            meta = {
+                "model_id": model_id,
+                "provider": provider_name,
+                "streaming": True,
+                "routed": True,
+            }
+            return provider, meta
+
+        # No routing: stream through the primary provider when it can.
+        if getattr(self.llm, "supports_streaming", False):
+            return self.llm, {
+                "model_id": self.config.llm.model,
+                "provider": self.config.llm.provider,
+                "streaming": True,
+                "routed": False,
+            }
+        return None, None
+
+    def _stream_one_hop(self, provider, messages, tool_schemas, routing_meta):
+        """Run one streaming hop through the controller. Returns (LLMResponse, meta).
+        meta['terminal'] == 'cancelled'|'failed' means the turn must end honestly
+        (partial output is diagnostics-only, never presented as complete)."""
+        cfg = self.config.streaming
+        # Pre-create the stream id so the GUI's cancelStream -> cancel_stream() can
+        # target THIS hop while it is live (the controller refuses to cancel a stream
+        # that has already terminated, so clearing _active_stream in the finally is
+        # what makes cancel-after-end harmlessly return False).
+        sid = self.stream_controller.new_stream()
+        self._active_stream = sid
+        try:
+            result = self.stream_controller.run(
+                provider,
+                messages,
+                tools=tool_schemas,
+                temperature=self.config.llm.temperature,
+                stream_id=sid,
+                on_event=self.stream_event_callback,
+                routing=routing_meta,
+                max_response_chars=(getattr(cfg, "max_response_chars", 0) or None),
+            )
+        finally:
+            self._active_stream = None
+        meta = result.to_dict()
+        meta["terminal"] = result.status
+        meta["request_id"] = result.request_id
+
+        if result.status == "cancelled":
+            return LLMResponse(content="", ok=False), dict(meta, terminal="cancelled")
+        if result.status == "failed":
+            return LLMResponse(content="", ok=False), dict(
+                meta, terminal="failed", error=result.error or "stream failed")
+
+        # completed: accumulated text is the authoritative final answer (Phase 7).
+        tool_calls = [
+            ToolCall(
+                id=str(tc.get("id", f"call_{i}")),
+                name=str(tc.get("name", "")),
+                arguments=dict(tc.get("arguments", {}) or {}),
+            )
+            for i, tc in enumerate(result.tool_calls or [])
+        ]
+        response = LLMResponse(content=result.final_text, tool_calls=tool_calls, ok=True)
+        return response, meta
+
+    @staticmethod
+    def _add_stream_meta(hop_routing: Optional[dict], stream_meta: dict) -> Optional[dict]:
+        if hop_routing is None:
+            hop_routing = {}
+        hop_routing["streaming"] = True
+        hop_routing["stream_status"] = stream_meta.get("status")
+        hop_routing["stream_truncated"] = stream_meta.get("truncated", False)
+        hop_routing["stream_chunks"] = stream_meta.get("chunks_received", 0)
+        hop_routing["stream_duration_s"] = stream_meta.get("duration_s", 0.0)
+        hop_routing["stream_id"] = stream_meta.get("stream_id")
+        hop_routing["request_id"] = stream_meta.get("request_id")
+        return hop_routing
+
+    def _stream_terminal_response(self, kind: str, error, collected_results, last_tool_name,
+                                  routing_meta, stream_meta) -> OrchestratorResponse:
+        """A cancelled or failed stream ends the turn. The partial text was shown live
+        for diagnostics only; it is NEVER recorded as an assistant reply (Phase 19) and
+        never presented as a complete answer."""
+        if kind == "cancelled":
+            text = "Response stream cancelled."
+        else:
+            text = f"The response stream failed: {error or 'unknown error'}"
+        hop_routing = routing_meta.copy() if routing_meta else {}
+        hop_routing["streaming"] = True
+        hop_routing["stream_status"] = kind
+        hop_routing["stream_id"] = stream_meta.get("stream_id")
+        hop_routing["request_id"] = stream_meta.get("request_id")
+        logger.info("Stream turn ended (%s) — partial output retained for diagnostics only.", kind)
+        return OrchestratorResponse(
+            text=text,
+            tool_used=last_tool_name,
+            tool_results=collected_results,
+            routing=hop_routing,
+        )
 
     # -- Thread Memory (Phase 7, optional) -----------------------------------------
     def _get_thread_context(self, text: str) -> str:
@@ -515,7 +849,121 @@ class Orchestrator:
             logger.exception("Thread context retrieval failed; continuing without it.")
             return ""
 
-    def _build_messages(self, session: SessionContext, text: str = "") -> list[ChatMessage]:
+    def _get_experience_context(self, text: str) -> str:
+        """Episodic Integration V1 — retrieve prior *experiences* (outcomes of similar
+        past tasks) and return them as a clearly-labeled RETRIEVED EXPERIENCE block,
+        kept separate from the current user request, current context, and live
+        observations.
+
+        Hard rules (spec): recollected experiences are informational only — they never
+        authorize an action, and they do not describe the current state of the world.
+        Retrieval is bounded by ``episode_context_limit``; any failure degrades to "" so
+        memory can never break the assistant.
+        """
+        limit = int(getattr(self.config.memory_thread, "episode_context_limit", 0) or 0)
+        if limit <= 0 or self.thread_memory is None or not text:
+            return ""
+        try:
+            retriever = self.episode_retriever
+            if retriever is None:
+                # Lazy fallback: reuse the same Thread retrieval the package owns.
+                from veronica.memory.thread.episodes import EpisodeRetriever
+                retriever = EpisodeRetriever(self.thread_memory, default_top_k=limit)
+            picked = retriever.retrieve(text, top_k=limit)
+            return retriever.format_context(picked, limit=limit)
+        except Exception:  # noqa: BLE001 — experience context must never break the turn
+            logger.exception("Experience context retrieval failed; continuing without it.")
+            return ""
+
+    def _get_observation_context(self) -> list[dict]:
+        """Continuous Screen Perception V1 — retrieve current screen observation if the
+        observation service is running. Observation is ephemeral and NOT stored memory.
+        Any failure degrades to [] so observation can never break the turn.
+        """
+        obs_svc = getattr(self, "observation_service", None)
+        if obs_svc is None or not getattr(obs_svc, "is_running", False):
+            return []
+        try:
+            from veronica.vision.observation_context import build_observation_context
+            from veronica.vision.understanding import VisionUnderstanding
+            latest_events = obs_svc.get_recent_events(limit=1)
+            if latest_events:
+                # Use understanding from latest event
+                ev = latest_events[0]
+                u = getattr(ev, "understanding", None)
+                if u:
+                    return [{"description": build_observation_context(understanding=u), "verified": False}]
+            latest_state = obs_svc.get_latest_state()
+            if latest_state:
+                u = VisionUnderstanding(latest_state)
+                return [{"description": build_observation_context(understanding=u), "verified": False}]
+            return []
+        except Exception:  # noqa: BLE001 — observation must never break context build
+            logger.exception("Failed to retrieve observation context; continuing without it.")
+            return []
+
+    def _build_messages(self, session: SessionContext, text: str = "", model_profile=None) -> list[ChatMessage]:
+        """Build the message list for one LLM turn.
+
+        Context Window Management V1: when a ContextManager is present AND enabled, the
+        managed path selects/budgets/compresses the request context and returns its
+        assembled messages. On ANY failure (including required-context overflow) it falls
+        back to the legacy assembly below — byte-identical to pre-context-manager
+        behaviour — so context management can never break the assistant or silently
+        truncate the user request."""
+        cm = self.context_manager
+        if cm is not None and getattr(cm, "enabled", False):
+            # Lazy import: the orchestration core must not depend on the context package
+            # at import time — context failures ever being a hard import error is exactly
+            # the kind of coupling this layer is meant to avoid.
+            try:
+                from veronica.core.context_manager import ContextOverflowError
+            except Exception:  # noqa: BLE001
+                ContextOverflowError = RuntimeError
+            try:
+                package = cm.build(
+                    request=text,
+                    conversation=list(session.short_term.as_messages()),
+                    system_sections=self._context_system_sections(),
+                    model_profile=model_profile,
+                    thread_memory=self.thread_memory,
+                    episode_retriever=self.episode_retriever,
+                    tool_schemas=self.tools.schemas(),
+                    observations=self._get_observation_context(),
+                )
+            except Exception as exc:  # noqa: BLE001 — context must never break the assistant
+                package = None
+                if isinstance(exc, ContextOverflowError):
+                    logger.warning(
+                        "Context management: required context exceeds the model window; "
+                        "falling back to legacy message assembly (user request preserved)."
+                    )
+                else:
+                    logger.exception("Context management failed; using legacy assembly.")
+            if package is not None and package.messages:
+                return package.messages
+        return self._legacy_build_messages(session, text)
+
+    def _context_system_sections(self) -> list[str]:
+        """The trust/safety system blocks for the managed context path. Thread memory and
+        experience retrieval are intentionally NOT pre-formatted here — the ContextManager
+        consumes ``thread_memory``/``episode_retriever`` and frames those as labeled
+        historical items itself (one retrieval, never duplicated)."""
+        sections: list[str] = []
+        persona = self.config.assistant.persona
+        if persona:
+            sections.append(persona)
+        if self.capabilities is not None:
+            caps = self.capabilities.describe_for_prompt()
+            if caps:
+                sections.append(caps)
+        if self.task_executor is not None:
+            summary = self.task_executor.get_context_summary()
+            if summary:
+                sections.append(summary)
+        return sections
+
+    def _legacy_build_messages(self, session: SessionContext, text: str = "") -> list[ChatMessage]:
         system_prompt = self.config.assistant.persona
         if self.capabilities is not None:
             system_prompt = f"{system_prompt}\n\n{self.capabilities.describe_for_prompt()}"
@@ -529,6 +977,13 @@ class Orchestrator:
                 # Distinct section so the model can tell live conversation (short-term)
                 # from recalled fact (thread) from what just happened (experiences).
                 system_prompt = f"{system_prompt}\n\n{thread_context}"
+        if self.thread_memory is not None and text:
+            experience_context = self._get_experience_context(text)
+            if experience_context:
+                # A separate RETRIEVED EXPERIENCE section — never merged with the
+                # conversational memory block, so retention of 'what happened before'
+                # stays distinguishable from 'how things were done'.
+                system_prompt = f"{system_prompt}\n\n{experience_context}"
         messages = [ChatMessage(role="system", content=system_prompt)]
         for turn in session.short_term.as_messages():
             messages.append(ChatMessage(role=turn["role"], content=turn["content"]))

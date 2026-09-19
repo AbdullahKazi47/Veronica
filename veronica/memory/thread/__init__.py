@@ -20,6 +20,11 @@ No ChromaDB/future-backend type leaks upward from this package.
 """
 from veronica.memory.thread.consolidation import MemoryConsolidator
 from veronica.memory.thread.embeddings import EmbeddingProvider, LocalEmbeddingProvider, make_embedding_provider
+from veronica.memory.thread.episodes import (EpisodeBuilder, EpisodeRecorder, EpisodeRetriever,
+                                             EpisodeStatus, ExecutionStatus, ProcedureCandidate,
+                                             ProcedureState, ProcedureStore, VerificationStatus,
+                                             derive_episode_status, derive_execution_status,
+                                             derive_verification_status, map_task_status)
 from veronica.memory.thread.models import Episode, MemoryRecord, MemoryType, new_memory_id, now_iso
 from veronica.memory.thread.privacy import sanitize_memory_record
 from veronica.memory.thread.retrieval import RetrievalConfig, RetrievalQuery, RetrievalResult, ThreadRetriever
@@ -55,6 +60,20 @@ __all__ = [
     "validate_thread_export",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",
+    # Episodic Memory Integration V1
+    "EpisodeStatus",
+    "ExecutionStatus",
+    "VerificationStatus",
+    "EpisodeBuilder",
+    "EpisodeRecorder",
+    "EpisodeRetriever",
+    "ProcedureState",
+    "ProcedureCandidate",
+    "ProcedureStore",
+    "map_task_status",
+    "derive_execution_status",
+    "derive_verification_status",
+    "derive_episode_status",
     "now_iso",
     "new_memory_id",
 ]

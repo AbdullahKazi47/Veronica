@@ -60,6 +60,12 @@ TASK_STATUS = {
     "REPLANNING":    "replanning",     # Replanning after diagnosis
     "BLOCKED":       "blocked",        # Stopped by safety boundary or same-failure detection
     "NEEDS_REVIEW":  "needs_review",   # Requires human review/intervention
+    # Phase 9E long-running states
+    "CREATED":       "created",
+    "READY":         "ready",
+    "PAUSED":        "paused",
+    "WAITING_FOR_PERMISSION": "waiting_for_permission",
+    "RECOVERING":    "recovering",
 }
 
 # Summary sources consulted when the task is being described to a caller. Broad and
@@ -186,6 +192,7 @@ class TaskExecutor:
         *,
         adaptation_applied: bool = False,
         adaptation_result: Optional["AdaptationResult"] = None,
+        task_meta: Optional[Dict[str, Any]] = None,
     ) -> MultiStepTask:
         """Create a task from a list of step dicts and register it.
 
@@ -193,6 +200,12 @@ class TaskExecutor:
         the experience can record whether behavioral adaptation was used and how it
         affected execution.  ``adaptation_result`` is only used for audit; it is not
         mutated or retained beyond this call.
+
+        Episodic Integration V1 — ``task_meta`` carries optional observational context
+        (task_type from the analyzer, model_id/provider from the routing layer) that
+        gets attached to the Experience the same way adaptation metadata is. It is
+        *metadata* only: it never approves an action, never changes execution, and never
+        overrides the permission gate.
         """
         task_steps = []
         for s in steps:
@@ -220,6 +233,16 @@ class TaskExecutor:
                 ]
             except Exception:
                 meta.setdefault("adaptations", [])
+        # Episodic Integration V1 — observational task context (task_type / model) that
+        # flows into the Experience as metadata. Redacted at the store boundary like
+        # every other secret-bearing field; never affects execution or permissions.
+        if task_meta:
+            try:
+                for k, v in task_meta.items():
+                    if k not in meta:
+                        meta[k] = v
+            except Exception:
+                logger.warning("task_meta could not be attached; ignoring.")
         task._adaptation_meta = meta
         with self._lock:
             self.tasks[task.task_id] = task
@@ -396,6 +419,15 @@ class TaskExecutor:
         adaptation_applied = bool(meta.get("adaptation_applied", False))
         task_succeeded = task.status == TASK_STATUS["COMPLETED"]
 
+        # Episodic Integration V1 — observational metadata attached by the orchestrator
+        # (task_type / model / provider / routing_role). Plain strings; consumed by the
+        # EpisodeBuilder and redacted at every persistence boundary.
+        exp_metadata: Dict[str, Any] = {"result_summary": task.result_summary}
+        for _k in ("task_type", "model_id", "provider", "routing_role"):
+            _v = meta.get(_k)
+            if _v:
+                exp_metadata[_k] = str(_v)
+
         return Experience(
             goal=task.goal,
             outcome=outcome,
@@ -416,7 +448,7 @@ class TaskExecutor:
             failure_reason=failed_step.error if failed_step else "",
             context={"total_steps": len(steps), "current_step": task.current_step,
                      "started": bool(task.started_time)},
-            metadata={"result_summary": task.result_summary},
+            metadata=exp_metadata,
             # Phase 4 — adaptation audit trail
             original_plan=meta.get("original_plan"),
             adaptations=meta.get("adaptations", []),

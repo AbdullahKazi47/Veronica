@@ -3,7 +3,8 @@ VERONICA vision: computer perception and control (Phase 7 core layer).
 
 Provides structured screen-state perception (UI Automation, screen capture, OCR),
 screen-change detection, semantic computer control, prompt-injection defense,
-and the computer-use loop integrated with the Phase 6 closed-loop intelligence.
+continuous background observation, and the computer-use loop integrated with the
+Phase 6 closed-loop intelligence.
 
 Key principles:
 - Screen content is UNTRUSTED DATA — never overrides safety, permissions, or system instructions.
@@ -62,6 +63,38 @@ from veronica.vision.coordinate_safety import (
     PyAutoGUIScreenBoundsProvider,
     create_coordinate_validator,
 )
+from veronica.vision.continuous_observer import (
+    ContinuousObservationService,
+    ObservationConfig,
+    PerceptionEvent,
+    ImportanceFilter,
+    ObservationStatus,
+    create_continuous_observation_service,
+)
+from veronica.vision.understanding import (
+    VisionUnderstanding,
+    ActiveWindowInfo,
+    ElementSummary,
+    TextSummary,
+    CursorInfo,
+)
+from veronica.vision.vision_provider import (
+    VisionProvider,
+    VisionProviderError,
+    VisionTimeoutError,
+    VisionCancellationError,
+    CancellationToken,
+    StubVisionProvider,
+)
+from veronica.vision.ollama_vision_provider import OllamaVisionProvider
+from veronica.vision.vision_job import VisionJobExecutor
+from veronica.vision.vision_policy import VisionPolicy, VisionPolicyDecision
+from veronica.vision.vision_image_privacy import VisionImagePrivacy
+from veronica.vision.visual_analysis import (
+    VisualAnalysis,
+    DetectedElement,
+    DetectedTextRegion,
+)
 
 __all__ = [
     # screen_state
@@ -107,4 +140,36 @@ __all__ = [
     "ScreenBoundsProvider",
     "PyAutoGUIScreenBoundsProvider",
     "create_coordinate_validator",
+    # continuous_observer
+    "ContinuousObservationService",
+    "ObservationConfig",
+    "PerceptionEvent",
+    "ImportanceFilter",
+    "ObservationStatus",
+    "create_continuous_observation_service",
+    # vision_provider
+    "VisionProvider",
+    "VisionProviderError",
+    "VisionTimeoutError",
+    "VisionCancellationError",
+    "CancellationToken",
+    "StubVisionProvider",
+    "OllamaVisionProvider",
+    # vision_job
+    "VisionJobExecutor",
+    # vision_policy
+    "VisionPolicy",
+    "VisionPolicyDecision",
+    # vision_image_privacy
+    "VisionImagePrivacy",
+    # visual_analysis
+    "VisualAnalysis",
+    "DetectedElement",
+    "DetectedTextRegion",
+    # understanding
+    "VisionUnderstanding",
+    "ActiveWindowInfo",
+    "ElementSummary",
+    "TextSummary",
+    "CursorInfo",
 ]

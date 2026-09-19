@@ -32,10 +32,33 @@ class LLMResponse:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: Any = None
+    # Machine-readable success flag. Providers set ok=False when they had to fall
+    # back to an error-message response (endpoint unreachable, missing key, ...).
+    # Defaults True so existing callers/tests treat every old response as successful;
+    # the model router needs it to avoid reporting "task succeeded" when the selected
+    # model actually failed. Added for Multi-Model Routing V1.
+    ok: bool = True
+
+
+@dataclass
+class StreamChunk:
+    """One incremental piece of streamed LLM output. Provider-neutral — never
+    carries provider-specific structures, secrets, or raw HTTP payloads."""
+    text: str = ""
+    role: str = "assistant"  # "assistant" only for text-delays; "tool" reserved (arch-ready)
+    sequence: int = 0
+    finish_reason: Optional[str] = None  # None = continuing; "stop"/"length"/"tool_calls" = terminal
+    done: bool = False
+    metadata: dict = field(default_factory=dict)
 
 
 class LLMProvider(ABC):
     name: str = "base"
+    # Whether the provider can deliver PROGRESSIVE chunks (StreamChunk deltas via
+    # chat_stream). Mirrors CAP_STREAMING on routing profiles. The base default of
+    # False drives the non-streaming single-chunk fallback; real streaming providers
+    # set True.
+    supports_streaming: bool = False
 
     @abstractmethod
     def chat(
@@ -49,6 +72,20 @@ class LLMProvider(ABC):
         surface that via a clear LLMResponse.content explaining the failure so the
         orchestrator can degrade gracefully (e.g. 'the local model isn't reachable')."""
         raise NotImplementedError
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        tools: Optional[list[dict]] = None,
+        temperature: float = 0.4,
+    ):
+        """Yield ``StreamChunk`` objects as output arrives. Default = non-streaming
+        providers degrade to a single finished chunk; implementations that truly
+        stream (Ollama NDJSON, OpenAI-compatible SSE) override this. Never raises for
+        expected connectivity failures — the error surfaces as a chunk with
+        ``done=True`` and ``finish_reason="error"``."""
+        yield StreamChunk(text=self.chat(messages, tools=tools, temperature=temperature).content,
+                          sequence=0, finish_reason="stop", done=True)
 
     def is_available(self) -> bool:
         """Cheap reachability check, used at startup to warn the user instead of

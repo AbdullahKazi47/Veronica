@@ -126,6 +126,30 @@ class StitchCommandHandler:
         if orchestrator.tool_event_callback is None:
             orchestrator.tool_event_callback = self._on_tool_event
 
+        # Streaming LLM V1 (optional display-only bridge): forward the orchestrator's
+        # stream lifecycle/delta events to the GUI verbatim. The GUI only *paints* them;
+        # the orchestrator + StreamController remain the single source of truth.
+        self._stream_completed_emitted = False   # a stream turn actually completed
+        self._stream_terminal_only = False       # cancelled/failed: no final ultron publish
+        if orchestrator.stream_event_callback is None:
+            orchestrator.stream_event_callback = self._on_stream_event
+
+        # Episodic Memory Integration V1 (optional): when the orchestrator built an
+        # episode recorder/retriever/procedure-store (Thread enabled), attach the same
+        # event handler so the GUI can display episode lifecycle signals. The GUI only
+        # *displays* them — it never owns or mutates memory logic (spec Phase 24).
+        for _ep_attr in ("episode_recorder", "episode_retriever", "procedure_store"):
+            _ep = getattr(orchestrator, _ep_attr, None)
+            if _ep is not None and getattr(_ep, "event_callback", None) is None:
+                _ep.event_callback = self._on_episode_event
+
+        # Continuous Screen Perception V1 (optional): attach event callback to the
+        # observation service so GUI receives observation_frame, observation_error,
+        # observation_status_changed events. The GUI only *displays* them.
+        obs_service = getattr(orchestrator, "observation_service", None)
+        if obs_service is not None and getattr(obs_service, "event_callback", None) is None:
+            obs_service.event_callback = self._on_observation_event
+
     def _default_executor(self):
         from veronica.automation.task_executor import TaskExecutor
         executor = TaskExecutor(self.orchestrator.tools, tool_event_callback=self._on_tool_event)
@@ -134,6 +158,32 @@ class StitchCommandHandler:
     # -- live tool activity -------------------------------------------------------
     def _on_tool_event(self, text: str) -> None:
         self.broadcast.publish("show_tool_activity", [text])
+
+    # -- streaming LLM V1 (display-only) --------------------------------------
+    def _on_stream_event(self, signal: str, args: dict) -> None:
+        # Lifecycle vocabulary from veronica.llm.streaming: stream_started /
+        # response_delta / stream_status / stream_completed / stream_cancelled /
+        # stream_error. Published verbatim; the GUI only renders.
+        if signal == "stream_completed":
+            self._stream_completed_emitted = True
+        elif signal in ("stream_cancelled", "stream_error"):
+            self._stream_terminal_only = True
+        self.broadcast.publish(signal, [dict(args)])
+
+    # -- episodic memory lifecycle (display-only; never owns memory logic) ------
+    def _on_episode_event(self, signal: str, args: dict) -> None:
+        self.broadcast.publish(signal, [dict(args)])
+
+    # -- continuous observation lifecycle (display-only) ------------------------
+    def _on_observation_event(self, signal: str, args: dict) -> None:
+        """Bridge continuous observation events to SSE for the Stitch GUI.
+
+        Maps observation service signals:
+          observation_frame           → observation_frame           (SSE)
+          observation_error           → observation_error           (SSE)
+          observation_status_changed  → observation_status_changed  (SSE)
+        """
+        self.broadcast.publish(signal, [dict(args)])
 
     # -- method surface -------------------------------------------------------------
     def handle(self, method: str, args: Optional[list] = None) -> dict[str, Any]:
@@ -163,12 +213,28 @@ class StitchCommandHandler:
             if method == "cancelTask":
                 cancelled = self.task_executor.cancel_task(str(args[0]) if args else "")
                 return {"ok": cancelled, "error": None if cancelled else "Task not found or not running."}
+            if method == "cancelStream":
+                # Streaming LLM V1: request cancellation of the live response stream.
+                # Honest terminal CANCELLED is emitted by the stream worker — this never
+                # pretends the model stopped by itself.
+                return {"ok": self.orchestrator.cancel_stream()}
             if method == "requestScreenState":
                 return self._screen_state()
             if method == "executeComputerAction":
                 return self._execute_computer_action(dict(args[0]) if args else {})
             if method == "cancelComputerAction":
                 return self._cancel_computer_action()
+            # -- Continuous Screen Perception V1 (observation control) -------------------
+            if method == "requestObservationStatus":
+                return self._observation_status()
+            if method == "startObservation":
+                return self._start_observation()
+            if method == "stopObservation":
+                return self._stop_observation()
+            if method == "pauseObservation":
+                return self._pause_observation()
+            if method == "resumeObservation":
+                return self._resume_observation()
             return {"ok": False, "error": f"Unknown method: {method}"}
         except Exception as e:  # noqa: BLE001 — the page must never see a 500 for a command
             logger.exception("Stitch method '%s' failed", method)
@@ -184,13 +250,28 @@ class StitchCommandHandler:
         return {"ok": True}
 
     def _run_command(self, text: str) -> None:
+        # Streaming LLM V1: every GUI command goes through handle_stream (the opt-in
+        # coordinated stream). When streaming is disabled — or the turn isn't a pure
+        # LLM stream (fast-path tool, compound, agentic) — it returns the ordinary
+        # response with NO stream events, so the rest of this method is untouched.
+        self._stream_completed_emitted = False
+        self._stream_terminal_only = False
         self.broadcast.publish("set_core_state", ["thinking"])
         try:
-            response = self.orchestrator.handle(text, self.session)
+            response = self.orchestrator.handle_stream(text, self.session)
         except Exception as e:  # noqa: BLE001
-            logger.exception("Orchestrator.handle raised")
-            self.broadcast.publish("set_core_state", ["error"])
-            self.broadcast.publish("show_error", [f"Command failed: {e}"])
+            logger.exception("Orchestrator.handle_stream raised")
+            if not self._stream_terminal_only:
+                self.broadcast.publish("set_core_state", ["error"])
+                self.broadcast.publish("show_error", [f"Command failed: {e}"])
+            return
+        # A completed stream already delivered its final text via stream_completed;
+        # a cancelled/failed stream ended honestly via its terminal event — never
+        # duplicate the final reply or present partial output as a complete answer.
+        if self._stream_completed_emitted or self._stream_terminal_only:
+            if response.tool_used:
+                self.broadcast.publish("set_system_status", [f"LAST TOOL: {response.tool_used}"])
+            self.broadcast.publish("set_core_state", ["idle"])
             return
         self.broadcast.publish("show_ultron_message", [response.text, "success"])
         if response.tool_used:
@@ -401,6 +482,66 @@ class StitchCommandHandler:
         """Cancel any in-flight computer action."""
         self.computer_use_loop.cancel()
         return {"ok": True}
+
+    # -- Continuous Screen Perception V1 (observation control) ------------------------
+    def _observation_status(self) -> dict[str, Any]:
+        """Get the status of the continuous observation service."""
+        obs_service = getattr(self.orchestrator, "observation_service", None)
+        if obs_service is None:
+            return {"ok": False, "error": "Observation service not available (disabled or failed to start)."}
+        try:
+            return {"ok": True, "status": obs_service.get_status()}
+        except Exception as e:
+            logger.exception("Failed to get observation status")
+            return {"ok": False, "error": str(e)}
+
+    def _start_observation(self) -> dict[str, Any]:
+        """Start the continuous observation service."""
+        obs_service = getattr(self.orchestrator, "observation_service", None)
+        if obs_service is None:
+            return {"ok": False, "error": "Observation service not available (disabled or failed to start)."}
+        try:
+            success = obs_service.start()
+            return {"ok": success, "error": None if success else "Failed to start observation service."}
+        except Exception as e:
+            logger.exception("Failed to start observation")
+            return {"ok": False, "error": str(e)}
+
+    def _stop_observation(self) -> dict[str, Any]:
+        """Stop the continuous observation service."""
+        obs_service = getattr(self.orchestrator, "observation_service", None)
+        if obs_service is None:
+            return {"ok": False, "error": "Observation service not available."}
+        try:
+            success = obs_service.stop()
+            return {"ok": success, "error": None if success else "Failed to stop observation service."}
+        except Exception as e:
+            logger.exception("Failed to stop observation")
+            return {"ok": False, "error": str(e)}
+
+    def _pause_observation(self) -> dict[str, Any]:
+        """Pause the continuous observation service."""
+        obs_service = getattr(self.orchestrator, "observation_service", None)
+        if obs_service is None:
+            return {"ok": False, "error": "Observation service not available."}
+        try:
+            success = obs_service.pause()
+            return {"ok": success, "error": None if success else "Failed to pause observation service."}
+        except Exception as e:
+            logger.exception("Failed to pause observation")
+            return {"ok": False, "error": str(e)}
+
+    def _resume_observation(self) -> dict[str, Any]:
+        """Resume the continuous observation service."""
+        obs_service = getattr(self.orchestrator, "observation_service", None)
+        if obs_service is None:
+            return {"ok": False, "error": "Observation service not available."}
+        try:
+            success = obs_service.resume()
+            return {"ok": success, "error": None if success else "Failed to resume observation service."}
+        except Exception as e:
+            logger.exception("Failed to resume observation")
+            return {"ok": False, "error": str(e)}
 
     def _on_computer_use_event(self, signal: str, args: dict) -> None:
         """Bridge computer-use loop events to SSE for the Stitch GUI.

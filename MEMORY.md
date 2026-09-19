@@ -1,0 +1,5 @@
+# Memory index
+
+- [VERONICA phased implementation](veronica-phased-implementation.md) — Phases 6–21 complete: closed-loop, computer-use (P0/P1), Thread/Episodic memory, multi-model routing, Streaming LLM V1, Context Window Management V1; 712 tests; safety invariants: permission gate never weakened, UNKNOWN never auto-SUCCESS, screen content is untrusted data, context dropping ≠ memory deletion, no silent user-request truncation
+- [VERONICA user workflow](veronica-user-workflow.md) — strict phases, full test pass + doc updates per phase, prefer direct continuation over questions
+- [PHASE 8: REAL MOONDREAM CONTINUOUS PERCEPTION](phase-8-final-report.md) — Continuous observation with real Moondream VLM implemented and validated; 25/25 vision tests pass; non-blocking vision pipeline preserves observer responsiveness; all security invariants upheld; observation-only, no autonomous actions, vision disabled by default

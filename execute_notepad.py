@@ -191,7 +191,7 @@ focused_on_editor = (signals["name_match"] or signals["edit_type"]) and signals[
 print("\n" + "=" * 70)
 print("TEST 3 — SINGLE CONTROLLED CLICK: FINAL REPORT")
 print("=" * 70)
-print(f"  1. Target identified:       YES — '{state['notepad']['name']}' (class=Notepad) → 'Text editor' (RichEditD2DPT, Edit)")
+print(f"  1. Target identified:       YES - '{state['notepad']['name']}' (class=Notepad) -> 'Text editor' (RichEditD2DPT, Edit)")
 print(f"  2. UIA rectangle:           {editor_bb}")
 print(f"  3. Validation:              VALID (center ({tx},{ty}) within live virtual desktop)")
 print(f"  4. Permission:              MODERATE — APPROVED via explicit user confirmation")

@@ -172,6 +172,27 @@ class Episode:
     # Optional identity when the episode came from an Experience record.
     linked_experience_id: str = ""
 
+    # -- Episodic Memory Integration V1 (all optional, backward compatible) -------
+    # ``episode_status`` is the authoritative outcome (EpisodeStatus vocabulary:
+    # success / failed / blocked / cancelled / unknown). ``execution_status`` and
+    # ``verification_status`` preserve the EXECUTED vs VERIFIED distinction — an action
+    # that ran but could not be verified is recorded honestly as execution=executed,
+    # verification=unknown (NEVER promoted to success).
+    episode_id: str = field(default_factory=new_memory_id)
+    episode_status: str = ""            # EpisodeStatus value
+    execution_status: str = ""          # executed | not_executed | partial | unknown | ""
+    verification_status: str = ""       # verified | failed | unknown | not_applicable | ""
+    task_type: str = ""                 # GENERAL / CHAT / CODING / ... (TaskAnalyzer vocab)
+    plan_summary: str = ""              # compressed plan (never the full runtime plan)
+    observations: list[str] = field(default_factory=list)
+    verification_results: list[dict] = field(default_factory=list)   # per-action verification
+    failures: list[dict] = field(default_factory=list)               # failed actions + category
+    recoveries: list[dict] = field(default_factory=list)             # recovery attempts + results
+    model_id: str = ""
+    provider: str = ""
+    routing_role: str = ""
+    started_at: str = ""                # ISO start (empty => same as timestamp)
+
     def to_memory_records(self, *, importance: float = 0.6, confidence: float = 0.7) -> list[MemoryRecord]:
         """Project this episode into persistable MemoryRecords:
           - one EXPERIENCE record describing the whole episode
@@ -187,6 +208,25 @@ class Episode:
         }
         if self.linked_experience_id:
             base_meta["experience_id"] = self.linked_experience_id
+
+        # Episodic Integration V1: persist the authoritative status vocabulary so future
+        # retrieval can rank by outcome ("last time UIA failed, visual fallback worked")
+        # without storing raw runtime objects. Unknown stays unknown — never inferred.
+        for key, val in (
+            ("episode_status", self.episode_status),
+            ("execution_status", self.execution_status),
+            ("verification_status", self.verification_status),
+            ("task_type", self.task_type),
+            ("model_id", self.model_id),
+            ("provider", self.provider),
+            ("routing_role", self.routing_role),
+        ):
+            if val:
+                base_meta[key] = val
+        if self.failures:
+            base_meta["failure_categories"] = [f.get("category") for f in self.failures if f.get("category")]
+        if self.recoveries:
+            base_meta["recovery_count"] = len(self.recoveries)
 
         # 1. The episode's own record.
         summary = self.goal or "Untitled episode"
@@ -250,6 +290,20 @@ class Episode:
             "project": self.project,
             "metadata": self.metadata,
             "linked_experience_id": self.linked_experience_id,
+            "episode_id": self.episode_id,
+            "episode_status": self.episode_status,
+            "execution_status": self.execution_status,
+            "verification_status": self.verification_status,
+            "task_type": self.task_type,
+            "plan_summary": self.plan_summary,
+            "observations": list(self.observations),
+            "verification_results": self.verification_results,
+            "failures": self.failures,
+            "recoveries": self.recoveries,
+            "model_id": self.model_id,
+            "provider": self.provider,
+            "routing_role": self.routing_role,
+            "started_at": self.started_at,
         }
 
     @classmethod
@@ -269,6 +323,20 @@ class Episode:
             project=str(data.get("project", "") or ""),
             metadata=dict(data.get("metadata", {}) or {}),
             linked_experience_id=str(data.get("linked_experience_id", "") or ""),
+            episode_id=str(data.get("episode_id") or new_memory_id()),
+            episode_status=str(data.get("episode_status", "") or ""),
+            execution_status=str(data.get("execution_status", "") or ""),
+            verification_status=str(data.get("verification_status", "") or ""),
+            task_type=str(data.get("task_type", "") or ""),
+            plan_summary=str(data.get("plan_summary", "") or ""),
+            observations=list(data.get("observations", []) or []),
+            verification_results=list(data.get("verification_results", []) or []),
+            failures=list(data.get("failures", []) or []),
+            recoveries=list(data.get("recoveries", []) or []),
+            model_id=str(data.get("model_id", "") or ""),
+            provider=str(data.get("provider", "") or ""),
+            routing_role=str(data.get("routing_role", "") or ""),
+            started_at=str(data.get("started_at", "") or ""),
         )
 
 

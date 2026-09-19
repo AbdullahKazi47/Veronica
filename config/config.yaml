@@ -22,6 +22,31 @@ llm:
   max_history_turns: 12
   request_timeout_s: 60
 
+# Multi-Model Routing V1 (Phase 9) — OPT-IN, off by default. When enabled, a TaskAnalyzer
+# classifies each request and a ModelRouter picks the best configured model (fast /
+# reasoning / coding / vision / general) instead of always using llm.* above. Disabled,
+# behavior is byte-identical to the single-model path. Omit `models` to register the
+# global llm.* model as the single routed default. See docs/MODEL_ROUTING.md.
+# routing:
+#   enabled: true
+#   fallback_enabled: true
+#   fallback_on_empty_response: true
+#   max_fallback_attempts: 2
+#   health_ttl_s: 30
+#   log_routing_decisions: true
+#   models:
+#     - model_id: "llama3.1:8b"
+#       provider: "ollama"
+#       role: "fast"
+#       default: true
+#     - model_id: "qwen2.5-coder:7b"
+#       provider: "ollama"
+#       role: "coding"
+#       task_types: ["coding", "reasoning"]
+#     - model_id: "gemma2:9b"
+#       provider: "ollama"
+#       role: "reasoning"
+
 stt:
   # "google_free" (default; free, needs internet) uses SpeechRecognition's Microphone,
   # which needs PyAudio — an *optional* install (VERONICA installs no mic package by
@@ -57,6 +82,56 @@ safety:
   # trust the fast-path commands you use daily (see docs/GETTING_STARTED.md).
   require_confirmation_above: "SAFE"       # SAFE | MODERATE | SENSITIVE | CRITICAL
   dry_run: false
+
+# Streaming LLM V1 (opt-in, off by default). Enables progressive output for the LLM
+# turn via provider-specific streaming endpoints (Ollama NDJSON, OpenAI-compatible SSE,
+# etc.). When disabled or no streaming-capable model is available, VERONICA falls back
+# to the classic chat() path and is honest about it — never a fake stream.
+streaming:
+  enabled: false               # master switch (config.streaming.enabled)
+  preferred: false             # stream on every turn the model supports (False = stream only when user asks)
+  max_response_chars: 8192     # accumulator cap (0 = uncapped); explicit truncated=True at the cap
+  max_buffer_chars: 1024       # emit-buffer cap between deltas (never changes final text)
+  coalesce_ms: 60              # minimum interval between delta events (0 = per-chunk)
+  first_token_timeout_s: 30.0  # nothing received within this -> FAILED timeout
+  idle_timeout_s: 60.0         # silence between deltas -> FAILED timeout
+  overall_timeout_s: 300.0     # hard ceiling on one streaming turn
+
+# Context Window Management V1 (opt-in, off by default). The dedicated context layer
+# answers "what should be supplied to the model for THIS request?" — structured
+# selection, per-source token budgets, scoring, and status-preserving compression.
+# Disabled, the orchestrator keeps its legacy message assembly byte-identical.
+# See docs/CONTEXT_WINDOW.md.
+# context:
+#   enabled: true                      # master switch
+#   default_context_window: 8192       # used when the routed model declares no window
+#   compression_enabled: true          # drop lowest-value, then summarize, status-preserving
+#   max_context_items: 64              # hard ceiling on selected items per request
+#   inline_tools_in_prompt: false      # true = tool schemas budgeted into the prompt body
+#   output_reserve: 1024               # tokens reserved for the model's reply
+#   safety_reserve: 256                # tokens kept free to guarantee the safety block
+#   budget_system: 2000                # per-source token budgets (input window split)
+#   budget_conversation: 3000
+#   budget_memory: 1200
+#   budget_tools: 1500
+#   budget_observation: 800
+#   safety_instruction: ""             # optional extra hard boundary text (required, never compressed)
+
+# Continuous Screen Perception V1 (opt-in, off by default). The ContinuousObservationService
+# maintains continuous desktop understanding via background observation (UIA, screen capture,
+# OCR) with change detection, importance filtering, and event-driven SSE updates for the GUI.
+# Observation ONLY — no autonomous actions. See docs/CONTINUOUS_OBSERVATION.md.
+# observation:
+#   enabled: true                       # master switch
+#   interval_seconds: 2.0               # capture interval (seconds)
+#   change_strategy: "ACTIVE"           # IDLE | ACTIVE | WAITING | ACTION | ERROR
+#   max_queue_size: 50                  # internal frame queue (backpressure)
+#   max_recent_events: 100              # in-memory event history for GUI/history
+#   task_aware_enabled: true            # bias importance toward task-relevant windows
+#   screen_capture_enabled: true        # enable screen capture provider
+#   uia_enabled: true                   # enable UI Automation provider
+#   ocr_enabled: false                  # enable OCR provider (heavy; opt-in)
+#   graceful_degradation: true          # continue on provider failures
 
 learning:
   # Experience-based learning v1: records task outcomes (what worked / what failed),
