@@ -96,6 +96,16 @@ from veronica.vision.visual_analysis import (
     DetectedTextRegion,
 )
 
+from veronica.vision.autonomous_workflow import (
+    AutonomousWorkflow,
+    WorkflowStep,
+    WorkflowStatus,
+    StepStatus,
+    execute_workflow,
+    run_step,
+    handle_recovery,
+)
+
 __all__ = [
     # screen_state
     "ScreenState",
@@ -172,4 +182,12 @@ __all__ = [
     "ElementSummary",
     "TextSummary",
     "CursorInfo",
+    # autonomous_workflow (Phase 10E)
+    "AutonomousWorkflow",
+    "WorkflowStep",
+    "WorkflowStatus",
+    "StepStatus",
+    "execute_workflow",
+    "run_step",
+    "handle_recovery",
 ]

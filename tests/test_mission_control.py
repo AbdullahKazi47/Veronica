@@ -10,6 +10,7 @@ No 9A–9E source modifications.
 from __future__ import annotations
 import time
 import pytest
+from unittest.mock import MagicMock
 
 from veronica.mission import (
     Mission,
@@ -20,6 +21,30 @@ from veronica.mission import (
     MissionSupervisor,
     MissionPlanner,
 )
+from veronica.automation.long_running_task import LongRunningTaskManager
+from veronica.automation.task_executor import TaskExecutor
+from veronica.tools.registry import ToolRegistry
+from veronica.safety.permissions import PermissionGate, PermissionLevel, PermissionDecision
+
+# Test helper classes (matching test_long_running_tasks.py pattern)
+class FakeToolRegistry:
+    def __init__(self, tool_responses=None):
+        self.tool_responses = tool_responses or {}
+        self.dispatch_calls = []
+
+    def dispatch(self, tool_name, **kwargs):
+        self.dispatch_calls.append((tool_name, kwargs))
+        from unittest.mock import MagicMock
+        resp = self.tool_responses.get(tool_name, MagicMock(success=True, result="ok"))
+        return resp
+
+
+class FakeEventCallback:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, signal, args):
+        self.calls.append((signal, args))
 
 
 # ------------------------------------------------------------------
@@ -89,7 +114,8 @@ def test_task_dependencies_block_execution():
     m.add_task(MissionTask("a", "first"))
     m.add_task(MissionTask("b", "second", dependencies=["a"]))
     # Before any completed, a is ready (no deps)
-    sup = MissionSupervisor(m)
+    manager = LongRunningTaskManager()
+    sup = MissionSupervisor(m, manager)
     m.set_status(MissionStatus.RUNNING)
     ready = sup.select_ready_task()
     # First task should be selectable
@@ -126,7 +152,9 @@ def test_supervisor_cycle_blocks():
     m.set_status(MissionStatus.PLANNING)
     m.set_status(MissionStatus.READY)
     m.set_status(MissionStatus.RUNNING)
-    sup = MissionSupervisor(m)
+    executor = TaskExecutor(FakeToolRegistry())
+    manager = LongRunningTaskManager(executor)
+    sup = MissionSupervisor(m, manager)
     result = sup.run_cycle()
     assert result["action"] == "blocked"
     assert "cycle" in result["reason"].lower()
@@ -138,7 +166,9 @@ def test_supervisor_delegates_ready_task():
     m.set_status(MissionStatus.PLANNING)
     m.set_status(MissionStatus.READY)
     m.set_status(MissionStatus.RUNNING)
-    sup = MissionSupervisor(m)
+    executor = TaskExecutor(FakeToolRegistry())
+    manager = LongRunningTaskManager(executor)
+    sup = MissionSupervisor(m, manager)
     result = sup.run_cycle()
     assert result["action"] == "delegate"
     assert result["task_id"] == "t1"
@@ -272,7 +302,9 @@ def test_cyclic_mission_not_run():
     m.add_task(MissionTask("b", "b", dependencies=["a"]))
     assert m.has_cycle() is True
     # Supervisor should block, not proceed
-    sup = MissionSupervisor(m)
+    executor = TaskExecutor(FakeToolRegistry())
+    manager = LongRunningTaskManager(executor)
+    sup = MissionSupervisor(m, manager)
     # Even if forced to running, cycle blocks
     m.set_status(MissionStatus.PLANNING)
     m.set_status(MissionStatus.READY)

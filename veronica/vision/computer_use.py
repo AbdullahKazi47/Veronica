@@ -57,6 +57,28 @@ from veronica.vision.target_verification import (
 logger = get_logger("vision.computer_use")
 
 
+class ExecutionAuthorization:
+    """Explicit authorization context for ComputerUseLoop.
+
+    Authorized modes (traceable to current proposal + policy, never vision/screen):
+    - POLICY_AUTO: AutonomyPolicy approved AUTO_APPROVED for this proposal.
+    - HUMAN_APPROVED: PermissionGate explicitly approved (CONFIRM path).
+    Un authorized (default): loop must require permission.
+    """
+    def __init__(
+        self,
+        mode: str = "UNAUTHORIZED",
+        proposal_id: Optional[str] = None,
+        policy_version: Optional[str] = None,
+    ):
+        self.mode = mode  # POLICY_AUTO / HUMAN_APPROVED / UNAUTHORIZED
+        self.proposal_id = proposal_id
+        self.policy_version = policy_version
+
+    def is_authorized(self) -> bool:
+        return self.mode in ("POLICY_AUTO", "HUMAN_APPROVED")
+
+
 class LoopPhase(str, Enum):
     """Phases of the computer-use loop."""
     OBSERVE = "observe"
@@ -199,11 +221,24 @@ class ComputerUseLoop:
     # Execute action (main entry point)
     # ------------------------------------------------------------------
 
+    @property
+    def authorization(self) -> Optional[ExecutionAuthorization]:
+        return getattr(self, "_authorization", None)
+
+    @authorization.setter
+    def authorization(self, auth: Optional[ExecutionAuthorization]) -> None:
+        self._authorization = auth
+        # Audit log: authorization bound to proposal (not vision/screen)
+        if auth is not None:
+            logger.info("Loop authorization set: mode=%s proposal=%s",
+                        auth.mode, auth.proposal_id)
+
     def execute_action(
         self,
         action: ComputerAction,
         verify_change: bool = True,
         verification_strategy: ChangeStrategy = ChangeStrategy.ACTION,
+        authorization: Optional[ExecutionAuthorization] = None,
     ) -> LoopResult:
         """Execute a single computer action through the full loop.
 
@@ -263,29 +298,55 @@ class ComputerUseLoop:
                 "action_selected": action.action_type,
             })
 
-            # Phase 4: PERMISSION - Check if action is allowed
-            self._emit_event("action_permission_check", {"action": action.to_dict()})
-            permission_result = self._check_permission(action)
-            if not permission_result[0]:
-                return LoopResult(
-                    success=False,
-                    phase_reached=LoopPhase.PERMISSION,
-                    action_performed=action,
-                    initial_state=initial_state,
-                    verification=VerificationResult(
-                        status=ActionVerificationStatus.BLOCKED,
-                        confidence=0.0,
-                        executed=False,
-                        reasons=["permission denied before execution"],
-                    ),
-                    error=f"Permission denied: {permission_result[1]}",
-                    observations=observations,
-                )
-            observations.append({
-                "phase": "permission",
-                "timestamp": time.time(),
-                "allowed": True,
-            })
+            # Phase 4: PERMISSION - Consume authorization context
+            auth = authorization or getattr(self, "_authorization", None)
+            if auth is not None and auth.is_authorized():
+                if auth.proposal_id is None:
+                    return LoopResult(
+                        success=False,
+                        phase_reached=LoopPhase.PERMISSION,
+                        action_performed=action,
+                        initial_state=initial_state,
+                        verification=VerificationResult(
+                            status=ActionVerificationStatus.BLOCKED,
+                            confidence=0.0,
+                            executed=False,
+                            reasons=["authorization missing proposal binding"],
+                        ),
+                        error="Authorization missing proposal binding",
+                        observations=observations,
+                    )
+                observations.append({
+                    "phase": "permission",
+                    "timestamp": time.time(),
+                    "allowed": True,
+                    "authorization_mode": auth.mode,
+                    "proposal_id": auth.proposal_id,
+                    "policy_version": auth.policy_version,
+                })
+            else:
+                self._emit_event("action_permission_check", {"action": action.to_dict()})
+                permission_result = self._check_permission(action)
+                if not permission_result[0]:
+                    return LoopResult(
+                        success=False,
+                        phase_reached=LoopPhase.PERMISSION,
+                        action_performed=action,
+                        initial_state=initial_state,
+                        verification=VerificationResult(
+                            status=ActionVerificationStatus.BLOCKED,
+                            confidence=0.0,
+                            executed=False,
+                            reasons=["permission denied before execution"],
+                        ),
+                        error=f"Permission denied: {permission_result[1]}",
+                        observations=observations,
+                    )
+                observations.append({
+                    "phase": "permission",
+                    "timestamp": time.time(),
+                    "allowed": True,
+                })
 
             # Phase 5: EXECUTE - Perform the action
             # P1: capture target reference from the pre-action state BEFORE any

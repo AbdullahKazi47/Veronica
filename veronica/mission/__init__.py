@@ -13,6 +13,10 @@ Safety invariants preserved: PermissionGate sole authority; checkpoints
 are state not authorization; resume requires fresh verification; UNKNOWN
 never auto-SUCCESS; budgets never bypassed; no destructive real-world
 execution in autonomous mode.
+
+Phase 10A: MissionSupervisor now integrates with LongRunningTaskManager
+for actual execution delegation. The supervisor receives the LongRunningTaskManager
+as a dependency and uses it to create and execute long-running tasks.
 """
 from __future__ import annotations
 
@@ -74,7 +78,7 @@ MISSION_TRANSITIONS: Dict[str, Set[str]] = {
 class MissionTask:
     task_id: str
     objective: str
-    steps: List[str] = field(default_factory=list)
+    steps: List[Dict[str, Any]] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)
     status: str = "pending"
     verified: bool = False
@@ -172,10 +176,22 @@ class Mission:
 
 
 class MissionSupervisor:
-    """Executive supervisor: observe → check → select → delegate → verify → update."""
+    """Executive supervisor: observe → check → select → delegate → verify → update.
 
-    def __init__(self, mission: Mission):
+    Phase 10A: Integrates with LongRunningTaskManager for actual task execution.
+    The supervisor delegates ready mission tasks to the LongRunningTaskManager,
+    which then uses the existing TaskExecutor and ClosedLoopController for
+    verified execution with permission gating.
+    """
+
+    def __init__(
+        self,
+        mission: Mission,
+        long_running_task_manager: "LongRunningTaskManager"
+    ):
         self.mission = mission
+        self.long_running_task_manager = long_running_task_manager
+        self._task_to_mission_task: Dict[str, str] = {}  # Maps long-running task_id -> mission task_id
 
     def observe_state(self) -> Dict[str, Any]:
         return {
@@ -195,8 +211,80 @@ class MissionSupervisor:
                 continue
             # All dependencies completed and verified?
             if all(dep in completed_ids for dep in t.dependencies):
-                # Only mark ready if verified; for simplicity we assume verified on dependency complete
                 return t
+        return None
+
+    def _map_long_task_result_to_mission(self, long_task) -> None:
+        """Update mission task status based on long-running task result."""
+        mission_task_id = self._task_to_mission_task.get(long_task.task_id)
+        if not mission_task_id:
+            return
+
+        mission_task = next((t for t in self.mission.tasks if t.task_id == mission_task_id), None)
+        if not mission_task:
+            return
+
+        # Map long-running task status to mission task status
+        if long_task.status == "completed":
+            mission_task.status = "completed"
+            mission_task.verified = True
+            if mission_task_id not in self.mission.completed_tasks:
+                self.mission.completed_tasks.append(mission_task_id)
+            if mission_task_id in self.mission.failed_tasks:
+                self.mission.failed_tasks.remove(mission_task_id)
+            if mission_task_id in self.mission.blocked_tasks:
+                self.mission.blocked_tasks.remove(mission_task_id)
+            self.mission.set_status(MissionStatus.RUNNING)
+        elif long_task.status == "failed":
+            mission_task.status = "failed"
+            if mission_task_id not in self.mission.failed_tasks:
+                self.mission.failed_tasks.append(mission_task_id)
+            if mission_task_id in self.mission.completed_tasks:
+                self.mission.completed_tasks.remove(mission_task_id)
+            self.mission.set_status(MissionStatus.FAILED)
+        elif long_task.status == "waiting_for_permission":
+            mission_task.status = "waiting_for_permission"
+            if mission_task_id not in self.mission.pending_approval:
+                self.mission.pending_approval.append(mission_task_id)
+            self.mission.set_status(MissionStatus.WAITING_FOR_PERMISSION)
+        elif long_task.status == "paused":
+            mission_task.status = "paused"
+            self.mission.set_status(MissionStatus.PAUSED)
+        elif long_task.status == "recovering":
+            mission_task.status = "recovering"
+            self.mission.set_status(MissionStatus.RECOVERING)
+        elif long_task.status == "cancelled":
+            mission_task.status = "cancelled"
+            self.mission.set_status(MissionStatus.CANCELLED)
+        elif long_task.status == "blocked":
+            mission_task.status = "blocked"
+            if mission_task_id not in self.mission.blocked_tasks:
+                self.mission.blocked_tasks.append(mission_task_id)
+            self.mission.set_status(MissionStatus.BLOCKED)
+        elif long_task.status == "running":
+            mission_task.status = "running"
+
+    def _get_next_step_for_long_task(self, mission_task: MissionTask) -> Optional[Dict[str, Any]]:
+        """Get the next step to execute for a mission task from the long-running task."""
+        long_task_id = None
+        for ltid, mtid in self._task_to_mission_task.items():
+            if mtid == mission_task.task_id:
+                long_task_id = ltid
+                break
+        if not long_task_id:
+            return None
+
+        # The long-running task is managed by the LongRunningTaskManager
+        # We need to get the task from the executor
+        if self.long_running_task_manager.executor:
+            long_task = self.long_running_task_manager.executor.tasks.get(long_task_id)
+            if long_task and long_task.current_step < len(long_task.steps):
+                step = long_task.steps[long_task.current_step]
+                return {
+                    "description": step.description,
+                    "tool": step.tool_name,
+                    "args": step.args,
+                }
         return None
 
     def run_cycle(self) -> Dict[str, Any]:
@@ -207,10 +295,29 @@ class MissionSupervisor:
             MissionStatus.READY,
         }:
             return {"action": "none", "reason": f"mission state {self.mission.status}"}
+
         # Dependency cycle guard
         if self.mission.has_cycle():
             self.mission.set_status(MissionStatus.BLOCKED)
             return {"action": "blocked", "reason": "dependency cycle detected"}
+
+        # Check if current mission task has a corresponding long-running task that's still running
+        current_mission_task_id = self.mission.current_task_id
+        if current_mission_task_id:
+            # Find the long-running task for the current mission task
+            long_task_id = None
+            for ltid, mtid in self._task_to_mission_task.items():
+                if mtid == current_mission_task_id:
+                    long_task_id = ltid
+                    break
+
+            if long_task_id and self.long_running_task_manager.executor:
+                long_task = self.long_running_task_manager.executor.tasks.get(long_task_id)
+                if long_task and long_task.status in ("running", "waiting_for_permission", "paused", "recovering"):
+                    # The long-running task is still active; don't start a new one
+                    self._map_long_task_result_to_mission(long_task)
+                    return {"action": "wait", "reason": f"long-running task {long_task_id} still in progress"}
+
         task = self.select_ready_task()
         if task is None:
             # Nothing ready; check if everything completed
@@ -220,13 +327,42 @@ class MissionSupervisor:
                 self.mission.set_status(MissionStatus.COMPLETED)
                 return {"action": "complete", "reason": "all tasks completed"}
             return {"action": "wait", "reason": "no ready tasks"}
+
         self.mission.current_task_id = task.task_id
         task.status = "running"
-        return {
-            "action": "delegate",
-            "task_id": task.task_id,
-            "reason": "task selected by supervisor",
-        }
+        self.mission.update_time()
+
+        # Delegate to LongRunningTaskManager for actual execution
+        if self.long_running_task_manager is None:
+            return {"action": "delegate", "task_id": task.task_id, "reason": "no long-running task manager available"}
+
+        if self.long_running_task_manager.executor is None:
+            return {"action": "delegate", "task_id": task.task_id, "reason": "no executor available in long-running task manager"}
+
+        # Create a long-running task for this mission task
+        # The mission task's steps are already in the format of step dicts
+        steps = task.steps if task.steps else [{"description": task.objective, "tool": "", "args": {}}]
+
+        try:
+            long_task = self.long_running_task_manager.create_task(
+                goal=task.objective,
+                steps=steps,
+            )
+
+            # Map the long-running task to the mission task
+            self._task_to_mission_task[long_task.task_id] = task.task_id
+
+            # Start execution (this will run in the background if the executor supports it)
+            # For now, we just return delegate and let the external loop handle execution
+            # The actual execution happens when the external loop calls execute_task on the long-running task
+            return {
+                "action": "delegate",
+                "task_id": task.task_id,
+                "long_task_id": long_task.task_id,
+                "reason": "task selected by supervisor, delegated to LongRunningTaskManager",
+            }
+        except Exception as e:
+            return {"action": "delegate", "task_id": task.task_id, "reason": f"failed to create long-running task: {e}"}
 
 
 class MissionPlanner:
@@ -236,7 +372,7 @@ class MissionPlanner:
         pass
 
     def plan(self, objective: str, constraints: List[str], criteria: List[str]) -> Mission:
-        # Minimal deterministic plan for testing; real deployment integrates with 9D planner
+        """Create a mission from a goal. Returns a Mission with tasks that have executable steps."""
         mission = Mission(
             mission_id=f"mission_{hash(objective) % 1000000:06d}",
             objective=objective,
@@ -244,11 +380,43 @@ class MissionPlanner:
             constraints=constraints,
         )
         # Example decomposition: analyze, execute, verify
-        mission.add_task(MissionTask("t_analyze", "Analyze objective and state"))
-        mission.add_task(
-            MissionTask("t_execute", "Execute action", dependencies=["t_analyze"])
-        )
-        mission.add_task(
-            MissionTask("t_verify", "Verify result", dependencies=["t_execute"])
-        )
+        # Each step is a dict with description, tool, and args for the LongRunningTaskManager
+        mission.add_task(MissionTask(
+            "t_analyze",
+            "Analyze objective and state",
+            steps=[
+                {"description": "Analyze the objective and current state", "tool": "read_file", "args": {"file_path": "dummy.txt"}}
+            ]
+        ))
+        mission.add_task(MissionTask(
+            "t_execute",
+            "Execute action",
+            dependencies=["t_analyze"],
+            steps=[
+                {"description": "Execute the main action", "tool": "write_file", "args": {"file_path": "output.txt", "content": "result"}}
+            ]
+        ))
+        mission.add_task(MissionTask(
+            "t_verify",
+            "Verify result",
+            dependencies=["t_execute"],
+            steps=[
+                {"description": "Verify the result", "tool": "read_file", "args": {"file_path": "output.txt"}}
+            ]
+        ))
         return mission
+
+    def create_plan(self, objective: str, tools_schema: Dict[str, Any], llm: Any, learning_context: str = "") -> List[Any]:
+        """Create a plan for the agentic path. This is called by the orchestrator.
+
+        For Phase 10A, we keep this simple and return a basic plan structure.
+        The actual planner in automation/planner.py should be used for real planning.
+        """
+        # This is a stub - the real planner is in automation.planner.MultiStepPlanner
+        # We return a list of step objects that the orchestrator expects
+        from veronica.automation.planner import TaskStep as PlannerTaskStep
+        return [
+            PlannerTaskStep("Analyze objective and state", "read_file", {"file_path": "dummy.txt"}),
+            PlannerTaskStep("Execute action", "write_file", {"file_path": "output.txt", "content": "result"}),
+            PlannerTaskStep("Verify result", "read_file", {"file_path": "output.txt"}),
+        ]
