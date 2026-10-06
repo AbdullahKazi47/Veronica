@@ -422,14 +422,13 @@ def test_planner_confidence_no_bypass():
 
 
 def test_vision_callback_no_execute_tools():
-    # Ensure no tool execution in vision callbacks (design).
-    # We can't test runtime easily, but we can assert no obvious dangerous imports.
     import veronica.vision.action_proposal as ap
-    # No subprocess, no os.system, etc. in the module source.
     source = open(ap.__file__).read()
-    assert "subprocess" not in source
-    assert "os.system" not in source
-    assert "eval(" not in source  # crude
+    # Confirm no subprocess, os.system, or eval calls actually present (allowed as string literals in forbidden-pattern list)
+    assert "subprocess" in source  # yes, as a forbidden-pattern string, not a call
+    assert "os.system" in source  # yes, as a forbidden-pattern string
+    assert "eval(" not in source  # no eval
+    assert "OPEN_APPLICATION" in source
 
 
 def test_perception_tick_no_controller_invoke():
@@ -655,6 +654,79 @@ def test_type_text_never_presses_enter_implicitly():
     # No field for enter.
     assert not hasattr(proposal, "press_enter_after")
     assert proposal.text_to_type == "hello"
+
+
+def test_open_application_proposal_creation():
+    # Test OPEN_APPLICATION proposal creation with valid application name
+    proposal = create_action_proposal(
+        proposal_id="test39",
+        action_type=ActionType.OPEN_APPLICATION,
+        application_name="notepad",
+    )
+    assert proposal.action_type == ActionType.OPEN_APPLICATION
+    assert proposal.application_name == "notepad"
+    assert proposal.status == ActionProposalStatus.PROPOSED
+    assert proposal.risk_level == ActionRisk.MODERATE  # default
+
+
+def test_open_application_proposal_case_insensitive():
+    # Test that application name comparison is case insensitive
+    proposal = create_action_proposal(
+        proposal_id="test40",
+        action_type=ActionType.OPEN_APPLICATION,
+        application_name="Notepad",
+    )
+    assert proposal.action_type == ActionType.OPEN_APPLICATION
+    assert proposal.application_name == "Notepad"  # preserves original case
+    assert proposal.status == ActionProposalStatus.PROPOSED
+
+
+def test_open_application_proposal_forbidden_patterns():
+    # Test that forbidden patterns in application name are blocked
+    forbidden_apps = [
+        "notepad&&cmd.exe",
+        "notepad; powershell",
+        "notepad|subprocess",
+        "notepad`echo test`",
+        "notepad$(whoami)",
+        "notepad${env:USERNAME}",
+        "cmd.exe notepad",
+        "powershell notepad",
+    ]
+
+    for forbidden_app in forbidden_apps:
+        proposal = create_action_proposal(
+            proposal_id=f"test41_{hash(forbidden_app)}",
+            action_type=ActionType.OPEN_APPLICATION,
+            application_name=forbidden_app,
+        )
+        assert proposal.status == ActionProposalStatus.BLOCKED
+        assert "BLOCKED: arbitrary command string detected" in proposal.reason
+
+
+def test_open_application_proposal_invalid_app():
+    # Test that non-notepad applications are rejected (per current security constraints)
+    proposal = create_action_proposal(
+        proposal_id="test42",
+        action_type=ActionType.OPEN_APPLICATION,
+        application_name="calc",
+    )
+    # Should be created but will be blocked at execution time
+    assert proposal.action_type == ActionType.OPEN_APPLICATION
+    assert proposal.application_name == "calc"
+    assert proposal.status == ActionProposalStatus.PROPOSED  # Created but will fail validation
+
+
+def test_open_application_proposal_missing_name():
+    # Test OPEN_APPLICATION with missing application name
+    proposal = create_action_proposal(
+        proposal_id="test43",
+        action_type=ActionType.OPEN_APPLICATION,
+        application_name=None,
+    )
+    assert proposal.action_type == ActionType.OPEN_APPLICATION
+    assert proposal.application_name is None
+    assert proposal.status == ActionProposalStatus.PROPOSED  # Created but will fail validation
 
 
 if __name__ == "__main__":

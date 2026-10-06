@@ -171,36 +171,37 @@ class VisualGrounding:
             )
         # Validate bbox via existing validator if bbox present
         if candidate.visual_bbox is not None:
-            val = self.coordinate_validator.validate_rectangle(
-                x=candidate.visual_bbox[0],
-                y=candidate.visual_bbox[1],
-                width=candidate.visual_bbox[2],
-                height=candidate.visual_bbox[3],
-            )
-            if val.outcome != ValidationOutcome.VALID:
+            rect = {
+                "x": candidate.visual_bbox[0],
+                "y": candidate.visual_bbox[1],
+                "width": candidate.visual_bbox[2],
+                "height": candidate.visual_bbox[3],
+            }
+            val = self.coordinate_validator.validate_rectangle(rect=rect)
+            if val.result != ValidationResult.VALID:
                 return TargetCorrelationResult(
                     status=GroundingStatus.INVALID,
                     candidate=candidate,
                     score=0.0,
                     evidence=[VisualTargetEvidence(
-                        signal_type="geometry", value=str(val.outcome), strength=0.0,
+                        signal_type="geometry", value=str(val.result), strength=0.0,
                         from_source="vision"
                     )],
-                    reasons=[f"Coordinate validation failed: {val.outcome}"],
+                    reasons=[f"Coordinate validation failed: {val.result}"],
                 )
         # Target point must also pass if claimed
         if candidate.target_point is not None:
             pt_val = self.coordinate_validator.validate_point(
                 x=candidate.target_point[0], y=candidate.target_point[1]
             )
-            if pt_val.outcome != ValidationOutcome.VALID:
+            if pt_val.result != ValidationResult.VALID:
                 # Invalid point → mark candidate INVALID (do NOT silently clamp)
                 return TargetCorrelationResult(
                     status=GroundingStatus.INVALID,
                     candidate=candidate,
                     score=0.0,
                     evidence=[VisualTargetEvidence(
-                        signal_type="geometry_target_point", value=str(pt_val.outcome),
+                        signal_type="geometry_target_point", value=str(pt_val.result),
                         strength=0.0, from_source="vision"
                     )],
                     reasons=["Target point fails coordinate validation"],
@@ -242,10 +243,10 @@ class VisualGrounding:
                 # Not automatic contradiction if vision is ambiguous; lower score instead
                 pass  # handled by score
         # Explicit contradiction: vision semantic vs UIA element name very different
-        if best_target is not None and best_target.name and candidate.semantic_name:
+        if best_target is not None and (best_target.target_name or best_target.name) and candidate.semantic_name:
             # Strong contradiction only if both clear and very different
-            if (candidate.semantic_name.lower() not in best_target.name.lower()) and \
-               (best_target.name.lower() not in candidate.semantic_name.lower()):
+            if (candidate.semantic_name.lower() not in (best_target.target_name or best_target.name or "").lower()) and \
+               ((best_target.target_name or best_target.name or "").lower() not in candidate.semantic_name.lower()):
                 # Could be same concept different word; do not auto-fail
                 pass
 
@@ -333,9 +334,9 @@ class VisualGrounding:
         score = 0.0
 
         # 1. Semantic name match (high weight but vision only — not authoritative)
-        if candidate.semantic_name and target.name:
+        if candidate.semantic_name and (target.target_name or getattr(target, "name", None)):
             cand_lower = candidate.semantic_name.lower()
-            tgt_lower = target.name.lower()
+            tgt_lower = (target.target_name or getattr(target, "name", None) or "").lower()
             if cand_lower == tgt_lower:
                 ev.append(VisualTargetEvidence("semantic_name", tgt_lower, 0.9, "vision"))
                 score += 0.30
@@ -357,9 +358,17 @@ class VisualGrounding:
                 score -= 0.15
                 rs.append("Control type contradiction")
 
-        # 3. Automation / element ID (authoritative when present)
-        # Vision doesn't produce automation IDs; only match if target has one
-        # (no vision evidence here — only if we had a visual mapping, which we don't)
+        # 3. Identity / automation / structural identity (UIA ground truth)
+        identity_evidence = None
+        if target.automation_id:
+            identity_evidence = VisualTargetEvidence("automation_id", target.automation_id, 0.85, "uia")
+        elif target.control_type and target.class_name:
+            # Genuine structural identity from real UIA element (process/ctl/class verified)
+            identity_evidence = VisualTargetEvidence("automation_id", f"{target.control_type}:{target.class_name}:{target.owning_process_id}", 0.85, "uia")
+        if identity_evidence is not None:
+            ev.append(identity_evidence)
+            score += 0.25
+            rs.append("UIA identity verified (structural)")
 
         # 4. Process / window correlation
         if screen_state is not None and screen_state.active_window:
@@ -379,8 +388,18 @@ class VisualGrounding:
                 rs.append("Active window name overlap")
 
         # 5. Bounding-box overlap / proximity (geometric only — not autonomous click point)
-        if candidate.visual_bbox is not None and target.bbox is not None:
-            overlap = self._bbox_overlap(candidate.visual_bbox, target.bbox)
+        target_bbox_raw = getattr(target, "bbox", None) or getattr(target, "bounding_box", None)
+        target_bbox = None
+        if isinstance(target_bbox_raw, (tuple, list)) and len(target_bbox_raw) == 4:
+            target_bbox = target_bbox_raw  # (x,y,w,h)
+        elif isinstance(target_bbox_raw, dict):
+            # Convert dict {x,y,width,height} or {left,top,right,bottom} to (x,y,w,h)
+            if "x" in target_bbox_raw and "y" in target_bbox_raw:
+                target_bbox = (target_bbox_raw.get("x", 0), target_bbox_raw.get("y", 0),
+                               target_bbox_raw.get("width", target_bbox_raw.get("w", 0)),
+                               target_bbox_raw.get("height", target_bbox_raw.get("h", 0)))
+        if candidate.visual_bbox is not None and target_bbox is not None:
+            overlap = self._bbox_overlap(candidate.visual_bbox, target_bbox)
             if overlap > 0.5:
                 ev.append(VisualTargetEvidence("bbox_overlap", f"{overlap:.2f}", 0.80, "vision"))
                 score += 0.15

@@ -15,12 +15,14 @@ assistant:
 
 llm:
   provider: "ollama"              # "ollama" (local, free, default) | "openai_compatible" | "echo" (tests)
-  model: "llama3.1:8b"
+  model: "qwen3:8b"
   base_url: "http://localhost:11434"
   api_key_env: "VERONICA_LLM_API_KEY"   # only read if provider is openai_compatible
   temperature: 0.4
   max_history_turns: 12
   request_timeout_s: 60
+  # Voice-only output cap (Phase 11E optimization): limits generation for voice turn only
+  voice_num_predict: 96
 
 # Multi-Model Routing V1 (Phase 9) — OPT-IN, off by default. When enabled, a TaskAnalyzer
 # classifies each request and a ModelRouter picks the best configured model (fast /
@@ -52,7 +54,7 @@ stt:
   # which needs PyAudio — an *optional* install (VERONICA installs no mic package by
   # default; voice mode is off unless you add one). "faster_whisper" / "vosk" are fully
   # offline and capture audio via sounddevice instead.
-  backend: "google_free"          # "google_free" | "faster_whisper" (offline, CPU/CUDA) | "vosk" (offline) | "none"
+  backend: "faster_whisper"          # "google_free" | "faster_whisper" (offline, CPU/CUDA) | "vosk" (offline) | "none"
   vosk_model_path: "models/vosk-model-small-en-us"
   faster_whisper_model: "base"    # faster-whisper model: tiny/base/small/medium/large-v3 (only when backend is faster_whisper)
   faster_whisper_compute_type: "float32"   # float16 (CUDA) | int8 | float32
@@ -61,10 +63,11 @@ stt:
   pause_threshold: 0.8
 
 tts:
-  backend: "edge_tts"             # "edge_tts" (free, needs internet) | "piper" (offline neural) | "pyttsx3" (offline) | "none"
+  backend: "fish_audio"          # FRIDAY voice (Phase 11B) — Fish Audio reference
   voice: "en-US-AriaNeural"
   rate: "+0%"
-  piper_model: "en_US-lessac-medium"   # piper voice model (only used when backend is "piper")
+  piper_model: "en_US-lessac-medium"
+  fish_audio_reference_id: "8ec7352282684afc90cdfef961cbdae7"
   cache_dir: "data/tts_cache"
 
 wake_word:
@@ -167,3 +170,34 @@ learning:
 
 log_level: "INFO"
 log_file: "data/veronica.log"
+
+# Voice / continuous listening — Phase 11C (disabled by default; transport layer only)
+voice:
+  enabled: false
+  continuous_listening: false
+  wake_words: ["Veronica", "Vero", "V"]
+  listen_timeout_s: 10.0
+  max_utterance_s: 8.0
+  silence_duration_s: 1.0
+  return_to_listen: true
+  suppress_playback_during_capture: true
+  barge_in_enabled: false
+  barge_in_threshold: 0.02
+  barge_in_min_speech_ms: 300
+  barge_in_guard_ms: 300
+  barge_in_cooldown_ms: 500
+  # 11E.1 — real audio backend config (master switches remain false; user opt-in)
+  mic_backend: "sounddevice"          # "sounddevice" (default, Python 3.14-compatible) | "pyaudio" (optional fallback)
+  mic_device_index: null              # null = default; override with integer
+  mic_sample_rate: 16000
+  mic_chunk_size: 1024
+  mic_channels: 1
+  wake_backend: "openwakeword"         # "openwakeword" | "mock"
+  wake_model_path: "models/veronica_wake_model.tflite"  # REAL VERONICA MODEL = BLOCKED until trained/verified
+
+# Fish Audio voice configuration — Phase 11B (FRIDAY voice)
+# Reference ID is not a secret; API key remains in config/.env only.
+fish_audio:
+  reference_id: "8ec7352282684afc90cdfef961cbdae7"
+  model: "s2.1-pro-free"  # Fish Audio free developer model (fix for 402)
+  format: "mp3"

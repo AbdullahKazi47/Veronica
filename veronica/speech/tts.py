@@ -1,12 +1,14 @@
 """
 Text-to-speech, async-by-design so speaking never blocks the rest of the assistant —
 this is the one thing Prodigy-AI's `speaker.py` gets clearly right and is worth keeping
-as a hard requirement here. Three backends:
+as a hard requirement here. Backends:
   - "edge_tts": free, natural-sounding, needs internet, no API key (Microsoft Edge's
     read-aloud voices). Default.
   - "piper": fully offline neural TTS, natural-sounding, runs locally via the Piper
     CLI or the piper-tts Python package. Good quality with no API key or internet.
     This mirrors JARVIS OS's local TTS capability scaled to a single Windows desktop.
+  - "fish_audio": Fish Audio's cloud TTS with a configurable reference voice (FRIDAY
+    preset) — mp3 output cached and played via native Windows players.
   - "pyttsx3": fully offline, lower quality, zero dependencies beyond the OS's own
     speech engine — the true zero-network, zero-key fallback.
 """
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import sys
 import threading
 from pathlib import Path
@@ -26,9 +29,9 @@ logger = get_logger("speech.tts")
 # ---------------------------------------------------------------------------
 # Audio playback, with zero mandatory dependencies.
 #
-# Playing the synthesized file (mp3 for edge-tts, wav for piper) is the one thing
-# that used to force pygame onto every install. pygame has no prebuilt wheel for
-# some Python versions, so `pip install pygame` could fall back to compiling from
+# Playing the synthesized file (mp3 for edge-tts / fish_audio, wav for piper) is the
+# one thing that used to force pygame onto every install. pygame has no prebuilt wheel
+# for some Python versions, so `pip install pygame` could fall back to compiling from
 # source on Windows — a hard failure for a mere "make a sound" feature.
 #
 # The ladder below makes playback native-first on the target platform (Windows,
@@ -36,7 +39,7 @@ logger = get_logger("speech.tts")
 # fallback:
 #   1. winsound   — stdlib, Windows-only, plays *.wav synchronously (piper).
 #   2. winmm MCI  — stdlib `ctypes` against winmm.dll, plays mp3/wav on Windows
-#                   (edge-tts). Synchronous like the old pygame busy-loop.
+#                   (edge-tts / fish_audio). Synchronous like the old pygame busy-loop.
 #   3. pygame     — optional; used only when neither native player is available.
 #
 # If no player is available at all, the file is still synthesized and cached, so
@@ -110,6 +113,16 @@ def _play_pygame(path: Path) -> bool:
 _warned_no_player = False
 
 
+class SynchronousSpeaker:
+    """Wrapper for TTS backends that blocks until playback completes."""
+    def __init__(self, tts_instance):
+        self.tts = tts_instance
+
+    def speak(self, text: str) -> None:
+        """Speak text and block until audio playback finishes."""
+        self.tts.speak(text, block=True)
+
+
 class TextToSpeech:
     def __init__(self, config: TTSConfig, cache_dir: Path) -> None:
         self.config = config
@@ -126,6 +139,8 @@ class TextToSpeech:
             target = self._speak_edge_tts
         elif self.config.backend == "piper":
             target = self._speak_piper
+        elif self.config.backend == "fish_audio":
+            target = self._speak_fish_audio
         else:
             target = self._speak_pyttsx3
         if block:
@@ -204,6 +219,57 @@ class TextToSpeech:
         except Exception as e:
             logger.warning("piper-tts Python backend failed (%s); falling back to pyttsx3.", e)
             self._speak_pyttsx3(text)
+
+    def _speak_fish_audio(self, text: str) -> None:
+        """Fish Audio TTS via HTTPS API (configurable reference voice FRIDAY).
+        Audio is cached as mp3 in the same cache directory."""
+        try:
+            import requests
+        except ImportError:
+            logger.error("Fish Audio backend requires `pip install requests`.")
+            return self._speak_pyttsx3(text)
+
+        reference_id = self.config.fish_audio_reference_id
+        # Read API key from environment — TTSConfig has no .secret() method
+        api_key = os.environ.get("FISH_AUDIO_API_KEY")
+        if not reference_id:
+            logger.error("Fish Audio reference_id not set in config.tts.fish_audio_reference_id")
+            return self._speak_pyttsx3(text)
+        if not api_key or api_key.startswith("<"):
+            logger.error("Fish Audio API key not configured (set FISH_AUDIO_API_KEY in .env)")
+            return self._speak_pyttsx3(text)
+
+        out_path = self._cache_path(text)
+        try:
+            if not out_path.exists():
+                url = "https://api.fish.audio/v1/tts"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "reference_id": reference_id,
+                    "text": text,
+                    "format": self.config.fish_audio_format,
+                    "model": self.config.fish_audio_model,
+                }
+                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+                # Capture server message for 402 / any non-2xx WITHOUT exposing api_key
+                if resp.status_code == 402:
+                    body = resp.text[:500] if resp.text else "(no body)"
+                    logger.error(
+                        "Fish Audio TTS 402 Payment Required (ref=%s model=%s). "
+                        "Server response (key not exposed): %s",
+                        reference_id, self.config.fish_audio_model, body,
+                    )
+                    return  # FAIL CLEANLY — do NOT invoke pyttsx3
+                resp.raise_for_status()
+                out_path.write_bytes(resp.content)
+            self._play_audio(out_path)
+        except Exception as e:
+            # Fail cleanly for any Fish Audio failure — never fall back to pyttsx3 hang
+            logger.error("Fish Audio TTS failed cleanly (%s). FRIDAY voice unavailable; returning to loop.", e)
+            # Intentionally do NOT call self._speak_pyttsx3(text)
 
     def _speak_pyttsx3(self, text: str) -> None:
         try:

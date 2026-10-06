@@ -1,0 +1,71 @@
+# Phase 11E.4 — Training Config (Step 3)
+# Official openwakeword.train training config for "Veronica"
+# This is a GENUINE config targeting a REAL .onnx output (not placeholder, not renamed stock).
+# Use with: python -m openwakeword.train --training_config veronica_train_config.yaml --generate_clips --augment_clips --train_model
+# Requires torch, openwakeword package, piper_sample_generator_path (official openwakeword repo clone with generate_samples.py).
+# Training environment: Colab recommended (torch unavailable on local Windows Python 3.14.5).
+
+# --- Model identity ---
+model_name: veronica_wake_model
+target_phrase:
+  - "Veronica"
+
+# --- Data generation (official openwakeword synthetic mechanism) ---
+n_samples: 2000
+n_samples_val: 200
+n_samples_test: 200
+
+# --- Negative/adversarial generation ---
+custom_negative_phrases:
+  - "veronica is not here"
+  - "verona"
+  - "veronique"
+  - "veroni"
+  - "vero niko"
+# Note: generate_adversarial_texts (official) automatically derives partial-phrase and word-level adversarial negatives
+# using include_partial_phrase=1.0 and include_input_words=0.2. These custom phrases provide explicit adversarial
+# context that is directly related to "Veronica" (name variants, partial matches, near-pronunciations) without arbitrary lists.
+
+# --- Model architecture (official defaults — NOT reduced arbitrarily) ---
+model_type: dnn
+layer_size: 128
+n_blocks: 1
+
+# --- Training hyperparameters ---
+steps: 50000
+batch_n_per_class: 100
+target_false_positives_per_hour: 0.2
+max_negative_weight: 1000
+
+# --- Output ---
+output_dir: .
+# After real training, artifact must appear at: models/veronica_wake_model.onnx (and optionally .tflite)
+
+# --- Feature / augmentation paths (official mechanism requires these files/directories) ---
+# These reference paths come from the official openwakeword workflow.
+# User must prepare rir_paths, background_paths, background_paths_duplication_rate,
+# feature_data_files, false_positive_validation_data_path, and piper_sample_generator_path.
+piper_sample_generator_path: openwakeword/openwakeword/models/piper
+rir_paths:
+  - "openwakeword/openwakeword/resources/rir"
+background_paths:
+  - "openwakeword/openwakeword/resources/background_noise"
+background_paths_duplication_rate:
+  - 1
+feature_data_files:
+  positive: ./positive_features_train.npy
+  adversarial_negative: ./negative_features_train.npy
+false_positive_validation_data_path: ./false_positive_val.npy
+
+# --- Augmentation ---
+augmentation_rounds: 10
+augmentation_batch_size: 64
+
+# --- TTS batch (Piper synthetic positive generation) ---
+tts_batch_size: 16
+
+# --- Additional configurable fields preserved (official current defaults) ---
+# These fields are part of the current openwakeword.train config schema.
+# No arbitrary reduction of quality (step count, layer size, samples) is made merely to speed up training.
+# If real microphone evaluation cannot yet be completed, model status remains: IMPLEMENTED / LIVE VALIDATION BLOCKED.
+# Only when both the .onnx artifact exists and real microphone evaluation succeeds does status become LIVE VERIFIED.

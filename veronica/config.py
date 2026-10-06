@@ -31,6 +31,7 @@ class LLMConfig:
     temperature: float = 0.4
     max_history_turns: int = 12
     request_timeout_s: int = 60
+    voice_num_predict: int = 96
 
 
 @dataclass
@@ -46,11 +47,39 @@ class STTConfig:
 
 @dataclass
 class TTSConfig:
-    backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none"
+    backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none" | "fish_audio"
     voice: str = "en-US-AriaNeural"
     rate: str = "+0%"
     piper_model: str = "en_US-lessac-medium"  # piper voice model name
+    fish_audio_reference_id: Optional[str] = None  # Fish Audio voice reference (FRIDAY = 8ec...ae7)
+    fish_audio_model: str = "s2.1-pro-free"  # Fish Audio free developer model (fix 402)
+    fish_audio_format: str = "mp3"
     cache_dir: str = "data/tts_cache"
+
+
+@dataclass
+class VoiceConfig:
+    enabled: bool = False                  # master switch (Step 3)
+    continuous_listening: bool = False      # master continuous loop (Step 3)
+    wake_words: list[str] = field(default_factory=lambda: ["Veronica", "Vero"])
+    listen_timeout_s: float = 10.0
+    max_utterance_s: float = 8.0
+    silence_duration_s: float = 1.0
+    return_to_listen: bool = True
+    suppress_playback_during_capture: bool = True
+    barge_in_enabled: bool = False
+    barge_in_threshold: float = 0.02
+    barge_in_min_speech_ms: int = 300
+    barge_in_guard_ms: int = 300
+    barge_in_cooldown_ms: int = 500
+    # 11E.1 — real audio backend (master switches stay false; opt-in only)
+    mic_backend: str = "sounddevice"       # "sounddevice" | "pyaudio"
+    mic_device_index: int | None = None     # null = default
+    mic_sample_rate: int = 16000
+    mic_chunk_size: int = 1024
+    mic_channels: int = 1
+    wake_backend: str = "openwakeword"      # "openwakeword" | "mock"
+    wake_model_path: str = "models/veronica_wake_model.onnx"  # BLOCKED until verified
 
 
 @dataclass
@@ -262,6 +291,7 @@ class Config:
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     memory_thread: MemoryThreadConfig = field(default_factory=MemoryThreadConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
@@ -288,6 +318,24 @@ class Config:
 def _merge_dataclass(instance: Any, overrides: dict[str, Any]) -> Any:
     for key, value in overrides.items():
         if not hasattr(instance, key):
+            # Nested mapping: YAML may use top-level names that map to nested
+            # dataclass fields (e.g. fish_audio.reference_id -> tts.fish_audio_reference_id).
+            if isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    nested_name = f"{key}_{sub_key}" if isinstance(instance, TTSConfig) else sub_key
+                    # Map fish_audio.* to tts.fish_audio_* when instance is Config
+                    if isinstance(instance, Config) and key == "fish_audio" and hasattr(instance.tts, f"fish_audio_{sub_key}"):
+                        target_key = f"fish_audio_{sub_key}"
+                        nested = getattr(instance.tts, target_key, None)
+                        if nested is not None or hasattr(instance.tts, target_key):
+                            if hasattr(nested, "__dataclass_fields__") and isinstance(sub_value, dict):
+                                _merge_dataclass(nested, sub_value)
+                            else:
+                                setattr(instance.tts, target_key, sub_value)
+                        else:
+                            # Fallback: set directly on instance.tts using mapped key
+                            if hasattr(instance.tts, target_key):
+                                setattr(instance.tts, target_key, sub_value)
             continue
         current = getattr(instance, key)
         if hasattr(current, "__dataclass_fields__") and isinstance(value, dict):
@@ -342,6 +390,8 @@ def load_config(
         "OPENWEATHER_API_KEY",
         "OPENROUTER_API_KEY",
         "SERPAPI_API_KEY",
+        "FISH_AUDIO_API_KEY",
+        "FISH_AUDIO_REFERENCE_ID",
     ):
         val = os.environ.get(key)
         if val:

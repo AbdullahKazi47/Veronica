@@ -600,12 +600,12 @@ class Orchestrator:
             else:
                 if routing_selection is not None:
                     try:
-                        response = routing_selection.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                        response = routing_selection.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature, voice_mode=(isinstance(text, str) and len(text) < 120 and ("hi" in text.lower() or "hello" in text.lower())))
                     except Exception:  # noqa: BLE001 — routing execution must not break the assistant
                         logger.exception("Routing execution failed; falling back to primary for this hop.")
-                        response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                        response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature, voice_mode=(isinstance(text, str) and len(text) < 120 and ("hi" in text.lower() or "hello" in text.lower())))
                 else:
-                    response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature)
+                    response = self.llm.chat(messages, tools=tool_schemas, temperature=self.config.llm.temperature, voice_mode=(isinstance(text, str) and len(text) < 120 and ("hi" in text.lower() or "hello" in text.lower())))
                 attest_meta = None
 
             if not response.tool_calls:
@@ -964,26 +964,36 @@ class Orchestrator:
         return sections
 
     def _legacy_build_messages(self, session: SessionContext, text: str = "") -> list[ChatMessage]:
-        system_prompt = self.config.assistant.persona
-        if self.capabilities is not None:
-            system_prompt = f"{system_prompt}\n\n{self.capabilities.describe_for_prompt()}"
-        if self.task_executor is not None:
-            summary = self.task_executor.get_context_summary()
-            if summary:
-                system_prompt = f"{system_prompt}\n\n{summary}"
-        if self.thread_memory is not None and text:
-            thread_context = self._get_thread_context(text)
-            if thread_context:
-                # Distinct section so the model can tell live conversation (short-term)
-                # from recalled fact (thread) from what just happened (experiences).
-                system_prompt = f"{system_prompt}\n\n{thread_context}"
-        if self.thread_memory is not None and text:
-            experience_context = self._get_experience_context(text)
-            if experience_context:
-                # A separate RETRIEVED EXPERIENCE section — never merged with the
-                # conversational memory block, so retention of 'what happened before'
-                # stays distinguishable from 'how things were done'.
-                system_prompt = f"{system_prompt}\n\n{experience_context}"
+        # Phase 11E: conditional minimal voice prompt — for simple conversational turns
+        # (greeting / no tool use requested) keep system lean; full agentic context kept
+        # for any turn that needs capabilities / task context / memory.
+        persona = self.config.assistant.persona
+        is_simple_voice_turn = bool(
+            text and text.strip() and len(text) < 120 and "hi" in text.lower()
+        )
+        if is_simple_voice_turn:
+            # Minimal voice-only path: persona + brief voice instruction only.
+            # Capabilities, task context, thread memory omitted intentionally for speed.
+            system_prompt = f"{persona}\n\nAnswer briefly and concisely. Confirm before any action."
+        else:
+            system_prompt = persona
+            if self.capabilities is not None:
+                caps = self.capabilities.describe_for_prompt()
+                if caps:
+                    system_prompt = f"{system_prompt}\n\n{caps}"
+            if self.task_executor is not None:
+                summary = self.task_executor.get_context_summary()
+                if summary:
+                    system_prompt = f"{system_prompt}\n\n{summary}"
+            # Memory contexts preserved for agentic / complex turns only (not stripped)
+            if self.thread_memory is not None and text:
+                thread_context = self._get_thread_context(text)
+                if thread_context:
+                    system_prompt = f"{system_prompt}\n\n{thread_context}"
+            if self.thread_memory is not None and text:
+                experience_context = self._get_experience_context(text)
+                if experience_context:
+                    system_prompt = f"{system_prompt}\n\n{experience_context}"
         messages = [ChatMessage(role="system", content=system_prompt)]
         for turn in session.short_term.as_messages():
             messages.append(ChatMessage(role=turn["role"], content=turn["content"]))

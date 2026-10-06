@@ -1,0 +1,12 @@
+Registered atom: 49740
+SetWindowPos available (pointer-sized HWND params)
+ShowWindow available; MoveWindow available
+Parent HWND: 919704
+Edit HWND: 460788
+SW_RESTORE result: 24
+Parent not iconic after SW_RESTORE
+SW_SHOWNORMAL result: 24
+SetWindowPos result: 1 last_error: 0
+GetWindowRect after SetWindowPos: left=100 top=100 right=700 bottom=350
+SetWindowPos produced positive rect; fallback not needed
+VERONICA_TEST_SURFACE_READY PID=21152 HWND=919704 EDIT_HWND=460788

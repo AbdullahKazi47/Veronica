@@ -10,7 +10,7 @@ from veronica.core.orchestrator import Orchestrator
 from veronica.logging_setup import get_logger
 from veronica.safety.permissions import PermissionLevel
 from veronica.speech.stt import SpeechToText
-from veronica.speech.tts import TextToSpeech
+from veronica.speech.tts import TextToSpeech, SynchronousSpeaker
 
 logger = get_logger("ui.cli")
 
@@ -29,7 +29,9 @@ class CLIApp:
         self.voice_mode = voice_mode
         self.session = orchestrator.new_session()
         self.tts = TextToSpeech(config.tts, cache_dir=config.resolve_path(config.tts.cache_dir))
+        self.speaker = SynchronousSpeaker(self.tts)
         self.stt = SpeechToText(config.stt) if voice_mode else None
+        self._tts_active = False  # prevents self-listening during playback
 
     def banner(self) -> None:
         print(f"\n{'=' * 60}")
@@ -57,6 +59,7 @@ class CLIApp:
 
     def _get_input(self) -> str:
         if self.voice_mode and self.stt is not None:
+            # Stage 1: LISTEN — microphone is active
             print("[listening...]")
             result = self.stt.listen_once()
             if not result.success:
@@ -69,4 +72,14 @@ class CLIApp:
     def _say(self, text: str) -> None:
         print(f"{self.config.assistant.name}: {text}\n")
         if self.voice_mode:
-            self.tts.speak(text)
+            # Stage 2: Block microphone while TTS plays — prevents self-listening feedback
+            self._tts_active = True
+            try:
+                self.speaker.speak(text)
+            except Exception as e:
+                logger.warning("TTS playback failed: %s", e)
+            finally:
+                self._tts_active = False
+            # Stage 3: Short cooldown + buffer flush before re-listening
+            import time
+            time.sleep(0.2)

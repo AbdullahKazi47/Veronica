@@ -36,6 +36,7 @@ class OllamaProvider(LLMProvider):
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ) -> LLMResponse:
         try:
             import requests
@@ -48,6 +49,8 @@ class OllamaProvider(LLMProvider):
             "stream": False,
             "options": {"temperature": temperature},
         }
+        if voice_mode:
+            payload["think"] = False
         if tools:
             payload["tools"] = tools
 
@@ -85,6 +88,7 @@ class OllamaProvider(LLMProvider):
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ):
         """Stream via Ollama's NDJSON API (stream: True). Same construction as
         ``chat`` — no second client, no new dependency."""
@@ -103,6 +107,8 @@ class OllamaProvider(LLMProvider):
             "stream": True,
             "options": {"temperature": temperature},
         }
+        if voice_mode:
+            payload["think"] = False
         if tools:
             payload["tools"] = tools
 

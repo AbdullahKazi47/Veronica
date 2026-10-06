@@ -1,0 +1,1 @@
+NOTE=fixture stays alive (message loop, shutdown 0x8001 only) but READY emission blocked; Bash execution interrupted; stop preserved.

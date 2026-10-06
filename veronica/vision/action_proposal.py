@@ -22,6 +22,7 @@ logger = __import__("veronica.logging_setup").logging_setup.get_logger("vision.a
 class ActionType(str, Enum):
     CLICK = "CLICK"
     TYPE_TEXT = "TYPE_TEXT"
+    OPEN_APPLICATION = "OPEN_APPLICATION"
 
 class ActionRisk(str, Enum):
     LOW = "LOW"
@@ -41,6 +42,8 @@ class ActionProposalStatus(str, Enum):
     EXECUTED = "EXECUTED"
     EXECUTION_FAILED = "EXECUTION_FAILED"
     EXECUTED_UNVERIFIED = "EXECUTED_UNVERIFIED"
+    # NOT a final success state; verification still required
+    OPEN_APP_VERIFIED = "OPEN_APP_VERIFIED"
 
 VISION_ACTION_TYPES = {ActionType.CLICK, ActionType.TYPE_TEXT}
 
@@ -53,6 +56,9 @@ class ActionProposal:
     target_window: Optional[str] = None
     target_process: Optional[str] = None
     target_point: Optional[tuple] = None
+    # OPEN_APPLICATION target
+    application_name: Optional[str] = None
+    application_id: Optional[str] = None
     text_to_type: Optional[str] = None
     risk_level: ActionRisk = ActionRisk.MODERATE
     source: str = "brain/planner"
@@ -94,6 +100,7 @@ def create_action_proposal(
     target_reference: Optional[object] = None,
     grounding_result: Optional[TargetCorrelationResult] = None,
     text_to_type: Optional[str] = None,
+    application_name: Optional[str] = None,
     risk_level: Optional[ActionRisk] = None,
     reason: str = "",
 ) -> ActionProposal:
@@ -104,7 +111,27 @@ def create_action_proposal(
     # passed in via the `risk_level` parameter. If not provided, the ActionProposal
     # will use its default risk_level (MODERATE).
 
-    # Determine status and reason based on grounding_result for vision actions
+    # For OPEN_APPLICATION: reject arbitrary command strings embedded in application_name
+    if action_type == ActionType.OPEN_APPLICATION:
+        if application_name is None or not isinstance(application_name, str):
+            # Must specify a safe application target; arbitrary strings rejected
+            # Set to proposed but will be blocked at validation unless resolved safely
+            pass  # We'll allow creation but block execution if not safe
+        # Prevent shell command embedding: reject strings that contain command separators or shell markers
+        forbidden_patterns = ["cmd.exe", "powershell", "subprocess", "os.system", "/c ", "&&", "||", ";", "|", "`", "$(", "${"]
+        if application_name and any(p.lower() in application_name.lower() for p in forbidden_patterns):
+            # Block arbitrary command strings embedded in the target
+            p = ActionProposal(
+                proposal_id=proposal_id,
+                action_type=action_type,
+                target_reference=target_reference,
+                target_name=application_name,
+                risk_level=ActionRisk.BLOCKED if risk_level is None else risk_level,
+                source="brain/planner",
+                reason="BLOCKED: arbitrary command string detected in application target",
+                status=ActionProposalStatus.BLOCKED,
+            )
+            return p
     status = ActionProposalStatus.PROPOSED
     # Use the provided reason, but may override for invalid vision actions
     final_reason = reason
@@ -119,12 +146,13 @@ def create_action_proposal(
         proposal_id=proposal_id,
         action_type=action_type,
         target_reference=target_reference,
-        target_name=getattr(target_reference, "name", "") if target_reference else "",
+        target_name=getattr(target_reference, "name", "") if target_reference else (application_name or ""),
         target_window=getattr(target_reference, "window_title", None) if target_reference else None,
         target_process=getattr(target_reference, "process_name", None) if target_reference else None,
         grounding_result=grounding_result,
         text_to_type=text_to_type,
-        risk_level=risk_level if risk_level is not None else ActionRisk.MODERATE,  # Use provided risk_level; if None, default to MODERATE
+        application_name=application_name,
+        risk_level=risk_level if risk_level is not None else ActionRisk.MODERATE,
         source="brain/planner",
         reason=final_reason,
         status=status,
@@ -160,7 +188,7 @@ def evaluate_proposal_with_permission(
 
     # Only APPROVED + VALIDATED reaches controller (section 13 / 17)
     # Map proposal risk to permission level
-    if proposal.risk_level == ActionRisk.BLOCKED or proposal.action_type not in (ActionType.CLICK, ActionType.TYPE_TEXT):
+    if proposal.risk_level == ActionRisk.BLOCKED or proposal.action_type not in (ActionType.CLICK, ActionType.TYPE_TEXT, ActionType.OPEN_APPLICATION):
         proposal.audit["permission_decision"] = "BLOCKED (risk/action not allowed)"
         proposal.status = ActionProposalStatus.BLOCKED
         return proposal.status

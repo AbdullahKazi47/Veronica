@@ -1,0 +1,6 @@
+VOICE_MODE=True
+content=Hello! How can I assist you today? 😊
+ok=True
+len=36
+thinking=None
+eval_count=12
