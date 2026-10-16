@@ -343,7 +343,8 @@ class TextToSpeech:
         """Tell the person at the terminal once per run; the log alone is easy to miss."""
         if message not in cls._noticed:
             cls._noticed.add(message)
-            print(message)
+            # Shown like the rest of the conversation: as VERONICA saying it.
+            print("VERONICA: " + message.replace("[voice] ", "", 1))
 
     def _speak_pyttsx3(self, text: str) -> None:
         try:

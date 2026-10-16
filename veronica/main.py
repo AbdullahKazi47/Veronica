@@ -63,7 +63,9 @@ class App:
 
 
 def build_app(config: Config, interactive: bool = True) -> App:
-    setup_logging(config.log_level, config.resolve_path(config.log_file))
+    quiet = getattr(config, "console_mode", "full") == "conversation"
+    setup_logging(config.log_level, config.resolve_path(config.log_file),
+                  console_level="CRITICAL" if quiet else None)
     logger = get_logger("main")
     logger.info("Booting %s (llm.provider=%s, llm.model=%s)", config.assistant.name, config.llm.provider, config.llm.model)
 

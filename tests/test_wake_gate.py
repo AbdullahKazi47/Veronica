@@ -91,7 +91,10 @@ def test_missing_model_is_unavailable_with_reason(tmp_path):
     assert "missing.onnx" in g.reason or "not installed" in g.reason
 
 
-def test_gate_uses_stt_microphone_and_configured_threshold():
+def test_gate_uses_stt_microphone_and_configured_threshold(monkeypatch):
+    import veronica.voice.microphone as microphone
+    # Hermetic: don't depend on which devices this machine has right now.
+    monkeypatch.setattr(microphone, "resolve_input_device", lambda name, index: index)
     cfg = Config()
     cfg.stt.mic_device_index = 7
     cfg.voice.wake_threshold = 0.42

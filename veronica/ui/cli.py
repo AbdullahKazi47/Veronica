@@ -118,11 +118,33 @@ class CLIApp:
             gate = WakeGate(self.config)
         if not gate.available:
             # Honest fallback: say why, then keep working as plain voice mode.
-            print(f"[wake] wake word unavailable: {gate.reason}. Listening without a wake word.")
+            self._notice(f"My wake word isn't working ({gate.reason}), so I'll listen to everything you say.")
             return None
         return gate
 
+    # -- console ---------------------------------------------------------------------
+    @property
+    def _verbose(self) -> bool:
+        return getattr(self.config, "console_mode", "full") != "conversation"
+
+    def _status(self, message: str) -> None:
+        """Housekeeping (listening..., wake misses, background progress): always in the
+        log file; on screen only in console_mode 'full'."""
+        logger.info(message)
+        if self._verbose:
+            print(message)
+
+    def _notice(self, message: str) -> None:
+        """Something the user needs to know, shown as VERONICA saying it (never dropped)."""
+        logger.warning(message)
+        print(f"{self.config.assistant.name}: {message}")
+
     def banner(self) -> None:
+        if not self._verbose:
+            print(f"{self.config.assistant.name}: Online.")
+            if self.voice_mode:
+                self._report_output()
+            return
         print(f"\n{'=' * 60}")
         print(f"  {self.config.assistant.name} — online.")
         print(f"  Type your request, or 'exit' to quit. Voice mode: {'ON' if self.voice_mode else 'off (text only)'}")
@@ -132,18 +154,17 @@ class CLIApp:
             self._report_output()
         print(f"{'=' * 60}\n")
 
-    @staticmethod
-    def _report_output() -> None:
+    def _report_output(self) -> None:
         """Say where the voice will come out — a muted or headphone output looks
         exactly like 'VERONICA has no voice'."""
         from veronica.tools.system_tools import output_status
         out = output_status()
         if out is None:
             return
-        print(f"  Voice output: {out['device']} at {out['level']}%{' (MUTED)' if out['muted'] else ''}")
+        self._status(f"  Voice output: {out['device']} at {out['level']}%{' (MUTED)' if out['muted'] else ''}")
         if out["muted"] or out["level"] < 15:
-            print("  !! You won't hear me: " + ("the sound is muted" if out["muted"] else "the volume is very low")
-                  + ". Say 'unmute' / 'volume to 60', or use the speaker icon on the taskbar.")
+            self._notice("You won't hear me: " + ("the sound is muted" if out["muted"] else "the volume is very low")
+                         + ". Say 'unmute' or 'volume to 60', or use the speaker icon on the taskbar.")
 
     def run(self) -> None:
         self.banner()
@@ -159,7 +180,7 @@ class CLIApp:
                 try:
                     text = self._get_input()
                 except (KeyboardInterrupt, EOFError):
-                    print("\nShutting down.")
+                    self._status("Shutting down.")
                     break
 
                 if not text:
@@ -168,9 +189,13 @@ class CLIApp:
                     self._say("Goodbye.")
                     break
 
-                reply = self._background_reply(text)
-                if reply is None:
-                    reply = self.orchestrator.handle(text, self.session).text
+                try:
+                    reply = self._background_reply(text)
+                    if reply is None:
+                        reply = self.orchestrator.handle(text, self.session).text
+                except Exception:  # noqa: BLE001 - one failed request must never take VERONICA down
+                    logger.exception("Request failed: %r", text)
+                    reply = "Sorry, something went wrong on my end with that one. The details are in the log."
                 self._say(reply)
                 self._open_follow_up()
         finally:
@@ -187,14 +212,14 @@ class CLIApp:
         monitor = ProactiveMonitor(
             pcfg, self._proactive_say,
             rain_probability=rain_probability_for(Profile(self.config)),
-            briefing=(lambda: briefing_tool.run().message) if briefing_tool else None)
+            briefing=(lambda: briefing_tool.run(include_tasks=False).message) if briefing_tool else None)
         monitor.start()
         return monitor
 
     def _proactive_say(self, text: str, urgent: bool = False) -> None:
         while self._capturing.is_set() and not self._stop.is_set():
             time.sleep(0.2)  # never talk over the user
-        print(f"[proactive{' URGENT' if urgent else ''}] {text}")
+        self._status(f"[proactive{' URGENT' if urgent else ''}]")
         self._beep()
         self._say(text)
 
@@ -224,7 +249,7 @@ class CLIApp:
         task = split_background_request(text)
         if task:
             background.submit(task)
-            print(f"[background] started: {task}")
+            self._status(f"[background] started: {task}")
             return "On it. I'll work on that in the background and tell you when it's done."
         return None
 
@@ -241,7 +266,7 @@ class CLIApp:
             n = len(task.refused)
             msg += (f" I skipped {n} step{'s' if n != 1 else ''} that needed your permission; "
                     "ask me again now if you want me to do that.")
-        print(f"[background] {task.status}: {task.request}")
+        self._status(f"[background] {task.status}: {task.request}")
         self._beep()
         self._say(msg)
 
@@ -283,14 +308,14 @@ class CLIApp:
     def _confirm_by_voice(self, description: str, level: PermissionLevel) -> bool:
         critical = level >= PermissionLevel.CRITICAL
         how = "Say confirm to go ahead, or no to cancel." if critical else "Say yes or no."
-        print(f"\n[permission {level.name}] {description}")
+        self._status(f"[permission {level.name}] {description}")
         prompt = f"I need your permission to {spoken_permission(description)}. {how}"
         for attempt in range(2):
             self._say(prompt)
             heard = self._listen()
             answer = parse_confirmation(heard.text if heard.success else "", level)
             if heard.success:
-                print(f"You (voice): {heard.text}")
+                print(f"You: {heard.text}")
             if answer is not None:
                 logger.info("Voice %s for %s (%s)", "approval" if answer else "denial", description, level.name)
                 return answer
@@ -312,12 +337,12 @@ class CLIApp:
             return None
         secs = float(getattr(self.config.voice, "follow_up_seconds", 0) or 0)
         self._follow_up_until = 0.0
-        print(f"[listening for a follow-up... just speak ({secs:.0f}s)]")
+        self._status(f"[listening for a follow-up... just speak ({secs:.0f}s)]")
         result = self._listen(timeout_s=max(1, int(round(secs))))
         if not result.success or not (result.text or "").strip():
-            print(f"[back to waiting for \"{self.config.assistant.name}\"]")
+            self._status(f"[back to waiting for \"{self.config.assistant.name}\"]")
             return ""
-        print(f"You (voice): {result.text}")
+        print(f"You: {result.text}")
         if _ENDS_CONVERSATION.match(result.text):
             self._say("Okay.")
             return ""
@@ -331,13 +356,18 @@ class CLIApp:
                 return follow
             # Stage 0 (--wake only): wait for the wake word; the gate releases the mic for STT.
             if self.wake_gate is not None:
-                print(f"[waiting for \"{self.config.assistant.name}\"...]")
+                self._status(f"[waiting for \"{self.config.assistant.name}\"...]")
                 threshold = self.config.voice.wake_threshold
-                near_miss = lambda s: print(  # noqa: E731
+                near_miss = lambda s: self._status(  # noqa: E731
                     f"[wake] heard something close (score {s:.2f}, needs {threshold:.2f}) "
                     f"- say \"{self.config.assistant.name}\" a little clearer or closer")
                 if not self.wake_gate.wait(on_near_miss=near_miss):
-                    print(f"[wake] {self.wake_gate.reason or 'no wake word heard'}")
+                    reason = self.wake_gate.reason or "no wake word heard"
+                    if "microphone" in reason and reason != getattr(self, "_last_mic_notice", ""):
+                        self._last_mic_notice = reason  # say it once, not every second
+                        self._notice(f"I can't hear you: {reason}.")
+                    else:
+                        self._status(f"[wake] {reason}")
                     time.sleep(1.0)  # don't spin if the mic keeps failing
                     return ""
                 # Hand STT the room level heard before the wake word (used for follow-ups too).
@@ -346,12 +376,12 @@ class CLIApp:
                     self.stt.known_ambient_rms = ambient
                 self._beep()
             # Stage 1: LISTEN — microphone is active
-            print("[listening...]")
+            self._status("[listening...]")
             result = self._listen()
             if not result.success:
-                print(f"[STT] {result.error}")
+                self._status(f"[STT] {result.error}")
                 return ""
-            print(f"You (voice): {result.text}")
+            print(f"You: {result.text}")
             return result.text
         return input("You: ")
 

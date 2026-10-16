@@ -179,7 +179,9 @@ class ProactiveConfig:
     performance: bool = True
     disk: bool = True
     rain: bool = True
-    morning_briefing: bool = True
+    greet_on_open: bool = True                # greeting + time + weather + headlines when you open the laptop
+    greet_cooldown_minutes: float = 60        # at most one greeting per this many minutes
+    away_minutes: float = 15                  # idle this long, then active again = "came back"
     break_after_minutes: float = 120          # 0 = never suggest a break
     quiet_start_hour: int = 23                # only urgent alerts between these hours
     quiet_end_hour: int = 7
@@ -368,6 +370,9 @@ class Config:
     vision: VisionConfig = field(default_factory=VisionConfig)
     log_level: str = "INFO"
     log_file: str = "data/veronica.log"
+    # "conversation": the terminal shows only the user's and VERONICA's words (logs and
+    # status lines still go to log_file). "full": everything, for troubleshooting.
+    console_mode: str = "full"
 
     # ---- secrets, read once via .env, never scattered around the codebase ----
     _secrets: dict[str, str] = field(default_factory=dict, repr=False)

@@ -8,7 +8,8 @@ Checks (each with its own cooldown, all optional in `proactive:` config):
   * C: drive nearly full
   * rain likely within the hour at the user's location
   * long unbroken session at the PC (suggests a break)
-  * morning briefing the first time the user is at the PC on a new morning
+  * a greeting (time, weather, top headlines) whenever the laptop is opened: at login,
+    on waking from sleep, or when the user is back after being away — no wake word
 
 Manners: never talks over the user (waits while they speak), holds non-urgent alerts
 while a fullscreen app (game, movie) is in front, and only urgent alerts during quiet
@@ -71,7 +72,6 @@ class ProactiveMonitor:
         self._streak: dict[str, int] = {}        # consecutive high readings
         self._armed = {"battery_low": True, "battery_critical": True}
         self._session_start: Optional[float] = None
-        self._briefed_on: Optional[dt.date] = None
         self.paused_until = 0.0
         self._held: list[tuple[str, str]] = []   # non-urgent alerts held during fullscreen
         self._stop = threading.Event()
@@ -89,14 +89,50 @@ class ProactiveMonitor:
     def stop(self) -> None:
         self._stop.set()
 
+    _FAST_S = 5.0                 # "laptop opened" detection cadence
+    _SLEEP_GAP_S = 90.0           # a wall-clock jump this big between checks = it was asleep
+
     def _loop(self) -> None:
-        self._stop.wait(20)  # let startup finish before the first check
-        while not self._stop.is_set():
+        self._stop.wait(3)        # let the voice come up
+        self.on_open("startup")   # logged in / VERONICA started: greet right away
+        while not self._stop.wait(self._FAST_S):
             try:
-                self.tick()
+                self.poll()
             except Exception:
                 logger.exception("Proactive check failed; continuing.")
-            self._stop.wait(float(getattr(self.cfg, "check_every_s", 60)))
+
+    def poll(self) -> None:
+        """One fast check: was the laptop just opened? and, once a minute, the alerts."""
+        wall = self._clock()
+        last_wall = getattr(self, "_last_wall", wall)
+        if wall - last_wall > self._SLEEP_GAP_S:
+            self.on_open("resumed from sleep")                     # lid opened
+        away = self._idle() >= float(getattr(self.cfg, "away_minutes", 15)) * 60
+        if getattr(self, "_was_away", False) and not away:
+            self.on_open("back after being away")                   # unlocked / sat back down
+        self._was_away, self._last_wall = away, wall
+        if wall - getattr(self, "_last_tick", -1e12) >= float(getattr(self.cfg, "check_every_s", 60)):
+            self._last_tick = wall
+            self.tick()
+
+    def on_open(self, why: str) -> None:
+        """The user just opened / came back to the laptop: greet them (no wake word),
+        at most once per `greet_cooldown_minutes`."""
+        if (self._briefing is None or not getattr(self.cfg, "greet_on_open", True)
+                or self._clock() < self.paused_until):
+            return
+        if not self._cool("greeting", float(getattr(self.cfg, "greet_cooldown_minutes", 60))):
+            return
+        logger.info("Greeting the user (%s)", why)
+        self._last["greeting"] = self._clock()
+        self._session_start = self._clock()
+        try:
+            text = self._briefing()
+        except Exception:
+            logger.exception("Greeting failed")
+            return
+        if text:
+            self.speak(text, False)  # never held back: they just sat down and expect it
 
     # -- one round of checks -----------------------------------------------------------
     def _cool(self, kind: str, minutes: float) -> bool:
@@ -172,23 +208,11 @@ class ProactiveMonitor:
             return
         if self._session_start is None:
             self._session_start = now
-            self._maybe_brief()
         minutes = float(getattr(self.cfg, "break_after_minutes", 120) or 0)
         if minutes and now - self._session_start >= minutes * 60 and self._cool("break", minutes):
             hours = round((now - self._session_start) / 3600, 1)
             self._say("break", f"You've been at it for {hours:g} hours straight. Good moment to stretch "
                                "and grab some water.")
-
-    def _maybe_brief(self) -> None:
-        today = self._now().date()
-        if (self._briefing is None or not getattr(self.cfg, "morning_briefing", True)
-                or self._briefed_on == today or not 5 <= self._now().hour < 12):
-            return
-        self._briefed_on = today
-        try:
-            self._say("briefing", self._briefing())
-        except Exception:
-            logger.exception("Morning briefing failed")
 
     def _rain_soon(self) -> None:
         if self._rain is None or not getattr(self.cfg, "rain", True) or not self._cool("rain", 180):

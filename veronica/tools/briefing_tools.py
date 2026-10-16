@@ -59,7 +59,9 @@ class DailyBriefingTool(Tool):
     def matches(self, text: str) -> bool:
         return bool(_BRIEFING.match(text))
 
-    def run(self, **kwargs: Any) -> ToolResult:
+    def run(self, include_tasks: bool = True, **kwargs: Any) -> ToolResult:
+        """`include_tasks=False` is the greeting when the laptop opens: greeting, time,
+        weather and headlines only."""
         now = dt.datetime.now()
         parts = [f"{_greeting(now)}. It's {now.strftime('%I:%M %p').lstrip('0')} on {now.strftime('%A, %d %B')}."]
 
@@ -73,13 +75,13 @@ class DailyBriefingTool(Tool):
             parts.append("Tell me your city, like 'my city is Mumbai', and I'll include the weather.")
 
         today = [r for r in self.reminders.pending()
-                 if dt.datetime.fromisoformat(r["due"]).date() == now.date()]
+                 if dt.datetime.fromisoformat(r["due"]).date() == now.date()] if include_tasks else []
         if today:
             items = [f"{r['text']} at {dt.datetime.fromisoformat(r['due']).strftime('%I:%M %p').lstrip('0')}"
                      for r in today[:3]]
             parts.append(f"You have {len(today)} reminder{'s' if len(today) != 1 else ''} today: {_join(items)}.")
 
-        todo = [t["text"] for t in self.todos.open_items()]
+        todo = [t["text"] for t in self.todos.open_items()] if include_tasks else []
         if todo:
             shown = todo[:3] + ([f"{len(todo) - 3} more"] if len(todo) > 3 else [])
             parts.append(f"On your to-do list: {_join(shown)}.")

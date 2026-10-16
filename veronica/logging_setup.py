@@ -16,7 +16,10 @@ from pathlib import Path
 _CONFIGURED = False
 
 
-def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None) -> None:
+def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None,
+                  console_level: str | None = None) -> None:
+    """`console_level` limits what reaches the terminal (the log file always gets
+    `log_level`). "CRITICAL" keeps the terminal to the conversation itself."""
     global _CONFIGURED
     if _CONFIGURED:
         return
@@ -32,8 +35,11 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None) -
 
     console = logging.StreamHandler()
     console.setFormatter(fmt)
+    if console_level:
+        console.setLevel(console_level.upper())
     root.addHandler(console)
 
+    file_handler = None
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,6 +48,13 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None) -
         )
         file_handler.setFormatter(fmt)
         root.addHandler(file_handler)
+
+    if console_level and console_level.upper() in ("ERROR", "CRITICAL"):
+        # Library warnings (deprecation notices etc.) go to the log file, not the conversation.
+        logging.captureWarnings(True)
+        warnings_logger = logging.getLogger("py.warnings")
+        warnings_logger.propagate = False
+        warnings_logger.handlers = [file_handler] if file_handler else [logging.NullHandler()]
 
     _CONFIGURED = True
 

@@ -25,7 +25,10 @@ assistant:
     if you know it — but not in every reply. You are proactive and never pretend to have
     done something you have not actually done. When a tool is available for a task, you use it instead of
     guessing — including run_shell_command, read_file, write_file, and delete_file for
-    anything the other tools don't cover. Risky actions (writing or deleting files,
+    anything the other tools don't cover. For everyday PC control prefer the dedicated
+    tools — window_control (minimize all, show desktop, minimize/maximize/switch to an
+    app), open_path (folders, documents), lock_or_sleep, close_window, shutdown_pc,
+    cancel_shutdown — never a shell command for these. Risky actions (writing or deleting files,
     shell commands) are confirmed with the user automatically before they run, so you
     don't need to ask for permission yourself in words — just call the tool and the
     system will handle confirmation.
@@ -279,6 +282,10 @@ learning:
 
 log_level: "INFO"
 log_file: "data/veronica.log"
+# "conversation": the terminal shows only your words and VERONICA's (plus anything you
+# need to know, said by her). Every log/status line still goes to log_file.
+# "full": show everything (tool registration, routing, [listening...]) for troubleshooting.
+console_mode: "conversation"
 
 # Voice / continuous listening — Phase 11C (disabled by default; transport layer only)
 voice:
@@ -331,7 +338,7 @@ gods_eye:
           get_cyclones, situation_brief, vessels_in_area, show_in_gods_eye_view]
 
 # Proactive VERONICA: speaks up on her own (battery, overload, low disk, rain within the hour,
-# long sessions, morning briefing). Never talks over you; holds non-urgent alerts while a
+# long sessions) and greets you whenever you open the laptop. Never talks over you; holds non-urgent alerts while a
 # fullscreen game/movie is in front; only urgent ones in quiet hours. Say "pause alerts"
 # (for N hours/minutes) / "resume alerts".
 proactive:
@@ -341,7 +348,10 @@ proactive:
   performance: true
   disk: true
   rain: true
-  morning_briefing: true
+  greet_on_open: true              # log in / open the lid / come back: greeting, time, weather and
+                                   # top headlines, spoken right away — no wake word needed
+  greet_cooldown_minutes: 60       # at most one greeting an hour
+  away_minutes: 15                 # away this long, then back = greet again (if the hour has passed)
   break_after_minutes: 120
   quiet_start_hour: 23
   quiet_end_hour: 7

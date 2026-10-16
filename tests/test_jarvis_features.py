@@ -71,7 +71,8 @@ class Clock:
 def monitor(readings, clock=None, **kw):
     clock = clock or Clock()
     said = []
-    cfg = SimpleNamespace(battery=True, performance=True, disk=True, rain=True, morning_briefing=True,
+    cfg = SimpleNamespace(battery=True, performance=True, disk=True, rain=True, greet_on_open=True,
+                          greet_cooldown_minutes=60, away_minutes=15, check_every_s=60,
                           break_after_minutes=120, quiet_start_hour=23, quiet_end_hour=7)
     queue = list(readings)
     m = ProactiveMonitor(cfg, lambda text, urgent: said.append((text, urgent)),
@@ -138,10 +139,59 @@ def test_stepping_away_resets_the_session():
     assert not any("straight" in s for s, _ in said)
 
 
-def test_morning_briefing_once_per_morning():
-    m, said, clock = monitor([healthy()], Clock(hour=8), briefing=lambda: "Good morning. It's 8 AM.")
-    m.tick(); clock.t += 3600; m.tick()
-    assert [s for s, _ in said].count("Good morning. It's 8 AM.") == 1
+GREETING = "Good afternoon. It's 2:00 PM on Friday. In Pune it's 26 degrees. Top headlines: ..."
+
+
+def test_greets_at_startup_any_time_of_day_without_the_wake_word():
+    m, said, clock = monitor([healthy()], Clock(hour=14), briefing=lambda: GREETING)
+    m.on_open("startup")
+    assert said == [(GREETING, False)]
+
+
+def test_greets_when_the_lid_is_opened_after_sleep():
+    m, said, clock = monitor([healthy()], briefing=lambda: GREETING)
+    m.poll()                                    # normal check
+    clock.t += 5
+    m.poll()
+    assert said == []
+    clock.t += 3 * 3600                         # laptop asleep for 3 hours (wall clock jumped)
+    m.poll()
+    assert said and said[0][0] == GREETING
+
+
+def test_greets_when_back_after_being_away_but_at_most_once_an_hour():
+    idle = {"s": 0}
+    m, said, clock = monitor([healthy()], idle=lambda: idle["s"], briefing=lambda: GREETING)
+    m.on_open("startup")
+    idle["s"] = 20 * 60; clock.t += 20 * 60; m.poll()            # away 20 min
+    idle["s"] = 0; clock.t += 5; m.poll()                         # back — but within the hour
+    assert [s for s, _ in said].count(GREETING) == 1
+    idle["s"] = 20 * 60; clock.t += 50 * 60; m.poll()            # away again, an hour later
+    idle["s"] = 0; clock.t += 5; m.poll()
+    assert [s for s, _ in said].count(GREETING) == 2
+
+
+def test_greeting_can_be_turned_off_and_respects_pause():
+    m, said, clock = monitor([healthy()], briefing=lambda: GREETING)
+    m.cfg.greet_on_open = False
+    m.on_open("startup")
+    m.cfg.greet_on_open = True
+    m.pause(30); m.on_open("startup")
+    assert said == []
+
+
+def test_greeting_skips_reminders_and_todos(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # stores write ./data — never the user's real to-do list
+    from veronica.tools.briefing_tools import DailyBriefingTool
+    from veronica.tools.productivity_tools import Profile, ReminderStore, TodoStore
+    todos = TodoStore()
+    todos.add("pay rent")
+    weather = SimpleNamespace(run=lambda city: SimpleNamespace(success=False))
+    tool = DailyBriefingTool(weather_tool=weather, profile=Profile(), reminders=ReminderStore(), todos=todos,
+                             headlines=lambda: ["Big news (Src)"])
+    assert "pay rent" in tool.run().message
+    greeting = tool.run(include_tasks=False).message
+    assert "pay rent" not in greeting and "Top headlines: Big news." in greeting
 
 
 def test_rain_heads_up_with_cooldown():
@@ -254,3 +304,46 @@ def test_pause_alert_phrases(text, minutes):
     app.background = None
     assert app._background_reply(text).startswith("Okay, alerts paused for")
     assert app.paused == minutes
+
+
+# ---------------------------------------------------------------- quiet console
+
+def _console_cli(mode):
+    from veronica.ui.cli import CLIApp
+    app = CLIApp.__new__(CLIApp)
+    app.config = SimpleNamespace(assistant=SimpleNamespace(name="VERONICA"), console_mode=mode)
+    return app
+
+
+def test_conversation_console_hides_status_but_never_notices(capsys):
+    app = _console_cli("conversation")
+    app._status("[listening...]")
+    app._notice("I can't hear you: the microphone stopped delivering audio.")
+    out = capsys.readouterr().out
+    assert "[listening...]" not in out
+    assert out == "VERONICA: I can't hear you: the microphone stopped delivering audio.\n"
+
+
+def test_full_console_shows_status(capsys):
+    _console_cli("full")._status("[listening...]")
+    assert "[listening...]" in capsys.readouterr().out
+
+
+def test_quiet_logging_keeps_the_terminal_clean_but_the_file_complete(tmp_path):
+    import logging
+    import veronica.logging_setup as ls
+    root = logging.getLogger("veronica")
+    saved = (ls._CONFIGURED, list(root.handlers))
+    ls._CONFIGURED, root.handlers = False, []
+    try:
+        ls.setup_logging("INFO", tmp_path / "v.log", console_level="CRITICAL")
+        console = next(h for h in root.handlers if type(h) is logging.StreamHandler)
+        assert console.level == logging.CRITICAL
+        ls.get_logger("tools.registry").info("Registered tool 'x'")
+        for h in root.handlers:
+            h.flush()
+        assert "Registered tool 'x'" in (tmp_path / "v.log").read_text(encoding="utf-8")
+    finally:
+        for h in root.handlers:
+            h.close()
+        ls._CONFIGURED, root.handlers = saved

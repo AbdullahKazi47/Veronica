@@ -51,7 +51,7 @@ class ToolRegistry:
                 logger.exception("Tool '%s' raised while matching text; skipping.", tool.name)
         return None
 
-    def dispatch(self, name: str, **kwargs) -> ToolResult:
+    def dispatch(self, name: str, /, **kwargs) -> ToolResult:  # / : tools may take a "name" argument
         tool = self.get(name)
         if tool is None:
             return ToolResult.fail(f"No such tool: '{name}'.")
@@ -62,7 +62,9 @@ class ToolRegistry:
             description=f"{tool.name}({kwargs})",
         )
         if not decision.allowed:
-            return ToolResult.fail(decision.reason or f"'{tool.name}' was not permitted to run.")
+            # Spelled out for the model: it once said "All windows minimized" after a "no".
+            return ToolResult.fail(f"NOT DONE — '{tool.name}' did not run ({decision.reason or 'not permitted'}). "
+                                   "Nothing happened; tell the user it was not done.", refused=True)
 
         try:
             return tool.run(**kwargs)
@@ -130,6 +132,14 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.utility_tools import CalculatorTool, CurrentTimeTool, NoteTool
     from veronica.tools.web_tools import FetchWebpageTool, OpenWebsiteTool, WebSearchTool
     from veronica.tools.weather_tools import WeatherTool
+    from veronica.tools.window_tools import (
+        CancelShutdownTool,
+        CloseWindowTool,
+        LockOrSleepTool,
+        OpenPathTool,
+        ShutdownTool,
+        WindowControlTool,
+    )
     from veronica.tools.youtube_tools import YouTubeSearchTool
 
     profile, reminders, todos = Profile(config), ReminderStore(config), TodoStore(config)
@@ -167,6 +177,14 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         ReadNotificationsTool(config=config),
         RunDiagnosticsTool(),                  # before system_status: the deeper check
         WikipediaTool(config=config),
+        # Everyday PC control at the right permission level (only close/shutdown ask),
+        # before the 'open' tools so 'open the projects folder' finds the folder.
+        CancelShutdownTool(),
+        ShutdownTool(),
+        LockOrSleepTool(),
+        WindowControlTool(),
+        CloseWindowTool(),
+        OpenPathTool(),
         CurrentTimeTool(),
         CalculatorTool(),
         NoteTool(config=config),

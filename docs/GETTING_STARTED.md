@@ -396,6 +396,27 @@ routine reads stop interrupting you — the execution tools stay locked at
 `SENSITIVE`/`CRITICAL` either way. Set `safety.dry_run: true` (or pass `--dry-run`) to
 have VERONICA describe what it *would* do without doing it.
 
+### Everyday PC control (`tools/window_tools.py`)
+
+This build ships with `require_confirmation_above: SENSITIVE`, so only destructive actions
+ask. Everyday tasks have dedicated tools, so they never fall back to a shell command:
+
+| Say | Tool | Asks? |
+|---|---|---|
+| "minimize all my tabs", "show desktop", "restore all windows" | `window_control` | no |
+| "minimize Chrome", "maximize Spotify", "switch to WhatsApp" | `window_control` | no |
+| "open the projects folder", "open veronica folder in projects", "open my resume pdf" | `open_path` | no |
+| "lock my PC", "put the laptop to sleep" | `lock_or_sleep` | no |
+| "cancel shutdown" | `cancel_shutdown` | no |
+| "close Spotify" (unsaved work) | `close_window` | yes / no |
+| "shut down my PC", "restart in 5 minutes", "sign out" | `shutdown_pc` | yes / no, then a 30 s cancellable delay |
+| deleting files, shell commands | `delete_file`, `run_shell_command` | say "confirm" |
+
+`open_path` searches your home folder by name (the shallowest match wins, and AppData and
+hidden folders are skipped). It never runs programs or scripts (`.exe`, `.bat`, `.ps1`,
+`.lnk` and others): apps are opened by name with "open <app>". A bare "go to sleep" does not
+sleep the PC, because you have to name the PC.
+
 ## 7. Running the tests
 
 ```bash
