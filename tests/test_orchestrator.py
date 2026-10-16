@@ -48,7 +48,7 @@ class NoopLLM(LLMProvider):
 
     name = "noop"
 
-    def chat(self, messages, tools=None, temperature=0.4):
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
         last = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return LLMResponse(content=f"(noop) you said: {last}")
 
@@ -61,7 +61,7 @@ class StuckLoopLLM(LLMProvider):
     def __init__(self):
         self.attempts = 0
 
-    def chat(self, messages, tools=None, temperature=0.4):
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
         self.attempts += 1
         return LLMResponse(
             content="",

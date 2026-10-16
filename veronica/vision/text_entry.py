@@ -194,17 +194,21 @@ class TextStateVerifier:
         )
 
 
+# Text-input control types in any app: classic Edit boxes and the Document controls
+# modern editors (Windows 11 Notepad, Word, browsers' editable areas) expose.
+_EDITABLE_CONTROL_TYPES = ("Edit", "Document")
+
+
 def find_editor_target(perception_layer: PerceptionLayer) -> Optional[UIElement]:
-    """Obtain the Notepad Text editor element via UIA (get_element_at_point
-    or focused_element), since desktop_elements excludes deep descendants."""
+    """Obtain the focused text-input element of whatever app is in front, via UIA
+    (focused element), since desktop_elements excludes deep descendants."""
     adapter = getattr(perception_layer, "uia_provider", None)
     if adapter is not None and hasattr(adapter, "_adapter") and adapter._adapter and adapter._adapter.is_available():
-        # Try to find a focused Edit control; if unavailable, return None
         focused = adapter._adapter.get_focused_element()
-        if focused is not None and focused.control_type == "Edit":
+        if focused is not None and focused.control_type in _EDITABLE_CONTROL_TYPES:
             return focused  # type: ignore[return-value]
     # Fallback through perception layer state
     state = perception_layer.get_current_state()
-    if state.focused_element is not None and state.focused_element.control_type == "Edit":
+    if state.focused_element is not None and state.focused_element.control_type in _EDITABLE_CONTROL_TYPES:
         return state.focused_element
     return None

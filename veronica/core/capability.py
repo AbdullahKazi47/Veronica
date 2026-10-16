@@ -86,7 +86,7 @@ def build_default_capabilities() -> "CapabilityRegistry":
         Capability(
             name="search_web",
             description="Search the web and YouTube",
-            tools=("web_search", "play_on_youtube"),
+            tools=("web_search", "play_media"),
         ),
         Capability(
             name="weather",

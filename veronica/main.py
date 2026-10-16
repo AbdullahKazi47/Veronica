@@ -1,5 +1,5 @@
 """
-Entry point: `python -m veronica.main [--voice] [--dry-run] [--config PATH]`
+Entry point: `python -m veronica.main [--voice | --wake] [--dry-run] [--config PATH]`
 
 Wires together config -> logging -> LLM provider -> tool registry (with permission
 gate) -> orchestrator -> CLI front-end. This is the only place all those pieces are
@@ -143,7 +143,7 @@ def build_app(config: Config, interactive: bool = True) -> App:
         confirm_callback=_confirm_in_terminal if interactive else None,
         dry_run=config.safety.dry_run,
     )
-    tools = build_default_registry(gate, config=config)
+    tools = build_default_registry(gate, config=config, llm=llm)
 
     long_term_memory = LongTermMemory(config.resolve_path(config.memory.long_term_path))
 
@@ -350,6 +350,8 @@ def build_app(config: Config, interactive: bool = True) -> App:
 def main() -> None:
     parser = argparse.ArgumentParser(description="VERONICA — a JARVIS-inspired personal AI assistant.")
     parser.add_argument("--voice", action="store_true", help="Enable voice input/output.")
+    parser.add_argument("--wake", action="store_true",
+                        help="Voice mode that waits for the wake word before each request (implies --voice).")
     parser.add_argument("--config", default=None, help="Path to config.yaml.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate risky actions instead of executing them.")
     args = parser.parse_args()
@@ -360,7 +362,8 @@ def main() -> None:
         config.safety.dry_run = True
 
     app = build_app(config, interactive=True)
-    cli = CLIApp(config=config, orchestrator=app.orchestrator, voice_mode=args.voice)
+    cli = CLIApp(config=config, orchestrator=app.orchestrator,
+                 voice_mode=args.voice or args.wake, wake_mode=args.wake)
     cli.run()
 
 

@@ -1,6 +1,35 @@
 """Phase 11E.1 — Microphone with sounddevice backend + pyaudio fallback."""
 from __future__ import annotations
 
+# Prefer the host API that reliably opens a 16 kHz mono stream on Windows; WASAPI/WDM-KS
+# entries for the same mic often reject that format.
+_HOSTAPI_PREFERENCE = ("MME", "Windows DirectSound", "Windows WASAPI", "Windows WDM-KS")
+
+
+def resolve_input_device(name: str | None = None, index: int | None = None,
+                         devices=None, hostapis=None) -> int | None:
+    """Pick the input device by NAME first (indexes change when Windows renumbers
+    devices — that broke the mic once), then the configured index if it is still an
+    input, else None (= the system default input)."""
+    try:
+        if devices is None or hostapis is None:
+            import sounddevice as sd
+            devices, hostapis = sd.query_devices(), sd.query_hostapis()
+    except Exception:
+        return index
+    inputs = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 0) > 0]
+    if name:
+        wanted = name.lower()
+        hits = [(i, d) for i, d in inputs if wanted in d.get("name", "").lower()]
+        if hits:
+            def rank(item):
+                api = hostapis[item[1].get("hostapi", 0)].get("name", "")
+                return _HOSTAPI_PREFERENCE.index(api) if api in _HOSTAPI_PREFERENCE else len(_HOSTAPI_PREFERENCE)
+            return min(hits, key=rank)[0]
+    if index is not None and any(i == index for i, _ in inputs):
+        return index
+    return None
+
 class MicrophoneInput:
     """Sounddevice-first (Python 3.14-supported); pyaudio optional fallback.
     Never fakes audio capture. BLOCKED reported honestly when no backend works."""

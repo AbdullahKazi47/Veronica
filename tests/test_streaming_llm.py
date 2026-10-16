@@ -80,10 +80,10 @@ class _SlowProvider(LLMProvider):
         self.model = "slow-model"
         self.yielded = 0
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         return LLMResponse(content=self.text)
 
-    def chat_stream(self, messages, tools=None, temperature=0.4):
+    def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
         for i, word in enumerate(self.text.split(" ")):
             if self.fail_at is not None and i >= self.fail_at:
                 raise RuntimeError(f"deliberate failure after {self.fail_at} chunks")
@@ -120,10 +120,10 @@ class _GatedProvider(LLMProvider):
         self.model = "gated-model"
         self.yielded = 0
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         return LLMResponse(content=" ".join(self.tokens))
 
-    def chat_stream(self, messages, tools=None, temperature=0.4):
+    def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
         for i, tok in enumerate(self.tokens):
             self.yielded += 1
             piece = tok + (" " if i < len(self.tokens) - 1 else "")
@@ -141,10 +141,10 @@ class _FailingProvider(LLMProvider):
     name = "failing"
     supports_streaming = True
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         return LLMResponse(content="should never reach here", ok=False)
 
-    def chat_stream(self, messages, tools=None, temperature=0.4):
+    def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
         raise RuntimeError("simulated provider explosion")
         yield  # make it a generator
         yield StreamChunk(text="never", done=True)
@@ -234,7 +234,7 @@ class TestProviderSupportsStreaming:
     def test_base_default_not_streaming(self):
         class _BaseOnly(LLMProvider):
             name = "base_only"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content="x")
         assert provider_supports_streaming(_BaseOnly()) is False
 
@@ -417,9 +417,9 @@ class TestBackpressure:
         # Bypass _SlowProvider (sleeps); instead implement directly for burst speed
         class _BurstProvider(LLMProvider):
             name = "burst"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content=text)
-            def chat_stream(self, messages, tools=None, temperature=0.4):
+            def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 for i, tok in enumerate(words):
                     piece = tok + (" " if i < len(words) - 1 else "")
                     yield StreamChunk(text=piece, sequence=i)
@@ -449,9 +449,9 @@ class TestBackpressure:
                 self._text = text
                 self._tokens = tokens
                 self.model = "wordstream"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content=self._text)
-            def chat_stream(self, messages, tools=None, temperature=0.4):
+            def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 for i, tok in enumerate(self._tokens):
                     piece = tok + (" " if i < len(self._tokens) - 1 else "")
                     yield StreamChunk(text=piece, sequence=i)
@@ -490,9 +490,9 @@ class TestTimeouts:
 
         class _StallFirstProvider(LLMProvider):
             name = "stallfirst"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content=" ".join(tokens))
-            def chat_stream(self, messages, tools=None, temperature=0.4):
+            def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 gate.wait(timeout=30)   # block before yielding anything
                 if not gate.is_set():
                     return
@@ -526,9 +526,9 @@ class TestTimeouts:
         """Provider yields slowly; overall timeout is the hard ceiling."""
         class _VerySlowProvider(LLMProvider):
             name = "very_slow"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content="never finish")
-            def chat_stream(self, messages, tools=None, temperature=0.4):
+            def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 yield StreamChunk(text="a", sequence=0)
                 time.sleep(1.0)  # done-chunk arrives AFTER the overall ceiling fires
                 yield StreamChunk(text="b", sequence=1, finish_reason="stop", done=True)
@@ -860,7 +860,7 @@ class TestOrchestratorStreaming(_OrchestratorHarness):
     def test_no_streaming_capable_provider_honest_fallback(self, tmp_path):
         class _NonStreaming(LLMProvider):
             name = "non_stream"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content="(ns) fallback")
         sc = StreamController(coalesce_ms=0)
         orch = self._make_orch(tmp_path, llm=_NonStreaming(), streaming_enabled=True,
@@ -906,7 +906,7 @@ class TestOrchestratorRoutingStreaming:
         # Global LLM is NON-streaming to prove routing is used, not the fallback
         class _StubLLM(LLMProvider):
             name = "stub"
-            def chat(self, messages, tools=None, temperature=0.4):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
                 return LLMResponse(content="FAIL-global-should-not-be-used")
         orch = Orchestrator(
             config=config, llm=_StubLLM(), tools=tools, long_term_memory=memory,

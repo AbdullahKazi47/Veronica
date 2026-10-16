@@ -8,6 +8,10 @@ from veronica.safety.permissions import PermissionLevel
 from veronica.tools.base import Tool, ToolResult
 
 _FIND_PATTERN = re.compile(r"\bfind (?:my |the )?(?:file )?(.+)$", re.I)
+# Fast path only when it's clearly about a file: "find my resume file", "find report.pdf",
+# "find the photos from goa" — not "find cheap flights" or "find facts about X".
+_FILE_WORDS = re.compile(r"\b(?:files?|folders?|documents?|docs?|pdfs?|photos?|pictures?|images?|screenshots?|"
+                         r"videos?|songs?|spreadsheets?|presentations?|resume|cv)\b|\.\w{1,5}\b", re.I)
 _LIST_PATTERN = re.compile(r"\blist files? in (.+)$", re.I)
 
 _SEARCH_ROOTS = [Path.home() / "Documents", Path.home() / "Downloads", Path.home() / "Desktop"]
@@ -24,7 +28,8 @@ class FindFileTool(Tool):
     }
 
     def matches(self, text: str) -> bool:
-        return bool(_FIND_PATTERN.search(text))
+        m = _FIND_PATTERN.search(text)
+        return bool(m) and bool(_FILE_WORDS.search(m.group(0)))
 
     def extract_arguments(self, text: str) -> dict[str, Any]:
         m = _FIND_PATTERN.search(text)

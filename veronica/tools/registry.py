@@ -32,16 +32,18 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)
 
+    # Copies, not live views: integrations (God's Eye View) register tools from a
+    # background thread while requests are being served.
     def all(self) -> Iterable[Tool]:
-        return self._tools.values()
+        return list(self._tools.values())
 
     def schemas(self) -> list[dict]:
         """All tool schemas, for handing to an LLM that supports function-calling."""
-        return [t.schema() for t in self._tools.values()]
+        return [t.schema() for t in list(self._tools.values())]
 
     def find_fast_match(self, text: str) -> Optional[Tool]:
         """Return the first tool willing to claim this text via its fast-path matcher."""
-        for tool in self._tools.values():
+        for tool in list(self._tools.values()):
             try:
                 if tool.matches(text):
                     return tool
@@ -72,9 +74,23 @@ class ToolRegistry:
             return ToolResult.fail(f"'{tool.name}' failed unexpectedly. Check the logs.")
 
 
-def build_default_registry(gate: PermissionGate, config=None) -> ToolRegistry:
+def _summarizer(llm):
+    if llm is None:
+        return None
+    from veronica.llm.base import ChatMessage
+
+    def summarize(prompt: str) -> str:
+        resp = llm.chat([ChatMessage(role="user", content=prompt)], temperature=0.3)
+        return resp.content if getattr(resp, "ok", True) else ""
+    return summarize
+
+
+def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolRegistry:
     """Construct a registry with every built-in tool. This is the single place that
-    knows the full built-in tool list — new tools get one extra line here."""
+    knows the full built-in tool list — new tools get one extra line here.
+
+    `llm` (optional) lets tools that need one quick model call — the news summary —
+    use the configured fast model directly instead of a second tool round-trip."""
     from veronica.tools.execution_tools import (
         DeleteFileTool,
         ReadFileTool,
@@ -88,27 +104,83 @@ def build_default_registry(gate: PermissionGate, config=None) -> ToolRegistry:
         SetVolumeTool,
         SystemStatusTool,
     )
+    from veronica.tools.briefing_tools import DailyBriefingTool
+    from veronica.tools.memory_tools import (
+        ForgetAllMemoriesTool,
+        ForgetFactTool,
+        RecallMemoryTool,
+        RememberFactTool,
+    )
+    from veronica.tools.media_tools import MediaControlTool, WikipediaTool
+    from veronica.tools.camera_tools import LookThroughCameraTool
+    from veronica.tools.diagnostics_tools import RunDiagnosticsTool
+    from veronica.tools.news_tools import NewsTool, ShowNewsTool
+    from veronica.tools.notification_tools import ReadNotificationsTool
+    from veronica.tools.screen_tools import LookAtScreenTool
+    from veronica.tools.productivity_tools import (
+        CancelReminderTool,
+        ListRemindersTool,
+        Profile,
+        ReminderStore,
+        SetHomeCityTool,
+        SetReminderTool,
+        TodoStore,
+        TodoTool,
+    )
     from veronica.tools.utility_tools import CalculatorTool, CurrentTimeTool, NoteTool
     from veronica.tools.web_tools import FetchWebpageTool, OpenWebsiteTool, WebSearchTool
     from veronica.tools.weather_tools import WeatherTool
     from veronica.tools.youtube_tools import YouTubeSearchTool
 
+    profile, reminders, todos = Profile(config), ReminderStore(config), TodoStore(config)
+    # Installed apps/browsers are discovered, not listed; both 'open' tools share one parse.
+    from veronica.tools.app_index import shared_index
+    from veronica.tools.system_tools import _OpenRouting
+    apps = shared_index(config)
+    open_routing = _OpenRouting(config, apps)
+    weather = WeatherTool(config=config, profile=profile)
+    news = NewsTool(config=config, summarizer=_summarizer(llm))
     registry = ToolRegistry(gate)
+    # God's Eye View first: its 'open the globe' / 'show me that' must win over 'open <site>'.
+    from veronica.integrations.gods_eye import register_gods_eye
+    if config is not None:
+        register_gods_eye(registry, config, profile)
     for tool in (
+        # Voice productivity first: their fast-path phrases ("remind me in 10 minutes to
+        # check the weather") must win over the generic weather/time/calc matchers.
+        DailyBriefingTool(config=config, weather_tool=weather, profile=profile,
+                          reminders=reminders, todos=todos),
+        SetReminderTool(config=config, store=reminders),
+        ListRemindersTool(config=config, store=reminders),
+        CancelReminderTool(config=config, store=reminders),
+        TodoTool(config=config, store=todos),
+        SetHomeCityTool(config=config, profile=profile),
+        ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'
+        ForgetFactTool(config=config),
+        RecallMemoryTool(config=config),
+        RememberFactTool(config=config),
+        ShowNewsTool(config=config, news=news, index=apps),  # before news: 'show me the news'
+        news,
+        MediaControlTool(),                    # before YouTube: bare 'play'/'pause'
+        LookAtScreenTool(config=config),
+        LookThroughCameraTool(config=config),
+        ReadNotificationsTool(config=config),
+        RunDiagnosticsTool(),                  # before system_status: the deeper check
+        WikipediaTool(config=config),
         CurrentTimeTool(),
         CalculatorTool(),
         NoteTool(config=config),
-        OpenApplicationTool(),
+        OpenApplicationTool(config=config, routing=open_routing),
         SetVolumeTool(),
         ScreenshotTool(config=config),
         SystemStatusTool(),
         FindFileTool(),
         ListDirectoryTool(),
-        OpenWebsiteTool(),
-        WebSearchTool(),
+        OpenWebsiteTool(config=config, routing=open_routing),
+        WebSearchTool(config=config, index=apps),
         FetchWebpageTool(),
-        YouTubeSearchTool(),
-        WeatherTool(config=config),
+        YouTubeSearchTool(config=config, index=apps),
+        weather,
         # -- general-purpose "do anything" layer: SENSITIVE/CRITICAL, always confirmed --
         ReadFileTool(),
         WriteFileTool(),

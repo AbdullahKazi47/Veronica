@@ -81,9 +81,12 @@ def test_piper_cli_fallback_to_pyttsx3(tmp_path: Path):
 
     # Patch shutil.which to return None (no CLI) and ensure piper import fails.
     fake_shutil = types.SimpleNamespace(which=lambda name: None)
-    with patch.dict(sys.modules, {"shutil": fake_shutil, "piper": None}):
-        # The method should not raise — it either falls back to pyttsx3 or logs an error.
+    # Mock the fallback: the real pyttsx3 speaks "test text" out loud through the
+    # speakers on every test run.
+    with patch.dict(sys.modules, {"shutil": fake_shutil, "piper": None}), \
+            patch.object(tts, "_speak_pyttsx3") as fallback:
         tts._speak_piper("test text")
+    fallback.assert_called_once_with("test text")
 
 
 def test_piper_python_package_path(tmp_path: Path):
@@ -255,3 +258,73 @@ def test_pygame_used_outside_windows(tmp_path: Path):
     ):
         assert tts_module._play_pygame(wav) is True
     assert fake_pygame.mixer.music.loaded == [str(wav)]
+
+
+# --- ElevenLabs backend (mocked HTTP; no network, no audio) -------------------
+
+class _Resp:
+    def __init__(self, status, content=b"", body=None):
+        self.status_code, self.content, self._body = status, content, body or {}
+        self.ok = 200 <= status < 300
+        self.text = str(self._body)
+
+    def json(self):
+        return self._body
+
+
+def _eleven(tmp_path, voice_id="VOICE123"):
+    cfg = TTSConfig(backend="elevenlabs", elevenlabs_voice_id=voice_id)
+    return TextToSpeech(cfg, cache_dir=tmp_path / "cache")
+
+
+def test_elevenlabs_synthesizes_caches_and_plays(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    tts = _eleven(tmp_path)
+    fake_requests = types.SimpleNamespace(post=MagicMock(return_value=_Resp(200, b"MP3DATA")))
+    with patch.dict(sys.modules, {"requests": fake_requests}), \
+            patch.object(TextToSpeech, "_play_audio") as play:
+        tts.speak("hello", block=True)
+        tts.speak("hello", block=True)  # second time comes from the cache
+    assert fake_requests.post.call_count == 1
+    url = fake_requests.post.call_args.args[0]
+    kwargs = fake_requests.post.call_args.kwargs
+    assert url.endswith("/v1/text-to-speech/VOICE123")
+    assert kwargs["headers"]["xi-api-key"] == "test-key"
+    assert kwargs["json"] == {"text": "hello", "model_id": "eleven_flash_v2_5"}
+    assert play.call_count == 2 and play.call_args.args[0].read_bytes() == b"MP3DATA"
+
+
+def test_elevenlabs_refusal_is_reported_and_never_falls_back(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    TextToSpeech._noticed.clear()
+    tts = _eleven(tmp_path)
+    body = {"detail": {"message": "Free users cannot use library voices via the API."}}
+    fake_requests = types.SimpleNamespace(post=MagicMock(return_value=_Resp(402, body=body)))
+    with patch.dict(sys.modules, {"requests": fake_requests}), \
+            patch.object(TextToSpeech, "_play_audio") as play, \
+            patch.object(tts, "_speak_pyttsx3") as fallback:
+        tts.speak("hello", block=True)
+    out = capsys.readouterr().out
+    assert "402" in out and "library voices" in out and "test-key" not in out
+    play.assert_not_called()
+    fallback.assert_not_called()
+    assert not list((tmp_path / "cache").glob("*.mp3"))  # an error body is never cached as audio
+
+
+def test_elevenlabs_missing_key_or_voice_does_not_call_api(tmp_path, monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    fake_requests = types.SimpleNamespace(post=MagicMock())
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        _eleven(tmp_path).speak("hello", block=True)
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        _eleven(tmp_path, voice_id=None).speak("hello", block=True)
+    fake_requests.post.assert_not_called()
+
+
+def test_cache_key_changes_with_cloud_voice(tmp_path):
+    a = TextToSpeech(TTSConfig(backend="elevenlabs", elevenlabs_voice_id="A"), cache_dir=tmp_path)
+    b = TextToSpeech(TTSConfig(backend="elevenlabs", elevenlabs_voice_id="B"), cache_dir=tmp_path)
+    f1 = TextToSpeech(TTSConfig(backend="fish_audio", fish_audio_reference_id="X"), cache_dir=tmp_path)
+    f2 = TextToSpeech(TTSConfig(backend="fish_audio", fish_audio_reference_id="Y"), cache_dir=tmp_path)
+    assert a._cache_path("hi") != b._cache_path("hi")
+    assert f1._cache_path("hi") != f2._cache_path("hi")

@@ -30,11 +30,13 @@ class EchoProvider(LLMProvider):
     name = "echo"
     supports_streaming = True
 
-    def chat(self, messages: list[ChatMessage], tools=None, temperature: float = 0.4) -> LLMResponse:
+    def chat(self, messages: list[ChatMessage], tools=None, temperature: float = 0.4,
+             voice_mode: bool = False) -> LLMResponse:
         last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return LLMResponse(content=f"(echo) You said: {last_user}")
 
-    def chat_stream(self, messages: list[ChatMessage], tools=None, temperature: float = 0.4):
+    def chat_stream(self, messages: list[ChatMessage], tools=None, temperature: float = 0.4,
+                    voice_mode: bool = False):
         last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
         reply = f"(echo) You said: {last_user}"
         if not reply:
@@ -53,6 +55,7 @@ def _construct_provider(
     base_url: str,
     api_key: Optional[str],
     timeout_s: int = 60,
+    effort: str = "low",
 ) -> LLMProvider:
     """Shared construction switch. Knows the whole provider family; nothing else does."""
     name = provider_name.lower()
@@ -62,10 +65,13 @@ def _construct_provider(
     if name == "openai_compatible":
         from veronica.llm.openai_compatible_provider import OpenAICompatibleProvider
         return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model, timeout_s=timeout_s)
+    if name == "anthropic":
+        from veronica.llm.anthropic_provider import AnthropicProvider
+        return AnthropicProvider(api_key=api_key, model=model, timeout_s=timeout_s, effort=effort)
     if name == "echo":
         return EchoProvider()
     raise ValueError(
-        f"Unknown llm.provider '{provider_name}'. Use 'ollama', 'openai_compatible', or 'echo'."
+        f"Unknown llm.provider '{provider_name}'. Use 'ollama', 'openai_compatible', 'anthropic', or 'echo'."
     )
 
 
@@ -77,6 +83,7 @@ def build_provider(config: Config) -> LLMProvider:
         base_url=config.llm.base_url,
         api_key=config.secret(config.llm.api_key_env),
         timeout_s=config.llm.request_timeout_s,
+        effort=config.llm.anthropic_effort,
     )
     if provider_name == "ollama" and not provider.is_available():
         logger.warning(

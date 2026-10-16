@@ -29,37 +29,58 @@ class Fact:
 class LongTermMemory:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._facts: dict[str, Fact] = {}
+        self._mtime: Optional[float] = None
         self._load()
 
     def _load(self) -> None:
+        self._facts = {}
         if not self.path.exists():
+            self._mtime = None
             return
         try:
+            self._mtime = self.path.stat().st_mtime
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             for key, entry in raw.items():
                 self._facts[key] = Fact(key=key, value=entry.get("value"), created=entry.get("created", ""))
         except Exception:
             logger.exception("Failed to load long-term memory from %s; starting empty.", self.path)
 
+    def _refresh(self) -> None:
+        # Several LongTermMemory objects can share the file (the memory tools write, the
+        # orchestrator reads into every prompt); pick up changes made by the others.
+        try:
+            mtime = self.path.stat().st_mtime if self.path.exists() else None
+        except OSError:
+            return
+        if mtime != self._mtime:
+            self._load()
+
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {k: {"value": f.value, "created": f.created} for k, f in self._facts.items()}
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.path)
+        self._mtime = self.path.stat().st_mtime
 
     def remember(self, key: str, value: Any) -> None:
         with self._lock:
+            self._refresh()
             self._facts[key] = Fact(key=key, value=value)
             self._save()
         logger.info("Remembered fact '%s'", key)
 
     def recall(self, key: str) -> Optional[Any]:
-        fact = self._facts.get(key)
+        with self._lock:
+            self._refresh()
+            fact = self._facts.get(key)
         return fact.value if fact else None
 
     def forget(self, key: str) -> bool:
         with self._lock:
+            self._refresh()
             existed = key in self._facts
             self._facts.pop(key, None)
             if existed:
@@ -68,7 +89,9 @@ class LongTermMemory:
 
     def search(self, query: str) -> list[Fact]:
         q = query.lower()
-        return [f for f in self._facts.values() if q in f.key.lower() or q in str(f.value).lower()]
+        return [f for f in self.all_facts() if q in f.key.lower() or q in str(f.value).lower()]
 
     def all_facts(self) -> list[Fact]:
-        return list(self._facts.values())
+        with self._lock:
+            self._refresh()
+            return list(self._facts.values())

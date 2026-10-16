@@ -6,3 +6,12 @@ data/
 config/.env
 *.egg-info/
 .DS_Store
+
+# third-party apps VERONICA drives (installed locally, not part of this repo)
+external/
+
+# personal voice recordings (wake-word training / voice_check) and local backups
+veronica/training_voice/
+veronica/live_wake_test.wav
+*.bak_phase11e
+veronica/models/old/

@@ -25,6 +25,10 @@ from veronica.logging_setup import get_logger
 
 logger = get_logger("speech.stt")
 
+WARMUP_S = 0.5             # mic output is near-silent right after opening; ignore it
+CALIBRATE_S = 0.4          # then measure the room for this long
+SPEECH_OVER_AMBIENT = 2.5  # speech must be this many times louder than the room
+
 
 @dataclass
 class STTResult:
@@ -36,6 +40,100 @@ class STTResult:
 class SpeechToText:
     def __init__(self, config: STTConfig) -> None:
         self.config = config
+        self._whisper_model = None  # cached: loading Whisper per utterance is slow
+        self.last_capture_stats: dict = {}  # levels from the last capture, for diagnostics
+
+    # -- shared microphone capture (Phase 11F) ---------------------------------------
+    def _capture_utterance(self, timeout_s: float) -> tuple[Optional[bytes], str]:
+        """Record one utterance via VERONICA's own MicrophoneInput (sounddevice-first),
+        so no backend needs PyAudio. Simple energy endpointing: calibrate on ambient
+        noise, wait up to `timeout_s` for speech to start, then stop after
+        `pause_threshold` seconds of silence or `max_utterance_s`.
+
+        Returns (int16 mono 16 kHz PCM bytes, "") or (None, error message)."""
+        try:
+            import numpy as np
+            from veronica.voice.microphone import MicrophoneInput
+        except ImportError as e:
+            return None, f"Microphone capture needs `pip install sounddevice numpy`: {e}"
+
+        rate = 16000
+        chunk = 1024
+        chunk_s = chunk / rate
+        from veronica.voice.microphone import resolve_input_device
+        device = resolve_input_device(getattr(self.config, "mic_device_name", None), self.config.mic_device_index)
+        # None = the system default input (never MicrophoneInput's hard-coded fallback index).
+        mic = MicrophoneInput(device_index=device, chunk_size=chunk, rate=rate)
+        if not mic.open():
+            return None, "No microphone available (sounddevice could not open the input device)."
+
+        def rms(buf: bytes) -> float:
+            a = np.frombuffer(buf, dtype=np.int16).astype(np.float64)
+            return float(np.sqrt(np.mean(a * a))) if a.size else 0.0
+
+        frames: list[bytes] = []
+        try:
+            # 1) ambient calibration. The device delivers near-silence for its first
+            # ~0.5 s after opening; calibrating on that reads a quiet room in any room,
+            # so the threshold fell to the fixed floor (too high for normal speech in a
+            # quiet room, too low in a noisy one). Skip the warm-up, then take the
+            # median of ~0.4 s so one click/cough doesn't inflate it.
+            for _ in range(max(1, int(WARMUP_S / chunk_s))):
+                mic.read()
+            known = getattr(self, "known_ambient_rms", None)
+            if known is not None:
+                # Room level measured by the wake-word listener BEFORE the user spoke.
+                # Calibrating here instead would measure the user, who often starts
+                # talking right after the beep, and demand they out-shout themselves.
+                ambient = float(known)
+            else:
+                calib = [mic.read() for _ in range(max(1, int(CALIBRATE_S / chunk_s)))]
+                levels = sorted(rms(c) for c in calib)
+                ambient = levels[len(levels) // 2] if levels else 0.0
+            threshold = max(ambient * SPEECH_OVER_AMBIENT, float(self.config.min_speech_rms))
+            stats = {"ambient_rms": round(ambient, 1), "threshold": round(threshold, 1),
+                     "device": mic.device_index, "backend": mic._backend, "peak_rms": 0.0}
+            self.last_capture_stats = stats
+
+            # 2) wait for speech to start; keep a short pre-roll so the first syllable isn't clipped
+            preroll: list[bytes] = []
+            started = False
+            waited = 0.0
+            while waited < timeout_s:
+                buf = mic.read()
+                if not buf:
+                    return None, "Microphone returned no audio."
+                level = rms(buf)
+                stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
+                waited += chunk_s
+                preroll.append(buf)
+                preroll = preroll[-5:]
+                if level >= threshold:
+                    started = True
+                    frames.extend(preroll)
+                    break
+            if not started:
+                return None, (f"No speech detected in {timeout_s:.0f}s "
+                              f"(peak level {stats['peak_rms']}, needed {stats['threshold']}).")
+
+            # 3) record until a pause or the max length
+            silent_s = 0.0
+            spoken_s = 0.0
+            while spoken_s < self.config.max_utterance_s:
+                buf = mic.read()
+                if not buf:
+                    break
+                frames.append(buf)
+                spoken_s += chunk_s
+                level = rms(buf)
+                stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
+                silent_s = 0.0 if level >= threshold * 0.6 else silent_s + chunk_s
+                if silent_s >= self.config.pause_threshold:
+                    break
+            stats["duration_s"] = round(len(frames) * chunk_s, 2)
+        finally:
+            mic.close()
+        return b"".join(frames), ""
 
     def listen_once(self, timeout_s: int = 6) -> STTResult:
         if self.config.backend == "none":
@@ -56,6 +154,24 @@ class SpeechToText:
         recognizer = sr.Recognizer()
         recognizer.energy_threshold = self.config.energy_threshold
         recognizer.pause_threshold = self.config.pause_threshold
+
+        # Phase 11F: PyAudio is optional and has no wheel for Python 3.14, so capture
+        # through VERONICA's sounddevice-backed MicrophoneInput unless PyAudio is
+        # actually present (or mic_backend is explicitly "pyaudio").
+        use_pyaudio = False
+        if self.config.mic_backend == "pyaudio":
+            try:
+                import pyaudio  # noqa: F401
+                use_pyaudio = True
+            except ImportError:
+                use_pyaudio = False
+        if not use_pyaudio:
+            pcm, err = self._capture_utterance(timeout_s)
+            if pcm is None:
+                return STTResult(success=False, error=err)
+            audio = sr.AudioData(pcm, 16000, 2)
+            return self._recognize_google(sr, recognizer, audio)
+
         try:
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.4)
@@ -76,7 +192,9 @@ class SpeechToText:
             return STTResult(success=False, error=f"No microphone available: {e}")
         except Exception as e:
             return STTResult(success=False, error=f"Listening timed out or failed: {e}")
+        return self._recognize_google(sr, recognizer, audio)
 
+    def _recognize_google(self, sr, recognizer, audio) -> STTResult:
         try:
             text = recognizer.recognize_google(audio, language=self.config.language)
             return STTResult(success=True, text=text)
@@ -92,7 +210,6 @@ class SpeechToText:
         vosk backend, so the interface is identical to the caller."""
         try:
             import numpy as np
-            import sounddevice as sd
             from faster_whisper import WhisperModel
         except ImportError:
             return STTResult(
@@ -101,26 +218,25 @@ class SpeechToText:
                 "On first use it downloads a small model from Hugging Face.",
             )
 
-        try:
-            model = WhisperModel(
-                self.config.faster_whisper_model,
-                device="auto",  # picks CUDA when available, else CPU
-                compute_type=self.config.faster_whisper_compute_type,
-            )
-        except Exception as e:
-            return STTResult(
-                success=False,
-                error=f"Couldn't load faster-whisper model '{self.config.faster_whisper_model}': {e}",
-            )
+        if self._whisper_model is None:
+            try:
+                self._whisper_model = WhisperModel(
+                    self.config.faster_whisper_model,
+                    device="auto",  # picks CUDA when available, else CPU
+                    compute_type=self.config.faster_whisper_compute_type,
+                )
+            except Exception as e:
+                return STTResult(
+                    success=False,
+                    error=f"Couldn't load faster-whisper model '{self.config.faster_whisper_model}': {e}",
+                )
+        model = self._whisper_model
 
-        sample_rate = 16000
-        blocks = int(timeout_s * sample_rate)  # one capture window, then transcribe
-        try:
-            audio = sd.rec(blocks, samplerate=sample_rate, channels=1, dtype="float32")
-            sd.wait()
-            samples = np.asarray(audio).flatten()
-        except Exception as e:
-            return STTResult(success=False, error=f"No microphone available: {e}")
+        # Phase 11F: same endpointed capture as google_free, on the configured device.
+        pcm, err = self._capture_utterance(timeout_s)
+        if pcm is None:
+            return STTResult(success=False, error=err)
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
         try:
             segments, _info = model.transcribe(samples, language="en", beam_size=5)

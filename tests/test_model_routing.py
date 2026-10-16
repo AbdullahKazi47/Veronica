@@ -66,7 +66,7 @@ class FakeProvider(LLMProvider):
         self.calls = 0
         self.probes = 0
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         self.calls += 1
         if self.fail == "raise":
             raise RuntimeError("deliberate provider failure")
@@ -91,7 +91,7 @@ class HopProvider(LLMProvider):
         self.responses = list(responses)
         self.index = 0
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         r = self.responses[min(self.index, len(self.responses) - 1)]
         self.index += 1
         return r
@@ -751,7 +751,7 @@ class SensitiveTool(Tool):
 class EchoLLM(LLMProvider):
     name = "noop"
 
-    def chat(self, messages, tools=None, temperature=0.4) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False) -> LLMResponse:
         last = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return LLMResponse(content=f"(noop) you said: {last}")
 

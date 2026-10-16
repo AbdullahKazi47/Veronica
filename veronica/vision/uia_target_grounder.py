@@ -11,6 +11,8 @@ READ-ONLY validation only.
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 from typing import Optional, List
 
 from veronica.vision.uia_adapter import UIAutomationAdapter
@@ -24,6 +26,25 @@ from veronica.vision.visual_grounding import (
 from veronica.vision.target_verification import TargetReference
 from veronica.vision.perception import PerceptionLayer
 from veronica.vision.screen_state import ScreenState
+
+
+def _bbox_from_uia(bbox_prop) -> Optional[dict]:
+    """UIA BoundingRectangle -> {x, y, width, height}. comtypes returns a RECT-like
+    object (left/top/right/bottom); a 4-tuple is read as (x, y, width, height),
+    matching the acquisition-point derivation below. Non-positive size -> None."""
+    if bbox_prop is None:
+        return None
+    try:
+        if hasattr(bbox_prop, "left"):
+            x, y = int(bbox_prop.left), int(bbox_prop.top)
+            w, h = int(bbox_prop.right) - x, int(bbox_prop.bottom) - y
+        else:
+            x, y, w, h = (int(v) for v in bbox_prop[:4])
+    except Exception:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "width": w, "height": h}
 
 
 class UITargetGrounder:
@@ -171,6 +192,33 @@ class UITargetGrounder:
             # No Edit control found — safe return None (existing behavior preserved)
             return None
 
+        # Identity metadata read from the real UIA element (read-only, no text content).
+        mod = self.uia._uia_module
+
+        def _prop(prop_id):
+            try:
+                return edit_element.GetCurrentPropertyValue(prop_id)
+            except Exception:
+                return None
+
+        name = _prop(mod.UIA_NamePropertyId) or ""
+        automation_id = _prop(mod.UIA_AutomationIdPropertyId)
+        class_name = _prop(mod.UIA_ClassNamePropertyId)
+        bounding_box = _bbox_from_uia(_prop(mod.UIA_BoundingRectanglePropertyId))
+        if bounding_box is None:
+            # No positive on-screen rect -> nothing to ground against; never fabricate one.
+            return None
+
+        # Owning window (title / id) from the adapter's window list, matched by PID.
+        try:
+            for win in self.uia.get_windows() or []:
+                if getattr(win, "process_id", None) == notepad_pid:
+                    notepad_title = getattr(win, "title", None)
+                    notepad_hwnd = getattr(win, "window_id", None)
+                    break
+        except Exception:
+            pass
+
         # Derive edit_hwnd for Win32 correlation from the real EDIT window.
         # We don't have a direct handle; we use point-anchored mechanism (already present)
         # but we ensure it activates EVEN WHEN ElementFromPoint wasn't the original
@@ -293,7 +341,7 @@ class UITargetGrounder:
             automation_id=str(automation_id) if automation_id else None,
             class_name=class_name,
             owning_process_id=notepad_pid,
-            owning_window_id=notepad_hwnd or 0,
+            owning_window_id=str(notepad_hwnd) if notepad_hwnd is not None else None,
             owning_window_title=notepad_title,
             bounding_box=bounding_box,  # Dict[str, int] -> {x, y, width, height}
             target_point=(bounding_box["x"] + bounding_box["width"] // 2,

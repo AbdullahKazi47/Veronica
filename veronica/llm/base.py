@@ -66,8 +66,11 @@ class LLMProvider(ABC):
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ) -> LLMResponse:
         """Send a conversation (+ optional tool schemas) and get a response back.
+        ``voice_mode`` is a latency hint for short conversational turns (e.g. Ollama
+        disables thinking); providers that have no use for it simply ignore it.
         Implementations must not raise for expected connectivity failures — they should
         surface that via a clear LLMResponse.content explaining the failure so the
         orchestrator can degrade gracefully (e.g. 'the local model isn't reachable')."""
@@ -78,13 +81,15 @@ class LLMProvider(ABC):
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ):
         """Yield ``StreamChunk`` objects as output arrives. Default = non-streaming
         providers degrade to a single finished chunk; implementations that truly
         stream (Ollama NDJSON, OpenAI-compatible SSE) override this. Never raises for
         expected connectivity failures — the error surfaces as a chunk with
         ``done=True`` and ``finish_reason="error"``."""
-        yield StreamChunk(text=self.chat(messages, tools=tools, temperature=temperature).content,
+        kwargs = {"voice_mode": True} if voice_mode else {}
+        yield StreamChunk(text=self.chat(messages, tools=tools, temperature=temperature, **kwargs).content,
                           sequence=0, finish_reason="stop", done=True)
 
     def is_available(self) -> bool:

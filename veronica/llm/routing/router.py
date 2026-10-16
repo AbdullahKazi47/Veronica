@@ -112,6 +112,7 @@ class ModelSelection:
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ) -> "RoutedResponse":
         if not self.satisfied:
             return self._unsatisfied_response()
@@ -134,7 +135,8 @@ class ModelSelection:
             if entry is None:
                 attempts.append({"model_id": mid, "skipped": "not_registered"})
                 continue
-            attempt = self._try_one(entry, messages, tools, temperature, cfg, chain_pos)
+            attempt = self._try_one(entry, messages, tools, temperature, cfg, chain_pos,
+                                    voice_mode=voice_mode)
             attempts.append(
                 {
                     "model_id": mid,
@@ -192,6 +194,7 @@ class ModelSelection:
         temperature: float,
         cfg: RoutingConfig,
         chain_pos: int,
+        voice_mode: bool = False,
     ) -> dict:
         """Attempt one model. Returns {'response' or None, 'meta', 'failure_content'}.
         Never raises — every failure mode is captured and recorded on health."""
@@ -209,7 +212,8 @@ class ModelSelection:
         effective_temp = entry.profile.temperature if entry.profile.temperature is not None else temperature
         start = time.monotonic()
         try:
-            response = provider.chat(messages, tools=tools, temperature=effective_temp)
+            extra = {"voice_mode": True} if voice_mode else {}
+            response = provider.chat(messages, tools=tools, temperature=effective_temp, **extra)
         except Exception as e:  # noqa: BLE001 — providers shouldn't raise, but defend
             h.record_failure(str(e))
             latency = time.monotonic() - start

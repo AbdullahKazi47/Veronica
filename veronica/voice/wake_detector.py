@@ -17,6 +17,9 @@ class WakeWordDetector(ABC):
     @abstractmethod
     def detect(self, frame: bytes) -> bool: ...
 
+    def reset(self) -> None:
+        """Forget buffered audio so a new listening window starts clean."""
+
 
 class OpenWakeWordDetector(WakeWordDetector):
     """Real local openWakeWord detector using a verified custom ONNX model."""
@@ -34,6 +37,7 @@ class OpenWakeWordDetector(WakeWordDetector):
         self.threshold = threshold
         self._adapter = None
         self._model_name = "veronica_wake_model"
+        self.last_score = 0.0  # score of the most recent frame (for near-miss feedback)
 
         try:
             import openwakeword as ow
@@ -68,6 +72,15 @@ class OpenWakeWordDetector(WakeWordDetector):
         self.running = False
         self._model = None
 
+    def reset(self) -> None:
+        # openWakeWord keeps a rolling audio/score buffer; without a reset, the frames
+        # that triggered the last detection can trigger the next window instantly.
+        if self._model is not None:
+            try:
+                self._model.reset()
+            except Exception:
+                pass
+
     def detect(self, frame: bytes) -> bool:
         if not self.running or self._model is None:
             return False
@@ -84,6 +97,7 @@ class OpenWakeWordDetector(WakeWordDetector):
             predictions = self._model.predict(audio)
 
             score = float(predictions.get(self._model_name, 0.0))
+            self.last_score = score
 
             return score >= self.threshold
 

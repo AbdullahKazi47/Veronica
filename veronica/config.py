@@ -24,7 +24,9 @@ DEFAULT_ENV_PATH = PROJECT_ROOT / "config" / ".env"
 
 @dataclass
 class LLMConfig:
-    provider: str = "ollama"            # "ollama" | "openai_compatible" | "echo"
+    provider: str = "ollama"            # "ollama" | "openai_compatible" | "anthropic" | "echo"
+    vision_model: Optional[str] = None  # model for "what's on my screen" (default: model)
+    anthropic_effort: str = "low"       # Claude only: low | medium | high | xhigh | max (low = fastest)
     model: str = "llama3.1:8b"
     base_url: str = "http://localhost:11434"
     api_key_env: str = "VERONICA_LLM_API_KEY"   # only read if provider needs a key
@@ -43,17 +45,27 @@ class STTConfig:
     language: str = "en-IN"
     energy_threshold: int = 300
     pause_threshold: float = 0.8
+    # Phase 11F — capture via VERONICA's sounddevice MicrophoneInput (no PyAudio needed)
+    mic_backend: str = "sounddevice"    # "sounddevice" | "pyaudio" (google_free only, if installed)
+    mic_device_index: Optional[int] = None  # fallback if mic_device_name isn't found
+    mic_device_name: Optional[str] = None   # e.g. "Microphone Array"; wins over the index
+    min_speech_rms: float = 120.0       # int16 RMS floor for "speech started"; lower it for a quiet mic
+    max_utterance_s: float = 8.0
 
 
 @dataclass
 class TTSConfig:
-    backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none" | "fish_audio"
+    backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none" | "fish_audio" | "elevenlabs"
     voice: str = "en-US-AriaNeural"
     rate: str = "+0%"
     piper_model: str = "en_US-lessac-medium"  # piper voice model name
     fish_audio_reference_id: Optional[str] = None  # Fish Audio voice reference (FRIDAY = 8ec...ae7)
     fish_audio_model: str = "s2.1-pro-free"  # Fish Audio free developer model (fix 402)
     fish_audio_format: str = "mp3"
+    # ElevenLabs (backend "elevenlabs"); API key is ELEVENLABS_API_KEY in config/.env.
+    elevenlabs_voice_id: Optional[str] = None
+    elevenlabs_model: str = "eleven_flash_v2_5"      # fastest; "eleven_multilingual_v2" = richer, slower
+    elevenlabs_output_format: str = "mp3_44100_128"
     cache_dir: str = "data/tts_cache"
 
 
@@ -80,6 +92,8 @@ class VoiceConfig:
     mic_channels: int = 1
     wake_backend: str = "openwakeword"      # "openwakeword" | "mock"
     wake_model_path: str = "models/veronica_wake_model.onnx"  # BLOCKED until verified
+    wake_threshold: float = 0.5             # openWakeWord score needed to wake (used by --wake)
+    follow_up_seconds: float = 0.0          # conversation mode: listen this long after a reply, no wake word
 
 
 @dataclass
@@ -93,6 +107,12 @@ class WakeWordConfig:
 class MemoryConfig:
     long_term_path: str = "data/memory.json"
     short_term_max_messages: int = 20
+    # Keep the recent conversation across restarts (off by default; config.yaml turns it on).
+    persist_conversation: bool = False
+    conversation_path: str = "data/conversation.json"
+    resume_hours: float = 12.0
+    include_facts_in_prompt: bool = False  # send remembered facts + home city with each question
+    max_prompt_facts: int = 40             # at most this many (newest kept)
 
 
 @dataclass
@@ -141,6 +161,39 @@ class ModelEntryConfig:
     api_key_env: Optional[str] = None
     temperature: Optional[float] = None
     timeout_s: int = 60
+
+
+_GODS_EYE_DEFAULT_TOOLS = [
+    "aircraft_in_area", "find_aircraft", "get_aircraft_info", "satellites_overhead", "next_satellite_pass",
+    "get_earthquakes", "get_recent_launches", "find_cctv_cameras", "get_cctv_snapshot", "get_weather_map",
+    "get_cyclones", "situation_brief", "vessels_in_area", "show_in_gods_eye_view",
+]
+
+
+@dataclass
+class ProactiveConfig:
+    """VERONICA speaking up on her own (core/proactive.py). Off by default."""
+    enabled: bool = False
+    check_every_s: float = 60
+    battery: bool = True
+    performance: bool = True
+    disk: bool = True
+    rain: bool = True
+    morning_briefing: bool = True
+    break_after_minutes: float = 120          # 0 = never suggest a break
+    quiet_start_hour: int = 23                # only urgent alerts between these hours
+    quiet_end_hour: int = 7
+
+
+@dataclass
+class GodsEyeConfig:
+    """God's Eye View integration (live public spatial data + 3D globe). Off by default."""
+    enabled: bool = False
+    path: str = "external/gods-eye-view"
+    base_url: str = "http://localhost:4173"
+    auto_start: bool = True                  # start the app's server hidden when VERONICA starts
+    default_radius_km: float = 100.0         # "planes over me" = within this distance
+    tools: list[str] = field(default_factory=lambda: list(_GODS_EYE_DEFAULT_TOOLS))
 
 
 @dataclass
@@ -282,6 +335,16 @@ class AssistantConfig:
         "task, you use it instead of guessing."
     )
     wake_phrase: str = "veronica"
+    # Default city for weather/briefings. Saying "my city is X" stores one in
+    # data/profile.json, which takes precedence over this.
+    home_city: Optional[str] = None
+    auto_detect_location: bool = False   # guess the city from the public IP when none is set
+    news_region: str = "IN"              # Google News edition (country code), e.g. IN, US, GB
+    default_browser: Optional[str] = None  # e.g. "Brave"; None = the Windows default browser
+    default_play_service: Optional[str] = None  # where "play X" plays; None = YouTube
+    search_engine: Optional[str] = None  # default engine for "search/browse X"; None = Google
+    search_url: Optional[str] = None     # its results URL with {query}; None = reach it by name
+    news_language: str = "en"
 
 
 @dataclass
@@ -295,6 +358,8 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     memory_thread: MemoryThreadConfig = field(default_factory=MemoryThreadConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
+    gods_eye: GodsEyeConfig = field(default_factory=GodsEyeConfig)
+    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)

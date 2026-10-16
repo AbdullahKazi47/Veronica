@@ -56,6 +56,116 @@ just echoes back so you can see the plumbing.
 python -m veronica.main --voice
 ```
 
+**With the wake word** (listens only after you say "Veronica"):
+
+```bash
+python -m veronica.main --wake
+```
+
+Say "Veronica", wait for the short beep, then say your request. After VERONICA answers
+she goes back to waiting for the wake word. Needs `openwakeword` and the trained model at
+`voice.wake_model_path` (train it with `VERONICA_WAKE_TRAINING_COLAB.ipynb`; check it with
+`python voice_check.py --skip-stt`). Tune sensitivity with `voice.wake_threshold`
+(default 0.5; lower = wakes more easily). If the model or openwakeword is missing,
+VERONICA says why and falls back to plain `--voice` behavior. The wake word grants no
+extra permission — requests still go through the normal permission prompts.
+
+**Voice-only everyday commands** (instant — handled without the AI model):
+
+| Say | What happens |
+|---|---|
+| "my city is Mumbai" | remembered in `data/profile.json`; used for weather and the briefing |
+| "how's the weather?" / "weather in Delhi tomorrow" | current weather (home city if none named) |
+| "good morning" / "brief me" | spoken briefing: time, weather, today's reminders, to-dos, 3 headlines |
+| "what's the news" / "news about cricket" | top 5 headlines (Google News feed, no key; `assistant.news_region`) |
+| "remind me in 10 minutes to call mom" / "at 5 pm" / "tomorrow at 9 am" | reminder, announced out loud when due |
+| "set a timer for 25 minutes" | timer |
+| "what are my reminders" / "cancel the reminder to call mom" | list / cancel |
+| "add milk to my to-do list" / "what's on my to-do list" / "mark milk as done" / "remove milk from my to-do list" | to-do list (`data/todos.json`) |
+
+| "remember that my sister's birthday is 12 March" / "what do you remember about me" / "forget my sister's birthday" | long-term memory (`data/memory.json`); facts go with every question (`memory.include_facts_in_prompt`) |
+| "forget everything" | deletes all remembered facts — always asks for confirmation |
+| "open WhatsApp" / "open Downloads" | any installed Start-menu app, or a folder in your home |
+| "open YouTube in Brave" / "go to netflix" / "search for X in Firefox" / "play lofi on YouTube in Edge" | any site, any installed browser (default: `assistant.default_browser`, else the Windows default) |
+| "search for X" / "browse X" / "look up X" / "google X" | Google by default (`assistant.search_engine` + `assistant.search_url`) |
+| "search for X on Bing" / "search DuckDuckGo for X" / "search for shoes on Amazon" | any engine or site you name, reached by name (DuckDuckGo "!bang" shortcuts) |
+| "pause" / "resume" / "next song" / "previous track" / "stop the music" | system media keys — works with any player |
+| "volume up" / "volume to 60" / "mute" / "unmute" | system volume |
+| "who was Abdul Kalam" | 2-sentence Wikipedia summary |
+| "play music in Spotify" / "play lofi on SoundCloud" / "play Arijit Singh" | any service you name (its app if installed, else the first result on its site, which starts playing); default `assistant.default_play_service` (YouTube) |
+| "what's happening around the world today" / "news about cricket" | top + world feeds fetched in parallel, summarized into a short spoken briefing (~5 s, repeats within 3 min instant) |
+| "show me" (right after the news) / "show me the news" | opens the same news with photos and videos in the browser |
+| "what's on my screen" / "read this error" / "what does this say" | one screenshot → `llm.vision_model` → spoken answer; only when asked, never stored; text on screen is never obeyed |
+
+**Jarvis features:**
+
+| Say | What happens |
+|---|---|
+| "run diagnostics" / "why is my laptop so slow?" | CPU, memory, disk, battery, uptime, internet, busiest programs (CPU temperature isn't exposed by Windows on most laptops) |
+| "what am I holding?" / "look at this" / "read this label" / "help me fix this" | one webcam frame → vision model → spoken answer; only when asked, nothing stored, never identifies people |
+| "read my notifications" / "any messages on my phone?" / "what did I miss?" | Windows notification history: your phone (Phone Link), WhatsApp, mail… read out; message text is never obeyed |
+| "pause alerts (for 2 hours)" / "resume alerts" | silence proactive alerts (a critically low battery still gets through) |
+
+**Proactive VERONICA** (`proactive:` in config.yaml) speaks up on her own: low/critical
+battery, processor or memory pinned for minutes (names the culprit), C: nearly full, rain
+likely within the hour where you are, a break after 2 hours straight, and a morning briefing
+the first time you sit down. She never talks over you, holds non-urgent alerts while a game or
+movie is fullscreen ("While you were busy: …"), and only urgent ones between 23:00 and 07:00.
+
+**Phone notifications:** in **Phone Link → Settings → Features → Notifications**, turn on
+showing your phone's notifications on this PC; they then reach VERONICA too.
+
+**Personality:** composed, dry wit, loyal, calls you "boss" now and then (edit `assistant.persona`).
+
+**God's Eye View (live world data + 3D globe):** installed in `external/gods-eye-view`
+(MIT; `git clone` + `npm ci` + `npm run build:panel`). With `gods_eye.enabled: true`
+VERONICA starts its server hidden at startup and connects to its MCP server. Ask by voice:
+"what planes are flying over me?", "when can I see the ISS?", "any earthquakes today?",
+"how many Starlink satellites are above me?", "any traffic cameras in London?" / "show me
+that camera", "give me a situation brief for Mumbai". Then say **"show me"** to open the
+globe on exactly that, or **"open the globe"** any time. Only public data (ADS-B aircraft,
+satellite orbits — not live satellite imagery — USGS quakes, public road cameras, NOAA
+weather); no person tracking. Ships and fires need free keys (AISStream, NASA FIRMS) in
+`external/gods-eye-view/.env`; 3D buildings need a free Cesium ion key. Choose which of the
+app's 30 tools VERONICA uses in `gods_eye.tools`. Times it reports in UTC are converted to
+your local time.
+
+**Background tasks:** add "in the background", "while I play/I'm away", "I'll go get
+lunch" or "and let me know when you're done" to any request ("research flights to Goa in the
+background"). It runs in its own session while you keep talking; VERONICA announces the
+result when it's done (also kept in `data/background_tasks.json`). Ask "what are you working
+on?" / "what did you do while I was away?". A background task never asks for permission:
+steps that would need your OK (writing/deleting files, shell commands) are skipped and
+reported when it finishes.
+
+**Conversation mode:** after VERONICA answers, keep talking for 8 seconds without saying
+"Veronica" (`voice.follow_up_seconds`; 0 turns it off). Silence, "thanks", "that's all" or
+"never mind" end the conversation and she waits for her wake word again.
+
+Location: with `assistant.auto_detect_location: true` and no city set, VERONICA uses
+**Windows location** (Wi-Fi based; your locality, weather for the exact coordinates, place
+name from OpenStreetMap), falling back to your internet connection's city (IP → ipwho.is /
+ipapi.co). Detected at startup in the background, re-checked every 6 hours, announced
+once; "my city is X" always wins. Weather includes today's high/low and rain chance.
+
+Nothing is hard-coded: apps come from the Start menu (`Get-StartApps`, cached in
+`data/app_index.json`, refreshed when something isn't found), browsers from the Windows
+registry, sites are resolved by name (`data/site_cache.json`). VERONICA also saves facts on
+her own when you mention something lasting ("I'm vegetarian") and says so; she refuses to
+store passwords, PINs, card/account numbers and keys. The recent conversation is restored
+after a restart (`memory.persist_conversation`, `memory.resume_hours`).
+
+**One-click start:** double-click **VERONICA** on the Desktop (or `Start VERONICA.bat`). It
+starts minimized and listens for the wake word. At startup it prints where her voice goes,
+e.g. `Voice output: Headphones (Realtek) at 18%` — if that's not where you're listening,
+switch the output with the taskbar speaker icon. The microphone is chosen by name
+(`stt.mic_device_name`), so Windows renumbering audio devices can't break it.
+
+Reminders that came due while VERONICA was off are announced at the next start
+("Missed reminder from 5:00 PM: …"). In voice mode, permission questions are spoken and
+answered by voice: say **yes**/**no**; for CRITICAL actions (deleting files, shell
+commands) you must say **confirm** — silence or anything unclear counts as no.
+
 - **Speech-to-text** defaults to the free Google Web Speech backend via
   `SpeechRecognition` (needs internet, no API key). Its microphone needs **PyAudio**,
   which is *optional* — VERONICA's base install intentionally ships no mic package

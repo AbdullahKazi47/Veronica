@@ -9,7 +9,7 @@ def test_default_capabilities_cover_builtin_tools():
         "get_current_time", "calculate", "take_note", "open_application",
         "set_volume", "take_screenshot", "system_status", "find_file",
         "list_directory", "open_website", "fetch_webpage", "web_search",
-        "play_on_youtube", "get_weather", "read_file", "write_file",
+        "play_media", "get_weather", "read_file", "write_file",
         "delete_file", "run_shell_command",
     }
     covered = {t for cap in caps.all() for t in cap.tools}

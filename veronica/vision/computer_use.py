@@ -602,50 +602,19 @@ class ComputerUseLoop:
                 return ToolResult.fail("Move action has no coordinates")
 
         elif action.action_type == "OPEN_APPLICATION":
-            # Safe application activation - only allow known safe applications
-            # No arbitrary executable paths, no shell/subprocess execution
+            # Any installed Start-menu app (previously Notepad only). Still never an
+            # executable path, file or command string: names are resolved through the
+            # AppIndex (what Windows lists as installed) and launched via the shell's
+            # AppsFolder, never through a shell command.
+            from veronica.tools.base import ToolResult
+            from veronica.tools.app_index import shared_index
+            from veronica.vision.app_windows import open_or_activate
             if not action.target_name:
-                from veronica.tools.base import ToolResult
                 return ToolResult.fail("OPEN_APPLICATION action has no target application name")
-
-            # Normalize application name for comparison
-            app_name = action.target_name.strip().lower()
-
-            # Only allow specific safe applications - currently only Notepad is permitted
-            # This prevents arbitrary application launch per security constraints
-            if app_name != "notepad":
-                from veronica.tools.base import ToolResult
-                return ToolResult.fail(f"OPEN_APPLICATION only supports 'notepad', got: {action.target_name}")
-
-            # Find and activate existing Notepad window
-            # Do NOT launch new instances - only activate existing visible windows
-            def enum_callback(hwnd, _):
-                try:
-                    title = win32gui.GetWindowText(hwnd)
-                    class_name = win32gui.GetClassName(hwnd)
-                    # Check if this is a Notepad window (Untitled - Notepad or similar)
-                    if "notepad" in title.lower() or "notepad" in class_name.lower():
-                        # Verify it's visible (WS_VISIBLE style) - includes minimized windows
-                        if win32gui.IsWindowVisible(hwnd):
-                            # Bring to foreground (will restore if minimized)
-                            win32gui.SetForegroundWindow(hwnd)
-                            # Store the hwnd for potential verification
-                            self._last_notepad_hwnd = hwnd
-                            return False  # Stop enumeration
-                except Exception:
-                    pass
-                return True
-
-            # Try to find and activate Notepad
-            self._last_notepad_hwnd = None
-            win32gui.EnumWindows(enum_callback, None)
-
-            if self._last_notepad_hwnd is not None:
-                from veronica.tools.base import ToolResult
-                return ToolResult.ok(f"Activated Notepad window (HWND: {self._last_notepad_hwnd})")
-            else:
-                from veronica.tools.base import ToolResult
-                return ToolResult.fail("No visible Notepad window found to activate")
+            index = getattr(self, "app_index", None) or shared_index()
+            ok, message, hwnd = open_or_activate(action.target_name, index)
+            self._last_app_hwnd = hwnd
+            return ToolResult.ok(message) if ok else ToolResult.fail(message)
 
         else:
             from veronica.tools.base import ToolResult

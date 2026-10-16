@@ -74,3 +74,14 @@ class TestConditionalVoicePrompt(unittest.TestCase):
                         "Non-voice payload preserves default options structure")
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def test_simple_voice_turn_matches_whole_word_greetings_only():
+    from veronica.core.orchestrator import _is_simple_voice_turn
+    assert _is_simple_voice_turn("hi")
+    assert _is_simple_voice_turn("Hello there")
+    # Substrings of real requests must keep the full agentic context.
+    for text in ("open this file", "which window is active", "think it over", "nothing"):
+        assert not _is_simple_voice_turn(text), text
+    assert not _is_simple_voice_turn("")
+    assert not _is_simple_voice_turn("hi " + "x" * 200)

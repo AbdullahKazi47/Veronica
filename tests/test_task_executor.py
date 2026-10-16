@@ -307,7 +307,7 @@ class _PlanningLLM(LLMProvider):
     def __init__(self, json_text: str):
         self.json_text = json_text
 
-    def chat(self, messages, tools=None, temperature=0.4):
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
         return LLMResponse(content=self.json_text)
 
 
@@ -342,7 +342,7 @@ class _SingleStepLLM(LLMProvider):
     """Returns a plan with a single step → orchestrator should fall through to LLM."""
     name = "single"
 
-    def chat(self, messages, tools=None, temperature=0.4):
+    def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
         return LLMResponse(content="final answer")
 
 

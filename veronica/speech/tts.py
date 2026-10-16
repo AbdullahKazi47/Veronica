@@ -141,6 +141,8 @@ class TextToSpeech:
             target = self._speak_piper
         elif self.config.backend == "fish_audio":
             target = self._speak_fish_audio
+        elif self.config.backend == "elevenlabs":
+            target = self._speak_elevenlabs
         else:
             target = self._speak_pyttsx3
         if block:
@@ -150,7 +152,15 @@ class TextToSpeech:
 
     # -- backends -----------------------------------------------------------------
     def _cache_path(self, text: str) -> Path:
-        digest = hashlib.sha256(f"{self.config.voice}:{text}".encode("utf-8")).hexdigest()[:24]
+        # Key on whichever setting picks the voice, so switching the Fish Audio reference
+        # voice never replays clips cached from the previous voice.
+        if self.config.backend == "fish_audio":
+            voice = f"fish:{self.config.fish_audio_reference_id}:{self.config.fish_audio_model}"
+        elif self.config.backend == "elevenlabs":
+            voice = f"eleven:{self.config.elevenlabs_voice_id}:{self.config.elevenlabs_model}"
+        else:
+            voice = self.config.voice
+        digest = hashlib.sha256(f"{voice}:{text}".encode("utf-8")).hexdigest()[:24]
         return self.cache_dir / f"{digest}.mp3"
 
     def _speak_edge_tts(self, text: str) -> None:
@@ -262,6 +272,10 @@ class TextToSpeech:
                         "Server response (key not exposed): %s",
                         reference_id, self.config.fish_audio_model, body,
                     )
+                    self._notice_once(
+                        "[voice] Fish Audio has no API credit, so replies are text-only. "
+                        "API credit is separate from your fish.audio plan credit - top it up at "
+                        "https://fish.audio/app/developers")
                     return  # FAIL CLEANLY — do NOT invoke pyttsx3
                 resp.raise_for_status()
                 out_path.write_bytes(resp.content)
@@ -269,7 +283,67 @@ class TextToSpeech:
         except Exception as e:
             # Fail cleanly for any Fish Audio failure — never fall back to pyttsx3 hang
             logger.error("Fish Audio TTS failed cleanly (%s). FRIDAY voice unavailable; returning to loop.", e)
+            self._notice_once(f"[voice] Fish Audio voice failed ({type(e).__name__}); replies are text-only. "
+                              "Details in data/veronica.log")
             # Intentionally do NOT call self._speak_pyttsx3(text)
+
+    def _speak_elevenlabs(self, text: str) -> None:
+        """ElevenLabs TTS via HTTPS API; mp3 cached like the other cloud backends.
+        Like Fish Audio, failures are reported and the turn continues text-only
+        (no pyttsx3 fallback)."""
+        try:
+            import requests
+        except ImportError:
+            logger.error("ElevenLabs backend requires `pip install requests`.")
+            return
+
+        voice_id = self.config.elevenlabs_voice_id
+        api_key = os.environ.get("ELEVENLABS_API_KEY")
+        if not voice_id:
+            self._notice_once("[voice] tts.elevenlabs_voice_id is not set in config/config.yaml; replies are text-only.")
+            return
+        if not api_key or api_key.startswith("<"):
+            self._notice_once("[voice] ELEVENLABS_API_KEY is not set in config/.env; replies are text-only.")
+            return
+
+        out_path = self._cache_path(text)
+        try:
+            if not out_path.exists():
+                resp = requests.post(
+                    f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                    params={"output_format": self.config.elevenlabs_output_format},
+                    headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+                    json={"text": text, "model_id": self.config.elevenlabs_model},
+                    timeout=30,
+                )
+                if not resp.ok:
+                    # ElevenLabs explains the problem in detail.message (e.g. a library voice
+                    # on the free plan, or quota exhausted). Never log the key.
+                    try:
+                        detail = resp.json().get("detail", {})
+                        reason = detail.get("message") if isinstance(detail, dict) else str(detail)
+                    except ValueError:
+                        reason = resp.text[:200]
+                    logger.error("ElevenLabs TTS %s (voice=%s model=%s): %s",
+                                 resp.status_code, voice_id, self.config.elevenlabs_model, reason)
+                    self._notice_once(f"[voice] ElevenLabs refused the request ({resp.status_code}): {reason} "
+                                      "Replies are text-only.")
+                    return
+                out_path.write_bytes(resp.content)
+            self._play_audio(out_path)
+        except Exception as e:
+            logger.error("ElevenLabs TTS failed cleanly (%s); returning to loop.", e)
+            self._notice_once(f"[voice] ElevenLabs voice failed ({type(e).__name__}); replies are text-only. "
+                              "Details in data/veronica.log")
+
+    _noticed: set = set()
+
+    @classmethod
+    def _notice_once(cls, message: str) -> None:
+        """Tell the person at the terminal once per run; the log alone is easy to miss."""
+        if message not in cls._noticed:
+            cls._noticed.add(message)
+            print(message)
 
     def _speak_pyttsx3(self, text: str) -> None:
         try:

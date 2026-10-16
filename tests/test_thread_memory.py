@@ -414,7 +414,7 @@ def test_orchestrator_uses_thread_memory_context() -> None:
 
     class FakeLLM:
         provider_name = "fake"
-        def chat(self, messages, tools=None, temperature=0.4):
+        def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
             sys_msg = next(m for m in messages if m.role == "system")
             seen["injected"] = "RETRIEVED MEMORY" in sys_msg.content
             from veronica.llm.base import LLMResponse
@@ -444,7 +444,7 @@ def test_orchestrator_without_thread_memory_unchanged() -> None:
 
     class FakeLLM:
         provider_name = "fake"
-        def chat(self, messages, tools=None, temperature=0.4):
+        def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
             sys_msg = next(m for m in messages if m.role == "system")
             seen["content"] = sys_msg.content
             from veronica.llm.base import LLMResponse
@@ -496,7 +496,7 @@ def test_memory_does_not_bypass_permissions(tmp_path) -> None:
 
     class FakeLLM:
         provider_name = "fake"
-        def chat(self, messages, tools=None, temperature=0.4):
+        def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
             sys_msg = next(m for m in messages if m.role == "system")
             seen["content"] = sys_msg.content
             from veronica.llm.base import LLMResponse

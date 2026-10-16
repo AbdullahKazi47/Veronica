@@ -75,6 +75,26 @@ class VisionPolicy:
             )
         self._last_run_time: float = 0.0
         self._previous_state: Optional[ScreenState] = None
+        self._focus_seconds: dict[str, float] = {}
+        self._focus_last: tuple[str, float] = ("", 0.0)
+
+    # -- learned app importance ----------------------------------------------------------
+    _MAX_FOCUS_GAP_S = 60.0      # longer gaps (idle, sleep) don't count as focus time
+    _FREQUENT_SHARE = 0.10       # an app with >=10% of observed focus time is "frequent"
+    _MIN_OBSERVED_S = 120.0      # until then nothing is frequent (no guessing)
+
+    def _track_focus(self, proc: str, now: Optional[float] = None) -> None:
+        now = time.time() if now is None else now
+        last_proc, last_at = self._focus_last
+        if last_proc and 0 < now - last_at <= self._MAX_FOCUS_GAP_S:
+            self._focus_seconds[last_proc] = self._focus_seconds.get(last_proc, 0.0) + (now - last_at)
+        self._focus_last = (proc, now)
+
+    def is_frequent_app(self, proc: str) -> bool:
+        total = sum(self._focus_seconds.values())
+        if not proc or total < self._MIN_OBSERVED_S:
+            return False
+        return self._focus_seconds.get(proc, 0.0) / total >= self._FREQUENT_SHARE
 
     def should_run_vision(
         self,
@@ -227,13 +247,11 @@ class VisionPolicy:
             # Active window importance
             if state.active_window:
                 score += 0.2
-                # Applications that typically need more attention
-                important_procs = {
-                    "code.exe", "devenv.exe", "notepad.exe", "word.exe", "excel.exe",
-                    "chrome.exe", "firefox.exe", "edge.exe", "outlook.exe", "teams.exe",
-                    "slack.exe", "discord.exe", "zoom.exe", "powershell.exe", "cmd.exe"
-                }
-                if state.active_window.process_name.lower() in important_procs:
+                # Apps THIS user actually spends time in matter more — learned from focus
+                # time, not a fixed list of program names.
+                proc = (state.active_window.process_name or "").lower()
+                self._track_focus(proc)
+                if self.is_frequent_app(proc):
                     score += 0.2
 
             # Text density (more text = potentially more important)

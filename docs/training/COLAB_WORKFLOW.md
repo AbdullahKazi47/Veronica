@@ -2,6 +2,13 @@
 # Status: DESIGN / NOT EXECUTED locally (torch unavailable; CPU-only Windows impractical)
 # Required for REAL artifact: veronica_wake_model.onnx
 
+> **Superseded (2026-10-15): use `VERONICA_WAKE_TRAINING_COLAB.ipynb` (repo root).**
+> Models from `PHASE_11E4_COLAB_NOTEBOOK_CLEAN.ipynb` scored 0.999 on pure silence:
+> that notebook set `feature_data_files: {}`, so training had no general negative audio.
+> v2 adds the ACAV100M negative features, AudioSet/FMA background, MIT RIRs, pinned
+> Python 3.11 deps, exports one self-contained `.onnx` (no `.onnx.data`), and fails its
+> final cell if the model fires on silence/noise. `voice_check.py` applies the same silence gate.
+
 ## 1. Why Colab (honest resource assessment)
 - Local environment: Windows 11, Python 3.14.5, Intel CPU, Intel Iris Xe, NO torch installed.
 - `openwakeword.train.train.py` begins with `import torch`; module is unloadable locally.

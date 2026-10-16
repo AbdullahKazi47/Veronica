@@ -14,6 +14,8 @@ from veronica.logging_setup import get_logger
 
 logger = get_logger("llm.openai_compatible")
 
+_MAX_REMEMBERED_TURNS = 32
+
 
 class OpenAICompatibleProvider(LLMProvider):
     name = "openai_compatible"
@@ -24,15 +26,68 @@ class OpenAICompatibleProvider(LLMProvider):
         self.api_key = api_key
         self.model = model
         self.timeout_s = timeout_s
+        # tool_call id -> the model's exact assistant message that requested it.
+        self._tool_turns: dict[str, dict] = {}
 
     def is_available(self) -> bool:
         return bool(self.api_key)
+
+    def _remember(self, message: dict) -> None:
+        for tc in message.get("tool_calls") or []:
+            self._tool_turns[tc["id"]] = message
+        while len(self._tool_turns) > _MAX_REMEMBERED_TURNS:
+            self._tool_turns.pop(next(iter(self._tool_turns)))
+
+    def _wire_messages(self, messages: list[ChatMessage]) -> list[dict]:
+        """VERONICA messages -> OpenAI chat messages.
+
+        The orchestrator records a tool-calling turn as plain assistant text plus
+        role="tool" results, but the API needs the assistant turn's `tool_calls` and
+        each result's `tool_call_id` (Gemini 3.x also needs the call's thought
+        signature, carried in the replayed message). Without them every request after
+        a tool call is rejected with 400 INVALID_ARGUMENT. Replay the remembered turn
+        exactly; if it is unknown (e.g. after a restart), send the results as text."""
+        out: list[dict] = []
+        i = 0
+        while i < len(messages):
+            m = messages[i]
+            if m.role != "assistant":
+                if m.role == "tool":  # orphan result with no remembered call
+                    out.append({"role": "user", "content": f"[result of tool {m.name or 'unknown'}]\n{m.content}"})
+                else:
+                    out.append({"role": m.role, "content": m.content})
+                i += 1
+                continue
+            j, results = i + 1, []
+            while j < len(messages) and messages[j].role == "tool":
+                results.append(messages[j])
+                j += 1
+            replay = next((self._tool_turns[r.tool_call_id] for r in results
+                           if r.tool_call_id in self._tool_turns), None)
+            if replay is not None:
+                known = [tc["id"] for tc in replay["tool_calls"]]
+                out.append(replay)
+                by_id = {r.tool_call_id: r for r in results}
+                for call_id in known:  # every requested call gets exactly one result
+                    r = by_id.get(call_id)
+                    out.append({"role": "tool", "tool_call_id": call_id,
+                                "content": r.content if r else "(not executed)"})
+                leftovers = [r for r in results if r.tool_call_id not in known]
+            else:
+                if m.content:
+                    out.append({"role": "assistant", "content": m.content})
+                leftovers = results
+            for r in leftovers:
+                out.append({"role": "user", "content": f"[result of tool {r.name or 'unknown'}]\n{r.content}"})
+            i = j
+        return out
 
     def chat(
         self,
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ) -> LLMResponse:
         if not self.api_key:
             return LLMResponse(
@@ -49,7 +104,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         payload = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": self._wire_messages(messages),
             "temperature": temperature,
         }
         if tools:
@@ -61,6 +116,8 @@ class OpenAICompatibleProvider(LLMProvider):
             resp = requests.post(
                 f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=self.timeout_s
             )
+            if resp.status_code >= 400:  # keep the provider's own explanation in the log
+                logger.warning("Cloud LLM %s error body: %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -72,6 +129,8 @@ class OpenAICompatibleProvider(LLMProvider):
         content = message.get("content", "") or ""
         tool_calls = []
         for i, tc in enumerate(message.get("tool_calls", []) or []):
+            if not tc.get("id"):
+                tc["id"] = f"call_{i}"  # the replayed turn and the result must share an id
             fn = tc.get("function", {})
             args = fn.get("arguments", "{}")
             if isinstance(args, str):
@@ -79,7 +138,9 @@ class OpenAICompatibleProvider(LLMProvider):
                     args = json.loads(args)
                 except json.JSONDecodeError:
                     args = {}
-            tool_calls.append(ToolCall(id=str(tc.get("id", i)), name=fn.get("name", ""), arguments=args))
+            tool_calls.append(ToolCall(id=str(tc["id"]), name=fn.get("name", ""), arguments=args))
+        if tool_calls:
+            self._remember(dict(message, role="assistant"))
 
         return LLMResponse(content=content, tool_calls=tool_calls, raw=data)
 
@@ -88,6 +149,7 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[ChatMessage],
         tools: Optional[list[dict]] = None,
         temperature: float = 0.4,
+        voice_mode: bool = False,
     ):
         """Stream via the OpenAI-compatible SSE endpoint (stream: True). Same
         construction as ``chat`` — no separate SDK, no second client."""
@@ -110,7 +172,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         payload = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": self._wire_messages(messages),
             "temperature": temperature,
             "stream": True,
         }
@@ -180,6 +242,11 @@ class OpenAICompatibleProvider(LLMProvider):
                             "arguments": args if isinstance(args, dict) else {},
                         })
                     metadata["tool_calls"] = assembled
+                    # Best effort: streamed deltas carry no thought signature to replay.
+                    self._remember({"role": "assistant", "content": None, "tool_calls": [
+                        {"id": c["id"], "type": "function", "function": {
+                            "name": c["name"], "arguments": json.dumps(c["arguments"])}}
+                        for c in assembled]})
                 yield StreamChunk(text=text or "", sequence=seq, done=done,
                                   finish_reason=finish, metadata=metadata)
                 seq += 1

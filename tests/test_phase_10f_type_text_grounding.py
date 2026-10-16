@@ -665,6 +665,8 @@ class TestPhase10FTypeTextGrounding(unittest.TestCase):
             mock_uia_module.UIA_ControlTypePropertyId: 50004,
         }.get(prop, None)
 
+        # Real UIA constant: production compares the element's control type to it.
+        mock_uia_module.UIA_EditControlTypeId = 50004
         mock_uia_module.ElementFromHandle = Mock(side_effect=Exception("UIA_E_ELEMENTNOTAVAILABLE"))
         mock_uia_module.ElementFromPoint = Mock(return_value=mock_edit_elem)
 
