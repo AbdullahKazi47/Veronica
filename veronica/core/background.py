@@ -91,8 +91,27 @@ class BackgroundTasks:
         self._lock = threading.Lock()
         self._tasks: list[BackgroundTask] = self._load()
         self._queue: "queue.Queue[BackgroundTask]" = queue.Queue()
-        for i in range(max(1, workers)):
-            threading.Thread(target=self._work, name=f"background-{i}", daemon=True).start()
+        self._workers = max(1, workers)
+        self._worker_seq = 0
+        self._worker_threads: list[threading.Thread] = []
+        self.ensure_workers()
+
+    def ensure_workers(self) -> int:
+        """Start as many of THIS pool's worker threads as have died (or not started yet).
+        Called at startup and by self-heal when a worker stops. Counts only its own
+        threads so separate pools (e.g. in tests) never starve each other. Returns how
+        many it started."""
+        with self._lock:
+            self._worker_threads = [t for t in self._worker_threads if t.is_alive()]
+            started = 0
+            while len(self._worker_threads) < self._workers:
+                self._worker_seq += 1
+                t = threading.Thread(target=self._work, name=f"background-{id(self)}-{self._worker_seq}",
+                                     daemon=True)
+                t.start()
+                self._worker_threads.append(t)
+                started += 1
+            return started
 
     # -- persistence --------------------------------------------------------------------
     def _load(self) -> list[BackgroundTask]:

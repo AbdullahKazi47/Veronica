@@ -12,6 +12,9 @@ assistant:
   # "search/browse X" uses this engine; name another to use it ("search X on Bing").
   search_engine: "Google"
   search_url: "https://www.google.com/search?q={query}"
+  # News: the top news from your country first, then world headlines (international edition).
+  news_region: "IN"                  # your country's edition
+  news_world_region: "US"            # edition used for world headlines (international English)
   persona: >
     You are VERONICA, the user's personal AI — think JARVIS to their Tony Stark.
     Personality: composed and unflappable, quick with a dry, understated wit (a raised
@@ -27,8 +30,20 @@ assistant:
     guessing — including run_shell_command, read_file, write_file, and delete_file for
     anything the other tools don't cover. For everyday PC control prefer the dedicated
     tools — window_control (minimize all, show desktop, minimize/maximize/switch to an
-    app), open_path (folders, documents), lock_or_sleep, close_window, shutdown_pc,
-    cancel_shutdown — never a shell command for these. Risky actions (writing or deleting files,
+    app), open_path (folders, documents), lock_pc, sleep_pc, close_window, shutdown_pc,
+    cancel_shutdown — never a shell command for these. To learn a subject use learn_topic;
+    to write programs use write_code (then update_code for changes and run_code to run —
+    run_code asks the user itself), never write_file or a shell command for code. When
+    the user states a coding preference ("I prefer pytest"), save it with remember_fact.
+    For "heal yourself", "are you okay", "run a self check" use self_heal (it restarts stopped
+    workers and restores corrupt memory files; it never edits code or settings). For "what do
+    you send to the cloud", "is my data safe", "have you redacted anything" use privacy_report;
+    answer honestly that your requests go to the cloud model but secrets and sensitive IDs are
+    stripped out first. If the user says you misheard a word ("when I say X I mean Y", "you
+    heard X but I said Y"), save it with speech_correction. To download a file the user gives a direct link to, use download_file (it
+    asks first and saves to Downloads); you cannot sign in, get past a paywall or DRM, or fetch
+    copyrighted video from streaming or torrent sites, so say so plainly if asked for that.
+    Risky actions (writing or deleting files,
     shell commands) are confirmed with the user automatically before they run, so you
     don't need to ask for permission yourself in words — just call the tool and the
     system will handle confirmation.
@@ -158,7 +173,12 @@ stt:
   faster_whisper_compute_type: "float32"   # float16 (CUDA) | int8 | float32
   language: "en-IN"
   energy_threshold: 300
-  pause_threshold: 0.8
+  pause_threshold: 0.65           # silence that ends your sentence (was 0.8; lower = faster replies,
+                                  # too low and she cuts you off mid-pause)
+  highpass_hz: 100                # strip fan/AC hum below this before recognition (0 = off)
+  min_voiced_s: 0.25              # clicks and coughs shorter than this aren't speech
+  confirm_below_confidence: 0.45  # after "Veronica": ask "did you say...?" when this unsure (0 = never)
+  corrections_path: "data/stt_corrections.json"   # "when I say X, I mean Y", taught by voice
 
 tts:
   # 2026-10-15: ElevenLabs. Fish Audio ("fish_audio") still works once its API credit is topped up.
@@ -311,9 +331,17 @@ voice:
   wake_backend: "openwakeword"         # "openwakeword" | "mock"
   wake_model_path: "veronica/models/veronica_wake_model.onnx"  # trained ONNX model (relative to project root)
   wake_threshold: 0.35                 # score needed to wake with `--wake`; lower = more sensitive
-  follow_up_seconds: 8                 # conversation mode: after a reply, just keep talking for 8 s
-                                       # (no "Veronica" needed); 0 = always require the wake word
-                                       # (0.35: no false wakes on the owner's 25 non-wake phrases or noise)
+  follow_up_seconds: 8                 # (only used when conversation_mode is false) keep talking
+                                       # for 8 s after a reply with no wake word; 0 = always wake word
+  conversation_mode: true              # once you say "Veronica" the conversation stays open — keep
+                                       # talking with no wake word until you end it ("thanks", "bye",
+                                       # "that's all", "stop"). The wake word only starts a conversation.
+  conversation_idle_timeout_s: 300     # safety only: if you go silent this long, drop back to the
+                                       # wake word so the mic isn't live forever. 0 = never (stay open)
+  conversation_min_confidence: 0.6     # open conversation: ignore speech she's this unsure of
+  conversation_speech_ratio: 3.0       # ...or that isn't 3x louder than the room (a TV, people nearby)
+  barge_in: "wake_word"                # say "Veronica" while she talks to stop her ("off" to disable)
+  shared_mic: true                     # one always-open mic stream: faster turns, no clipped first words
 
 # Fish Audio voice configuration — Phase 11B (FRIDAY voice)
 # Reference ID is not a secret; API key remains in config/.env only.
@@ -341,6 +369,27 @@ gods_eye:
 # long sessions) and greets you whenever you open the laptop. Never talks over you; holds non-urgent alerts while a
 # fullscreen game/movie is in front; only urgent ones in quiet hours. Say "pause alerts"
 # (for N hours/minutes) / "resume alerts".
+# What VERONICA scrubs from everything sent to the cloud model (safety/privacy.py).
+# Her own words still go to Gemini (that is how she answers you), but these never leave
+# the machine, even if you say one aloud or it is on screen: API keys, tokens, passwords,
+# card numbers, CVV/PIN, bank/IFSC numbers, and government IDs (SSN, Aadhaar, PAN).
+privacy:
+  enabled: true
+  redact_financial: true
+  redact_government_ids: true
+  log_redactions: true          # note locally that something was removed (never the value)
+  extra_patterns: []            # your own regexes to redact, e.g. ["EMP-\d{4}"]
+
+# "Learn Python" study notes and "write me a script" (veronica/tools/learning_tools.py).
+# Studying and writing code never ask; running code always asks (yes/no) first.
+coding:
+  enabled: true
+  knowledge_path: "data/knowledge.json"   # what she has learned (gitignored data/)
+  projects_dir: ""          # empty = Documents\VERONICA Projects
+  editor: ""                # app to show code in; empty = VS Code if installed, else Notepad
+  run_timeout_s: 60
+  max_fix_attempts: 2       # after a failed run: fix + rerun at most this many times
+
 proactive:
   enabled: true
   check_every_s: 60

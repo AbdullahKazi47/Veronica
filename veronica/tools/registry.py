@@ -9,6 +9,7 @@ can be layered on top later without changing this contract.
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
 from veronica.logging_setup import get_logger
@@ -16,6 +17,24 @@ from veronica.safety.permissions import PermissionGate
 from veronica.tools.base import Tool, ToolResult
 
 logger = get_logger("tools.registry")
+
+
+_FILLER = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|alright|all\s+right|right|so|now|then|and|hey|hi|um+|uh+|hmm+|well|just|"
+    r"please|veronica|can\s+you|could\s+you|would\s+you|will\s+you|i\s+want\s+you\s+to|"
+    r"i\s+need\s+you\s+to)\b[\s,.!]*)+", re.I)
+_TAIL = re.compile(r"[\s,]+(?:please|for\s+me|now|right\s+now|quickly)\s*[.!?]*\s*$", re.I)
+_STUTTER = re.compile(r"\b(\w+)(?:\s+\1\b)+", re.I)
+
+
+def normalize_command(text: str) -> str:
+    """Tidy spoken words for command matching: drop leading filler and polite tails, and
+    collapse stutters. Meaning is unchanged; the original text still goes to the model."""
+    t = _STUTTER.sub(r"\1", text or "")
+    for _ in range(3):
+        t = _FILLER.sub("", t)
+        t = _TAIL.sub("", t)
+    return re.sub(r"\s+", " ", t).strip(" ,.")
 
 
 class ToolRegistry:
@@ -41,8 +60,7 @@ class ToolRegistry:
         """All tool schemas, for handing to an LLM that supports function-calling."""
         return [t.schema() for t in list(self._tools.values())]
 
-    def find_fast_match(self, text: str) -> Optional[Tool]:
-        """Return the first tool willing to claim this text via its fast-path matcher."""
+    def _first_match(self, text: str) -> Optional[Tool]:
         for tool in list(self._tools.values()):
             try:
                 if tool.matches(text):
@@ -51,11 +69,32 @@ class ToolRegistry:
                 logger.exception("Tool '%s' raised while matching text; skipping.", tool.name)
         return None
 
+    def fast_match(self, text: str) -> tuple[Optional[Tool], str]:
+        """(tool, the text it matched). Tries the words as heard, then a tidied version
+        without spoken filler ("ok now minimise all" -> "minimise all") or stutters
+        ("restore restore all tabs") — so casual speech doesn't need the cloud model."""
+        tool = self._first_match(text)
+        if tool is not None:
+            return tool, text
+        tidy = normalize_command(text)
+        if tidy and tidy != text:
+            tool = self._first_match(tidy)
+            if tool is not None:
+                return tool, tidy
+        return None, text
+
+    def find_fast_match(self, text: str) -> Optional[Tool]:
+        """Return the first tool willing to claim this text via its fast-path matcher."""
+        return self.fast_match(text)[0]
+
     def dispatch(self, name: str, /, **kwargs) -> ToolResult:  # / : tools may take a "name" argument
         tool = self.get(name)
         if tool is None:
             return ToolResult.fail(f"No such tool: '{name}'.")
 
+        # Every action is on record, whether a quick command or the model chose it: an
+        # unlogged model tool call is how an unexpected sleep once went untraceable.
+        logger.info("Running tool %s(%s) [permission %s]", tool.name, _brief(kwargs), tool.permission.name)
         decision = self.gate.check(
             tool_name=tool.name,
             level=tool.permission,
@@ -76,6 +115,16 @@ class ToolRegistry:
             return ToolResult.fail(f"'{tool.name}' failed unexpectedly. Check the logs.")
 
 
+def _brief(kwargs: dict) -> str:
+    """Tool arguments for the log, shortened and with secrets scrubbed."""
+    try:
+        from veronica.safety import privacy
+        text = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+        return privacy.get_guard().scrub_text(text)[:200]
+    except Exception:  # noqa: BLE001
+        return "..."
+
+
 def _summarizer(llm):
     if llm is None:
         return None
@@ -85,6 +134,9 @@ def _summarizer(llm):
         resp = llm.chat([ChatMessage(role="user", content=prompt)], temperature=0.3)
         return resp.content if getattr(resp, "ok", True) else ""
     return summarize
+
+
+_CODING_TOOLS = {"learn_topic", "recall_learning", "forget_topic", "write_code", "update_code", "run_code"}
 
 
 def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolRegistry:
@@ -132,10 +184,23 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.utility_tools import CalculatorTool, CurrentTimeTool, NoteTool
     from veronica.tools.web_tools import FetchWebpageTool, OpenWebsiteTool, WebSearchTool
     from veronica.tools.weather_tools import WeatherTool
+    from veronica.tools.self_heal_tools import SelfHealTool
+    from veronica.tools.privacy_tools import PrivacyReportTool
+    from veronica.tools.download_tools import DownloadFileTool
+    from veronica.tools.speech_tools import SpeechCorrectionTool
+    from veronica.tools.learning_tools import (
+        ForgetTopicTool,
+        LearnTopicTool,
+        RecallLearningTool,
+        RunCodeTool,
+        UpdateCodeTool,
+        WriteCodeTool,
+    )
     from veronica.tools.window_tools import (
         CancelShutdownTool,
         CloseWindowTool,
-        LockOrSleepTool,
+        LockPCTool,
+        SleepPCTool,
         OpenPathTool,
         ShutdownTool,
         WindowControlTool,
@@ -151,6 +216,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     weather = WeatherTool(config=config, profile=profile)
     news = NewsTool(config=config, summarizer=_summarizer(llm))
     registry = ToolRegistry(gate)
+    coding_on = getattr(getattr(config, "coding", None), "enabled", True)
     # God's Eye View first: its 'open the globe' / 'show me that' must win over 'open <site>'.
     from veronica.integrations.gods_eye import register_gods_eye
     if config is not None:
@@ -165,6 +231,8 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         CancelReminderTool(config=config, store=reminders),
         TodoTool(config=config, store=todos),
         SetHomeCityTool(config=config, profile=profile),
+        SpeechCorrectionTool(config=config),    # 'when I say X I mean Y' (before forget tools)
+        ForgetTopicTool(config=config),         # before ForgetFact: 'forget what you learned about X'
         ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'
         ForgetFactTool(config=config),
         RecallMemoryTool(config=config),
@@ -175,13 +243,16 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         LookAtScreenTool(config=config),
         LookThroughCameraTool(config=config),
         ReadNotificationsTool(config=config),
+        SelfHealTool(config=config),           # "heal yourself" / "are you okay"
+        PrivacyReportTool(config=config),      # "what do you send to the cloud"
         RunDiagnosticsTool(),                  # before system_status: the deeper check
         WikipediaTool(config=config),
         # Everyday PC control at the right permission level (only close/shutdown ask),
         # before the 'open' tools so 'open the projects folder' finds the folder.
         CancelShutdownTool(),
         ShutdownTool(),
-        LockOrSleepTool(),
+        LockPCTool(),
+        SleepPCTool(),                         # asks first (SENSITIVE)
         WindowControlTool(),
         CloseWindowTool(),
         OpenPathTool(),
@@ -189,11 +260,18 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         CalculatorTool(),
         NoteTool(config=config),
         OpenApplicationTool(config=config, routing=open_routing),
-        SetVolumeTool(),
+        SetVolumeTool(),                       # before update_code: 'make it louder'
+        # Learning and coding: studying and writing never ask; running code always does.
+        LearnTopicTool(config=config, llm=llm),
+        RecallLearningTool(config=config),
+        WriteCodeTool(config=config, llm=llm),
+        UpdateCodeTool(config=config, llm=llm),
+        RunCodeTool(config=config, llm=llm),
         ScreenshotTool(config=config),
         SystemStatusTool(),
         FindFileTool(),
         ListDirectoryTool(),
+        DownloadFileTool(config=config),       # "download <url>" before open/search
         OpenWebsiteTool(config=config, routing=open_routing),
         WebSearchTool(config=config, index=apps),
         FetchWebpageTool(),
@@ -205,5 +283,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         DeleteFileTool(),
         RunShellCommandTool(),
     ):
+        if not coding_on and tool.name in _CODING_TOOLS:
+            continue
         registry.register(tool)
     return registry

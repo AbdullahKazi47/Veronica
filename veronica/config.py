@@ -51,6 +51,11 @@ class STTConfig:
     mic_device_name: Optional[str] = None   # e.g. "Microphone Array"; wins over the index
     min_speech_rms: float = 120.0       # int16 RMS floor for "speech started"; lower it for a quiet mic
     max_utterance_s: float = 8.0
+    # -- accuracy & noise (2026-10-16) --
+    highpass_hz: float = 100.0          # cut fan/AC hum below this before recognition (0 = off)
+    min_voiced_s: float = 0.25          # shorter bursts (a click, a cough) are not speech
+    confirm_below_confidence: float = 0.45  # after the wake word: ask "did you say...?" below this (0 = never)
+    corrections_path: str = "data/stt_corrections.json"  # "when I say X I mean Y", taught by voice
 
 
 @dataclass
@@ -94,6 +99,15 @@ class VoiceConfig:
     wake_model_path: str = "models/veronica_wake_model.onnx"  # BLOCKED until verified
     wake_threshold: float = 0.5             # openWakeWord score needed to wake (used by --wake)
     follow_up_seconds: float = 0.0          # conversation mode: listen this long after a reply, no wake word
+    conversation_mode: bool = False         # stay in conversation (no wake word) until an ending phrase
+    conversation_idle_timeout_s: float = 300  # safety: drop back to the wake word after this much silence (0 = never)
+    # In an open conversation (no wake word this turn), ignore speech that isn't clearly
+    # aimed at her: below this recognition confidence, or not this many times louder
+    # than the room (a TV across the room is quieter than you at the mic).
+    conversation_min_confidence: float = 0.6
+    conversation_speech_ratio: float = 3.0
+    barge_in: str = "wake_word"             # interrupt her while she talks: "wake_word" | "off"
+    shared_mic: bool = True                 # one always-open mic stream (faster, no clipped first words)
 
 
 @dataclass
@@ -168,6 +182,36 @@ _GODS_EYE_DEFAULT_TOOLS = [
     "get_earthquakes", "get_recent_launches", "find_cctv_cameras", "get_cctv_snapshot", "get_weather_map",
     "get_cyclones", "situation_brief", "vessels_in_area", "show_in_gods_eye_view",
 ]
+
+
+@dataclass
+class DownloadConfig:
+    """Downloading files from a direct link (tools/download_tools.py). Asks every time."""
+    dir: str = ""              # where to save; empty = the user's Downloads folder
+    max_mb: float = 2048       # refuse a single file bigger than this (0 = no limit)
+
+
+@dataclass
+class PrivacyConfig:
+    """What VERONICA scrubs from everything sent to the cloud model (safety/privacy.py).
+    On by default; her own words still go to the model (that is how she answers you), but
+    secrets and sensitive IDs never leave the machine."""
+    enabled: bool = True
+    redact_financial: bool = True          # card numbers (Luhn), CVV/PIN, account/routing/IFSC
+    redact_government_ids: bool = True      # SSN, Aadhaar, PAN
+    log_redactions: bool = True             # note locally that something was removed
+    extra_patterns: tuple = ()              # your own regexes to redact
+
+
+@dataclass
+class CodingConfig:
+    """'Learn X' study notes and 'write me a script' (tools/learning_tools.py)."""
+    enabled: bool = True
+    knowledge_path: str = "data/knowledge.json"
+    projects_dir: str = ""        # empty = Documents\VERONICA Projects
+    editor: str = ""              # app name to open code in; empty = VS Code if installed, else Notepad
+    run_timeout_s: int = 60
+    max_fix_attempts: int = 2     # automatic fix-and-rerun attempts after a failed run
 
 
 @dataclass
@@ -342,6 +386,8 @@ class AssistantConfig:
     home_city: Optional[str] = None
     auto_detect_location: bool = False   # guess the city from the public IP when none is set
     news_region: str = "IN"              # Google News edition (country code), e.g. IN, US, GB
+    news_world_region: str = "US"        # edition used for WORLD headlines (international English);
+                                         # general news = home-country first, then world headlines
     default_browser: Optional[str] = None  # e.g. "Brave"; None = the Windows default browser
     default_play_service: Optional[str] = None  # where "play X" plays; None = YouTube
     search_engine: Optional[str] = None  # default engine for "search/browse X"; None = Google
@@ -362,6 +408,9 @@ class Config:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     gods_eye: GodsEyeConfig = field(default_factory=GodsEyeConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    coding: CodingConfig = field(default_factory=CodingConfig)
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    download: DownloadConfig = field(default_factory=DownloadConfig)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)

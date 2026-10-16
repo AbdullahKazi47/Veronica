@@ -41,8 +41,11 @@ class LongTermMemory:
             return
         try:
             self._mtime = self.path.stat().st_mtime
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            for key, entry in raw.items():
+            from veronica.core import jsonsafe
+            raw, note = jsonsafe.read_json(self.path, default={})
+            if note:
+                logger.warning("Long-term memory: %s", note)
+            for key, entry in (raw or {}).items():
                 self._facts[key] = Fact(key=key, value=entry.get("value"), created=entry.get("created", ""))
         except Exception:
             logger.exception("Failed to load long-term memory from %s; starting empty.", self.path)
@@ -58,11 +61,9 @@ class LongTermMemory:
             self._load()
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        from veronica.core import jsonsafe
         payload = {k: {"value": f.value, "created": f.created} for k, f in self._facts.items()}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self.path)
+        jsonsafe.write_json(self.path, payload)   # atomic + keeps a .bak for self-heal
         self._mtime = self.path.stat().st_mtime
 
     def remember(self, key: str, value: Any) -> None:

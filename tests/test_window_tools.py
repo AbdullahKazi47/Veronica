@@ -8,7 +8,8 @@ from veronica.tools.registry import build_default_registry
 from veronica.tools.window_tools import (
     CancelShutdownTool,
     CloseWindowTool,
-    LockOrSleepTool,
+    LockPCTool,
+    SleepPCTool,
     OpenPathTool,
     ShutdownTool,
     WindowControlTool,
@@ -31,8 +32,8 @@ def registry():
     ("minimize chrome", "window_control"),
     ("switch to WhatsApp", "window_control"),
     ("close spotify", "close_window"),
-    ("lock my pc", "lock_or_sleep"),
-    ("put the laptop to sleep", "lock_or_sleep"),
+    ("lock my pc", "lock_pc"),
+    ("put the laptop to sleep", "sleep_pc"),
     ("shut down my pc", "shutdown_pc"),
     ("restart the computer in 5 minutes", "shutdown_pc"),
     ("cancel shutdown", "cancel_shutdown"),
@@ -45,15 +46,15 @@ def test_fast_path_routing(registry, text, tool):
 
 
 def test_bare_go_to_sleep_does_not_sleep_the_pc():
-    assert not LockOrSleepTool().matches("go to sleep")
+    assert not SleepPCTool().matches("go to sleep") and not SleepPCTool().matches("sleep")
     assert not CloseWindowTool().matches("close it")
 
 
 def test_permission_levels_only_destructive_ones_ask():
     gate_level = PermissionLevel.SENSITIVE  # config: require_confirmation_above
-    for t in (WindowControlTool(), LockOrSleepTool(), OpenPathTool(), CancelShutdownTool()):
+    for t in (WindowControlTool(), LockPCTool(), OpenPathTool(), CancelShutdownTool()):
         assert t.permission < gate_level, t.name
-    for t in (CloseWindowTool(), ShutdownTool()):
+    for t in (CloseWindowTool(), ShutdownTool(), SleepPCTool()):
         assert t.permission >= gate_level, t.name
 
 
@@ -88,10 +89,21 @@ def test_shutdown_has_cancellable_delay_and_cancel_works():
 
 def test_lock_and_sleep():
     did = []
-    tool = LockOrSleepTool(lock=lambda: did.append("lock"), sleep=lambda: did.append("sleep"))
-    tool.run(**tool.extract_arguments("lock my computer"))
-    tool.run(**tool.extract_arguments("put my pc to sleep"))
+    LockPCTool(lock=lambda: did.append("lock")).run()
+    SleepPCTool(sleep=lambda: did.append("sleep")).run()
     assert did == ["lock", "sleep"]
+
+
+def test_sleep_through_the_registry_asks_and_respects_no():
+    """Regression: the model once called sleep directly with no question asked."""
+    from veronica.tools.registry import ToolRegistry
+    asked, slept = [], []
+    gate = PermissionGate(threshold=PermissionLevel.SENSITIVE,
+                          confirm_callback=lambda desc, lvl: asked.append(desc) or False)
+    reg = ToolRegistry(gate)
+    reg.register(SleepPCTool(sleep=lambda: slept.append(1)))
+    res = reg.dispatch("sleep_pc")
+    assert asked and not slept and not res.success
 
 
 def test_open_path_finds_nested_folder_and_documents(tmp_path):

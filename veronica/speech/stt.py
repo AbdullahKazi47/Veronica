@@ -17,8 +17,8 @@ react to "didn't understand" vs. "no microphone available" differently.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from veronica.config import STTConfig
 from veronica.logging_setup import get_logger
@@ -35,13 +35,37 @@ class STTResult:
     success: bool
     text: str = ""
     error: str = ""
+    confidence: Optional[float] = None          # recognizer's confidence in `text`, when it gives one
+    alternatives: list[str] = field(default_factory=list)   # other readings, best first (text excluded)
+    stats: dict = field(default_factory=dict)   # capture levels: ambient, speech, voiced seconds
+
+
+def highpass(pcm: bytes, cutoff_hz: float, rate: int = 16000) -> bytes:
+    """Remove low-frequency hum (fans, AC, desk thumps) below `cutoff_hz`. Speech lives
+    well above 100 Hz, so this only strips noise the recognizer would otherwise chew on."""
+    if not pcm or cutoff_hz <= 0:
+        return pcm
+    import numpy as np
+    a = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+    if a.size < 64:
+        return pcm
+    spec = np.fft.rfft(a)
+    freqs = np.fft.rfftfreq(a.size, d=1.0 / rate)
+    spec[freqs < cutoff_hz] = 0
+    out = np.fft.irfft(spec, n=a.size)
+    return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
 
 
 class SpeechToText:
-    def __init__(self, config: STTConfig) -> None:
+    def __init__(self, config: STTConfig, corrections=None) -> None:
         self.config = config
         self._whisper_model = None  # cached: loading Whisper per utterance is slow
         self.last_capture_stats: dict = {}  # levels from the last capture, for diagnostics
+        # Shared always-open mic (voice/mic_hub.py): mic_factory(chunk) -> tap, hub for the
+        # live room level. Both None = open the device per listen, as before.
+        self.mic_factory: Optional[Callable[[int], object]] = None
+        self.hub = None
+        self.corrections = corrections            # speech/corrections.py, applied to every transcript
 
     # -- shared microphone capture (Phase 11F) ---------------------------------------
     def _capture_utterance(self, timeout_s: float) -> tuple[Optional[bytes], str]:
@@ -60,10 +84,13 @@ class SpeechToText:
         rate = 16000
         chunk = 1024
         chunk_s = chunk / rate
-        from veronica.voice.microphone import resolve_input_device
-        device = resolve_input_device(getattr(self.config, "mic_device_name", None), self.config.mic_device_index)
-        # None = the system default input (never MicrophoneInput's hard-coded fallback index).
-        mic = MicrophoneInput(device_index=device, chunk_size=chunk, rate=rate)
+        if self.mic_factory is not None:
+            mic = self.mic_factory(chunk)           # a tap on the always-open stream
+        else:
+            from veronica.voice.microphone import resolve_input_device
+            device = resolve_input_device(getattr(self.config, "mic_device_name", None), self.config.mic_device_index)
+            # None = the system default input (never MicrophoneInput's hard-coded fallback index).
+            mic = MicrophoneInput(device_index=device, chunk_size=chunk, rate=rate)
         if not mic.open():
             return None, "No microphone available (sounddevice could not open the input device)."
 
@@ -78,9 +105,11 @@ class SpeechToText:
             # so the threshold fell to the fixed floor (too high for normal speech in a
             # quiet room, too low in a noisy one). Skip the warm-up, then take the
             # median of ~0.4 s so one click/cough doesn't inflate it.
-            for _ in range(max(1, int(WARMUP_S / chunk_s))):
-                mic.read()
-            known = getattr(self, "known_ambient_rms", None)
+            if getattr(mic, "needs_warmup", True):
+                for _ in range(max(1, int(WARMUP_S / chunk_s))):
+                    mic.read()
+            live = self.hub.ambient_rms() if self.hub is not None else None
+            known = live if live is not None else getattr(self, "known_ambient_rms", None)
             if known is not None:
                 # Room level measured by the wake-word listener BEFORE the user spoke.
                 # Calibrating here instead would measure the user, who often starts
@@ -99,10 +128,19 @@ class SpeechToText:
             preroll: list[bytes] = []
             started = False
             waited = 0.0
+            ticks = 0
             while waited < timeout_s:
                 buf = mic.read()
                 if not buf:
                     return None, "Microphone returned no audio."
+                ticks += 1
+                if self.hub is not None and ticks % 8 == 0:
+                    # The room can change while we wait (a TV switched on): follow it.
+                    live = self.hub.ambient_rms()
+                    if live is not None:
+                        ambient = live
+                        threshold = max(ambient * SPEECH_OVER_AMBIENT, float(self.config.min_speech_rms))
+                        stats["ambient_rms"], stats["threshold"] = round(ambient, 1), round(threshold, 1)
                 level = rms(buf)
                 stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
                 waited += chunk_s
@@ -111,6 +149,8 @@ class SpeechToText:
                 if level >= threshold:
                     started = True
                     frames.extend(preroll)
+                    if self.hub is not None:
+                        self.hub.user_speaking = True   # the user's voice is not room noise
                     break
             if not started:
                 return None, (f"No speech detected in {timeout_s:.0f}s "
@@ -119,6 +159,7 @@ class SpeechToText:
             # 3) record until a pause or the max length
             silent_s = 0.0
             spoken_s = 0.0
+            voiced: list[float] = [level]
             while spoken_s < self.config.max_utterance_s:
                 buf = mic.read()
                 if not buf:
@@ -127,12 +168,24 @@ class SpeechToText:
                 spoken_s += chunk_s
                 level = rms(buf)
                 stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
-                silent_s = 0.0 if level >= threshold * 0.6 else silent_s + chunk_s
+                if level >= threshold * 0.6:
+                    silent_s = 0.0
+                    voiced.append(level)
+                else:
+                    silent_s += chunk_s
                 if silent_s >= self.config.pause_threshold:
                     break
             stats["duration_s"] = round(len(frames) * chunk_s, 2)
+            stats["voiced_s"] = round(len(voiced) * chunk_s, 2)
+            ordered = sorted(voiced)
+            stats["speech_rms"] = round(ordered[int(len(ordered) * 0.8)] if ordered else 0.0, 1)
+            min_voiced = float(getattr(self.config, "min_voiced_s", 0) or 0)
+            if min_voiced and stats["voiced_s"] < min_voiced:
+                return None, "Too short to be speech (a click or a cough)."
         finally:
             mic.close()
+            if self.hub is not None:
+                self.hub.user_speaking = False
         return b"".join(frames), ""
 
     def listen_once(self, timeout_s: int = 6) -> STTResult:
@@ -168,9 +221,12 @@ class SpeechToText:
         if not use_pyaudio:
             pcm, err = self._capture_utterance(timeout_s)
             if pcm is None:
-                return STTResult(success=False, error=err)
+                return STTResult(success=False, error=err, stats=dict(self.last_capture_stats))
+            pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
             audio = sr.AudioData(pcm, 16000, 2)
-            return self._recognize_google(sr, recognizer, audio)
+            result = self._recognize_google(sr, recognizer, audio)
+            result.stats = dict(self.last_capture_stats)
+            return result
 
         try:
             with sr.Microphone() as source:
@@ -196,12 +252,38 @@ class SpeechToText:
 
     def _recognize_google(self, sr, recognizer, audio) -> STTResult:
         try:
-            text = recognizer.recognize_google(audio, language=self.config.language)
-            return STTResult(success=True, text=text)
+            raw = recognizer.recognize_google(audio, language=self.config.language, show_all=True)
         except sr.UnknownValueError:
             return STTResult(success=False, error="Couldn't understand the audio.")
         except sr.RequestError as e:
             return STTResult(success=False, error=f"Speech service unreachable: {e}")
+        return self._from_google(raw)
+
+    def _from_google(self, raw) -> STTResult:
+        """Google's full answer -> best transcript, its confidence, and the alternatives
+        (all with personal corrections applied)."""
+        alts = (raw or {}).get("alternative") if isinstance(raw, dict) else None
+        if not alts:
+            return STTResult(success=False, error="Couldn't understand the audio.")
+        texts, seen = [], set()
+        for a in alts:
+            t = self.correct((a.get("transcript") or "").strip())
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                texts.append(t)
+        if not texts:
+            return STTResult(success=False, error="Couldn't understand the audio.")
+        conf = alts[0].get("confidence")
+        return STTResult(success=True, text=texts[0], confidence=float(conf) if conf is not None else None,
+                         alternatives=texts[1:5])
+
+    def correct(self, text: str) -> str:
+        if self.corrections is None or not text:
+            return text
+        try:
+            return self.corrections.apply(text)
+        except Exception:  # noqa: BLE001 - a bad correction file must never break listening
+            return text
 
     def _listen_faster_whisper(self, timeout_s: int) -> STTResult:
         """Offline Whisper via faster-whisper (CTranslate2). Quality is high even

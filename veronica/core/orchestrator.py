@@ -265,9 +265,9 @@ class Orchestrator:
         # recorded — the final accumulated text alone enters the conversation below.
         session.turn_count += 1
         session.short_term.add("user", text)
-        tool = self.tools.find_fast_match(text)
+        tool, fast_text = self.tools.fast_match(text)
         if tool is not None:
-            args = tool.extract_arguments(text)
+            args = tool.extract_arguments(fast_text)
             if self.tool_event_callback:
                 self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
             result = self.tools.dispatch(tool.name, **args)
@@ -557,9 +557,9 @@ class Orchestrator:
         session.short_term.add("user", text)
 
         # ---- 1. fast path -----------------------------------------------------
-        tool = self.tools.find_fast_match(text)
+        tool, fast_text = self.tools.fast_match(text)
         if tool is not None:
-            args = tool.extract_arguments(text)
+            args = tool.extract_arguments(fast_text)
             if self.tool_event_callback:
                 self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
             result = self.tools.dispatch(tool.name, **args)
@@ -651,7 +651,15 @@ class Orchestrator:
 
             if not response.tool_calls:
                 reply = response.content or "I'm not sure how to respond to that."
-                session.short_term.add("assistant", reply)
+                failed = not getattr(response, "ok", True)
+                if failed and collected_results:
+                    # Tools already ran this turn (e.g. something was opened): say so, so
+                    # an outage can never hide what she actually did.
+                    done = "; ".join(r.get("message", "") for r in collected_results if r.get("message"))
+                    reply = (f"{done} I couldn't finish my reply because Google's AI service is "
+                             "overloaded right now.")
+                if not failed or collected_results:
+                    session.short_term.add("assistant", reply)
                 hop_routing = routing_meta.copy() if routing_meta else None
                 if hop_routing is not None:
                     hop_routing["succeeded"] = getattr(response, "ok", True)
@@ -965,7 +973,7 @@ class Orchestrator:
                 package = cm.build(
                     request=text,
                     conversation=list(session.short_term.as_messages()),
-                    system_sections=self._context_system_sections(),
+                    system_sections=self._context_system_sections(text),
                     model_profile=model_profile,
                     thread_memory=self.thread_memory,
                     episode_retriever=self.episode_retriever,
@@ -985,7 +993,17 @@ class Orchestrator:
                 return package.messages
         return self._legacy_build_messages(session, text)
 
-    def _context_system_sections(self) -> list[str]:
+    def _knowledge_block(self, text: str) -> str:
+        """Her study notes and lessons on topics named in this request (memory/knowledge.py)."""
+        if not text:
+            return ""
+        try:
+            from veronica.tools.learning_tools import knowledge_for
+            return knowledge_for(self.config).prompt_block(text)
+        except Exception:  # noqa: BLE001 — memory must never break a turn
+            return ""
+
+    def _context_system_sections(self, text: str = "") -> list[str]:
         """The trust/safety system blocks for the managed context path. Thread memory and
         experience retrieval are intentionally NOT pre-formatted here — the ContextManager
         consumes ``thread_memory``/``episode_retriever`` and frames those as labeled
@@ -997,6 +1015,9 @@ class Orchestrator:
         facts = self._known_facts_block()
         if facts:
             sections.append(facts)
+        learned = self._knowledge_block(text)
+        if learned:
+            sections.append(learned)
         if self.capabilities is not None:
             caps = self.capabilities.describe_for_prompt()
             if caps:
@@ -1041,6 +1062,9 @@ class Orchestrator:
         facts = self._known_facts_block()
         if facts:
             system_prompt = f"{system_prompt}\n\n{facts}"
+        learned = self._knowledge_block(text)
+        if learned:
+            system_prompt = f"{system_prompt}\n\n{learned}"
         messages = [ChatMessage(role="system", content=system_prompt)]
         for turn in session.short_term.as_messages():
             messages.append(ChatMessage(role=turn["role"], content=turn["content"]))

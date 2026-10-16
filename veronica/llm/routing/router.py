@@ -172,10 +172,9 @@ class ModelSelection:
             content = last_failure_content
         else:
             tried = ", ".join(a.get("model_id", "?") for a in attempts) or "none"
-            content = (
-                "The selected models couldn't respond right now "
-                f"(tried: {tried}). No fallback completed successfully."
-            )
+            logger.warning("All routed models failed (tried: %s).", tried)
+            from veronica.llm.openai_compatible_provider import BUSY_MESSAGE
+            content = BUSY_MESSAGE
         routing = dict(self.to_metadata())
         routing.update({"attempts": attempts, "used_fallback": True,
                         "fallback_used": True, "succeeded": False})

@@ -138,7 +138,17 @@ class AnthropicProvider(LLMProvider):
 
         if out and out[0]["role"] != "user":  # the API requires a user turn first
             out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(conversation start)"}]})
-        return "\n\n".join(system_parts), out
+        # Strip secrets / sensitive IDs before anything leaves the machine.
+        from veronica.safety import privacy
+        guard = privacy.get_guard()
+        for msg in out:
+            for block in msg.get("content") or []:
+                if isinstance(block, dict):
+                    if isinstance(block.get("text"), str):
+                        block["text"] = guard.scrub_text(block["text"])
+                    if isinstance(block.get("content"), str):
+                        block["content"] = guard.scrub_text(block["content"])
+        return guard.scrub_text("\n\n".join(system_parts)), out
 
     def _params(self, messages: list[ChatMessage], tools: Optional[list[dict]]) -> dict:
         system, msgs = self._build(messages)

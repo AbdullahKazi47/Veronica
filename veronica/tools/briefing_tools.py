@@ -54,7 +54,8 @@ class DailyBriefingTool(Tool):
         assistant = getattr(config, "assistant", None)
         region = getattr(assistant, "news_region", "IN") or "IN"
         language = getattr(assistant, "news_language", "en") or "en"
-        self._headlines = headlines or (lambda: fetch_headlines("", region, language, limit=3))
+        world = getattr(assistant, "news_world_region", "") or ""
+        self._headlines = headlines or (lambda: fetch_headlines("", region, language, limit=3, world_region=world))
 
     def matches(self, text: str) -> bool:
         return bool(_BRIEFING.match(text))

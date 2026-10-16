@@ -81,7 +81,9 @@ class WakeGate:
         empty = 0
         near_peak, near_last = 0.0, 0.0
         levels: deque[float] = deque(maxlen=_AMBIENT_FRAMES)
-        skip = _WARMUP_FRAMES  # the device is near-silent right after opening
+        # A freshly opened device is near-silent for ~0.5 s; a tap on the always-open
+        # shared stream (voice/mic_hub.py) is live immediately.
+        skip = _WARMUP_FRAMES if getattr(mic, "needs_warmup", True) else 0
         try:
             while deadline is None or time.monotonic() < deadline:
                 frame = mic.read()

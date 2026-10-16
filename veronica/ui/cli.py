@@ -45,7 +45,10 @@ def _duration(minutes: float) -> str:
 # Said during a follow-up: end the conversation instead of sending it to the brain.
 _ENDS_CONVERSATION = re.compile(
     r"^\s*(?:ok(?:ay)?[,\s]+)?(?:thanks?(?:\s+you)?|thank\s+you(?:\s+\w+)?|that'?s\s+(?:all|it)|never\s*mind|"
-    r"nothing(?:\s+else)?|no(?:\s+thanks?)?|stop|cancel|bye|i'?m\s+done|that\s+will\s+be\s+all)\s*[.!]?\s*$", re.I)
+    r"nothing(?:\s+else)?|no(?:\s+thanks?)?|stop|cancel|bye|i'?m\s+done|that\s+will\s+be\s+all|"
+    # "go to sleep" said to her means stop listening — never put the PC to sleep
+    r"(?:you\s+can\s+)?(?:go\s+(?:to\s+)?)?sleep(?:\s+now)?|good\s*night|go\s+(?:to\s+)?rest|"
+    r"(?:ok(?:ay)?\s+)?that'?s\s+enough|see\s+you(?:\s+later)?|goodbye)\s*[.!]?\s*$", re.I)
 
 _NO_WORDS = re.compile(r"\b(no|nope|nah|cancel|stop|don'?t|do not|deny|negative|abort|wait)\b")
 _YES_WORDS = re.compile(r"\b(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|proceed|confirm|confirmed|affirmative|allow)\b")
@@ -101,9 +104,14 @@ class CLIApp:
         self.session = orchestrator.new_session()
         self.tts = TextToSpeech(config.tts, cache_dir=config.resolve_path(config.tts.cache_dir))
         self.speaker = SynchronousSpeaker(self.tts)
-        self.stt = SpeechToText(config.stt) if voice_mode else None
+        self.stt = SpeechToText(config.stt, corrections=self._make_corrections()) if voice_mode else None
         self._tts_active = False  # prevents self-listening during playback
+        self.hub = self._make_mic_hub() if voice_mode else None
+        if self.hub is not None and self.stt is not None:
+            self.stt.mic_factory = lambda chunk: self.hub.tap(chunk)
+            self.stt.hub = self.hub
         self.wake_gate = self._make_wake_gate(wake_gate) if (voice_mode and wake_mode) else None
+        self._barged = False                     # the user just talked over her: listen at once
         self._speak_lock = threading.RLock()     # one voice at a time (replies + reminders)
         self._capturing = threading.Event()      # set while STT is recording the user
         self._stop = threading.Event()
@@ -112,10 +120,34 @@ class CLIApp:
             global _voice_confirmer
             _voice_confirmer = self._confirm_by_voice
 
+    def _make_corrections(self):
+        from veronica.speech.corrections import Corrections
+        return Corrections(self.config.resolve_path(
+            getattr(self.config.stt, "corrections_path", "data/stt_corrections.json")))
+
+    def _make_mic_hub(self):
+        """One always-open mic stream for wake word, speech recognition and talk-over.
+        Falls back to opening the device per listen if the stream can't start."""
+        if not getattr(self.config.voice, "shared_mic", True):
+            return None
+        try:
+            from veronica.voice.mic_hub import MicHub
+            from veronica.voice.microphone import resolve_input_device
+            device = resolve_input_device(getattr(self.config.stt, "mic_device_name", None),
+                                          self.config.stt.mic_device_index)
+            hub = MicHub(device)
+            if hub.ensure_running():
+                return hub
+            logger.warning("Shared microphone unavailable (%s); opening it per listen instead.", hub.failed)
+        except Exception:  # noqa: BLE001
+            logger.exception("Shared microphone failed to start; opening it per listen instead.")
+        return None
+
     def _make_wake_gate(self, gate):
         if gate is None:
-            from veronica.voice.wake_gate import WakeGate
-            gate = WakeGate(self.config)
+            from veronica.voice.wake_gate import FRAME_SAMPLES, WakeGate
+            factory = (lambda: self.hub.tap(FRAME_SAMPLES)) if self.hub is not None else None
+            gate = WakeGate(self.config, mic_factory=factory)
         if not gate.available:
             # Honest fallback: say why, then keep working as plain voice mode.
             self._notice(f"My wake word isn't working ({gate.reason}), so I'll listen to everything you say.")
@@ -175,6 +207,7 @@ class CLIApp:
         self.background = BackgroundTasks(self.orchestrator, self._announce_task,
                                           store_path=self.config.resolve_path("data/background_tasks.json"))
         self.proactive = self._start_proactive()
+        self.health_monitor = self._start_self_heal()
         try:
             while True:
                 try:
@@ -185,7 +218,14 @@ class CLIApp:
 
                 if not text:
                     continue
-                if text.strip().lower().strip(".!") in _EXIT_WORDS:
+                if self.voice_mode and _ENDS_CONVERSATION.match(text):
+                    # Voice: "bye" / "go to sleep" / "thanks" end the conversation; she
+                    # goes back to waiting for her name. She is never quit by voice, and
+                    # nothing here touches the PC itself.
+                    self._say("Okay.")
+                    self._follow_up_until = 0.0
+                    continue
+                if not self.voice_mode and text.strip().lower().strip(".!") in _EXIT_WORDS:
                     self._say("Goodbye.")
                     break
 
@@ -221,6 +261,30 @@ class CLIApp:
             time.sleep(0.2)  # never talk over the user
         self._status(f"[proactive{' URGENT' if urgent else ''}]")
         self._beep()
+        self._say(text)
+
+    # -- self-heal -----------------------------------------------------------------------
+    def _start_self_heal(self):
+        """Watch VERONICA's own workers and memory files; restart/restore what breaks."""
+        try:
+            from veronica.core.self_heal import HealthMonitor
+            from veronica.tools.self_heal_tools import _data_files, set_live_monitor
+            llm = getattr(self.orchestrator, "llm", None)
+            monitor = HealthMonitor(speak=self._heal_say, data_files=_data_files(self.config), llm=llm)
+            monitor.watch_threads("background-", 1, lambda: self.background.ensure_workers(), "background worker")
+            if self.proactive is not None:
+                monitor.watch_threads("proactive", 1, self.proactive.start, "proactive monitor")
+            monitor.start()
+            set_live_monitor(lambda: monitor)
+            return monitor
+        except Exception:  # noqa: BLE001 — self-heal must never stop VERONICA from running
+            logger.exception("Couldn't start the self-heal monitor.")
+            return None
+
+    def _heal_say(self, text: str, urgent: bool = False) -> None:
+        while self._capturing.is_set() and not self._stop.is_set():
+            time.sleep(0.2)
+        self._status("[self-heal]")
         self._say(text)
 
     # -- background tasks ----------------------------------------------------------------
@@ -299,6 +363,10 @@ class CLIApp:
 
     # -- voice permission ----------------------------------------------------------
     def _listen(self, timeout_s: int = 6):
+        lock = getattr(self, "_speak_lock", None)
+        if lock is not None:
+            with lock:              # never open the mic while she (or an announcement) is talking
+                pass
         self._capturing.set()
         try:
             return self.stt.listen_once(timeout_s=timeout_s)
@@ -324,31 +392,71 @@ class CLIApp:
         return False
 
     # -- conversation mode -----------------------------------------------------------
+    def _conversation_mode(self) -> bool:
+        return bool(getattr(self.config.voice, "conversation_mode", False))
+
     def _open_follow_up(self) -> None:
-        """After a reply, listen for a follow-up WITHOUT the wake word for a few seconds."""
-        secs = float(getattr(self.config.voice, "follow_up_seconds", 0) or 0)
-        if self.voice_mode and self.wake_gate is not None and secs > 0:
-            self._follow_up_until = time.monotonic() + secs
+        """After a reply, keep listening WITHOUT the wake word. In conversation mode the
+        window stays open until the user ends it (a long idle timeout is the only safety
+        fallback); otherwise it's the short follow_up_seconds window."""
+        if not (self.voice_mode and self.wake_gate is not None):
+            return
+        if self._conversation_mode():
+            idle = float(getattr(self.config.voice, "conversation_idle_timeout_s", 300) or 0)
+            self._follow_up_until = time.monotonic() + idle if idle > 0 else float("inf")
+        else:
+            secs = float(getattr(self.config.voice, "follow_up_seconds", 0) or 0)
+            if secs > 0:
+                self._follow_up_until = time.monotonic() + secs
 
     def _follow_up(self) -> Optional[str]:
         """The follow-up turn: the user's words, '' to drop back to the wake word, or
         None when no follow-up window is open."""
         if time.monotonic() >= getattr(self, "_follow_up_until", 0.0):
             return None
+        if self._conversation_mode():
+            return self._conversation_turn()
         secs = float(getattr(self.config.voice, "follow_up_seconds", 0) or 0)
         self._follow_up_until = 0.0
         self._status(f"[listening for a follow-up... just speak ({secs:.0f}s)]")
         result = self._listen(timeout_s=max(1, int(round(secs))))
-        if not result.success or not (result.text or "").strip():
+        text = self._accept(result, open_conversation=True) if result.success else None
+        if not text:
             self._status(f"[back to waiting for \"{self.config.assistant.name}\"]")
             return ""
-        print(f"You: {result.text}")
-        if _ENDS_CONVERSATION.match(result.text):
+        if _ENDS_CONVERSATION.match(text):
             self._say("Okay.")
             return ""
-        return result.text
+        return text
+
+    def _conversation_turn(self) -> str:
+        """Conversation mode: stay listening (no wake word) through silences until the
+        user speaks, says an ending phrase, or goes quiet past the idle timeout."""
+        deadline = getattr(self, "_follow_up_until", 0.0)
+        name = self.config.assistant.name
+        self._status("[conversation — just speak; say 'thanks' or 'bye' to end]")
+        while time.monotonic() < deadline:
+            result = self._listen(timeout_s=6)
+            text = self._accept(result, open_conversation=True) if result.success else None
+            if not text:
+                continue                        # silence or background speech: keep it open
+            if _ENDS_CONVERSATION.match(text):
+                self._say("Anytime.")
+                self._follow_up_until = 0.0
+                return ""                       # user ended it: back to the wake word
+            return text
+        self._status(f"[quiet for a while — back to waiting for \"{name}\"]")
+        self._follow_up_until = 0.0
+        return ""
 
     def _get_input(self) -> str:
+        if self.voice_mode and self.stt is not None and getattr(self, "_barged", False):
+            # The user talked over her: listen straight away, no wake word.
+            self._barged = False
+            self._status("[listening — you interrupted me]")
+            result = self._listen()
+            text = self._accept(result, open_conversation=False) if result.success else None
+            return text or ""
         if self.voice_mode and self.stt is not None:
             # Stage -1: conversation mode — a follow-up right after a reply needs no wake word.
             follow = self._follow_up() if self.wake_gate is not None else None
@@ -381,9 +489,83 @@ class CLIApp:
             if not result.success:
                 self._status(f"[STT] {result.error}")
                 return ""
-            print(f"You: {result.text}")
-            return result.text
+            return self._accept(result, open_conversation=False) or ""
         return input("You: ")
+
+    def _start_barge_in(self, stop: threading.Event):
+        """The talk-over listener for one reply (None when unavailable or switched off)."""
+        if (getattr(self, "hub", None) is None or getattr(self, "wake_gate", None) is None
+                or getattr(self.config.voice, "barge_in", "wake_word") != "wake_word"):
+            return None
+        try:
+            from veronica.voice.barge_in import BargeInMonitor
+            return BargeInMonitor(lambda n: self.hub.tap(n), self.wake_gate.detector,
+                                  name=self.config.assistant.name).start(stop)
+        except Exception:  # noqa: BLE001 - never let it stop her speaking
+            logger.exception("Couldn't start the talk-over listener.")
+            return None
+
+    def _accept(self, result, *, open_conversation: bool) -> Optional[str]:
+        """Decide what the user actually said, or None to ignore it.
+
+        * Prefer the recognizer's alternative reading that is a real command when the top
+          reading isn't one ("minimise all attacks" vs "minimise all tabs").
+        * In an open conversation (no wake word this turn): ignore speech that isn't aimed
+          at her — too quiet for how loud the room is (a TV across the room), or low
+          recognition confidence.
+        * After the wake word: if confidence is very low, ask "did you say ...?"."""
+        text = (getattr(result, "text", "") or "").strip()
+        if not text:
+            return None
+        tools = getattr(getattr(self, "orchestrator", None), "tools", None)
+        matches = (lambda t: tools.find_fast_match(t) is not None) if tools is not None else (lambda t: False)
+        if not matches(text):
+            for alt in list(getattr(result, "alternatives", []) or [])[:3]:
+                if matches(alt):
+                    logger.info("Heard %r; using the reading %r, which is a command.", text, alt)
+                    text = alt
+                    break
+        conf = getattr(result, "confidence", None)
+        if open_conversation:
+            if _ENDS_CONVERSATION.match(text):
+                print(f"You: {text}")
+                return text
+            stats = getattr(result, "stats", None) or {}
+            ambient, speech = stats.get("ambient_rms"), stats.get("speech_rms")
+            voice = getattr(self.config, "voice", None)
+            ratio = float(getattr(voice, "conversation_speech_ratio", 0) or 0)
+            if ratio and ambient and speech and speech < ambient * ratio:
+                logger.info("Ignored background speech %r (level %s vs room %s).", text, speech, ambient)
+                return None
+            floor = float(getattr(voice, "conversation_min_confidence", 0) or 0)
+            if floor and conf is not None and conf < floor and not matches(text):
+                logger.info("Ignored unclear speech %r (confidence %.2f).", text, conf)
+                return None
+            print(f"You: {text}")
+            return text
+        print(f"You: {text}")
+        ask_below = float(getattr(getattr(self.config, "stt", None), "confirm_below_confidence", 0) or 0)
+        if ask_below and conf is not None and conf < ask_below:
+            return self._check_what_was_said(text)
+        return text
+
+    def _check_what_was_said(self, text: str) -> Optional[str]:
+        """Low confidence: "Did you say ...?" — yes keeps it, no asks once more."""
+        self._say(f"Sorry, did you say: {text}?")
+        heard = self._listen()
+        reply = (heard.text or "").strip() if heard.success else ""
+        if reply:
+            print(f"You: {reply}")
+        if _YES_WORDS.search(reply.lower()) and not _NO_WORDS.search(reply.lower()):
+            return text
+        if reply and not _NO_WORDS.search(reply.lower()):
+            return reply                         # they just said it again, more clearly
+        self._say("Okay, say it again.")
+        again = self._listen()
+        if again.success and (again.text or "").strip():
+            print(f"You: {again.text}")
+            return again.text.strip()
+        return None
 
     @staticmethod
     def _beep() -> None:
@@ -398,13 +580,31 @@ class CLIApp:
         with self._speak_lock:  # replies and reminder announcements never overlap
             print(f"{self.config.assistant.name}: {text}\n")
             if self.voice_mode:
-                # Stage 2: Block microphone while TTS plays — prevents self-listening feedback
+                # Stage 2: speak sentence by sentence; "Veronica" mid-reply stops her.
                 self._tts_active = True
+                stop = threading.Event()
+                monitor = self._start_barge_in(stop)
+                hub = getattr(self, "hub", None)
+                if hub is not None:
+                    hub.self_speaking = True     # her voice is not the room's noise level
+                completed = True
                 try:
-                    self.speaker.speak(text)
+                    speak_i = getattr(self.speaker, "speak_interruptible", None)
+                    if speak_i is not None:
+                        completed = speak_i(text, stop, on_piece=monitor.arm_for if monitor else None)
+                    else:
+                        self.speaker.speak(text)
                 except Exception as e:
                     logger.warning("TTS playback failed: %s", e)
                 finally:
+                    if monitor is not None:
+                        monitor.stop()
+                    if hub is not None:
+                        hub.self_speaking = False
                     self._tts_active = False
-                # Stage 3: Short cooldown + buffer flush before re-listening
-                time.sleep(0.2)
+                if not completed:
+                    self._barged = True
+                    self._status("[you talked over me — listening]")
+                    self._beep()
+                # Stage 3: short cooldown so the room's echo dies down before listening
+                time.sleep(0.1)

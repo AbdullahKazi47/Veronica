@@ -61,6 +61,8 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
 
     def ask(question: str, jpeg: bytes) -> str:
         import requests
+        from veronica.safety import privacy
+        question = privacy.get_guard().scrub_text(question)   # the image itself can't be scrubbed
         data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
         resp = requests.post(f"{base}/chat/completions", timeout=30,
                              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},

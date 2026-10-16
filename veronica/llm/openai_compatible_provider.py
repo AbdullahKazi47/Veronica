@@ -16,6 +16,36 @@ logger = get_logger("llm.openai_compatible")
 
 _MAX_REMEMBERED_TURNS = 32
 
+# Google answers 503 ("overloaded") and 429 ("too many requests") in short bursts; a quick
+# retry usually lands. Two retries, ~0.7 s then ~1.8 s, keep a voice turn under ~3 s extra.
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_RETRY_DELAYS_S = (0.7, 1.8)
+BUSY_MESSAGE = ("Google's AI service is overloaded right now, so I couldn't think that one through. "
+                "Quick commands like opening apps or folders still work. Try again in a moment.")
+OFFLINE_MESSAGE = ("I can't reach Google's AI service right now. Check the internet connection; "
+                   "quick commands like opening apps still work.")
+
+
+def _post_with_retry(requests, url, *, sleep=None, **kw):
+    """POST, retrying the brief overload errors. Returns the final response (raises on
+    connection failure after the retries)."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    resp = None
+    for attempt, delay in enumerate((0.0,) + _RETRY_DELAYS_S):
+        if delay:
+            sleep(delay)
+        try:
+            resp = requests.post(url, **kw)
+        except requests.ConnectionError:
+            if attempt == len(_RETRY_DELAYS_S):
+                raise
+            continue
+        if resp.status_code not in _RETRY_STATUS:
+            return resp
+        logger.info("Cloud model busy (%s); retrying.", resp.status_code)
+    return resp
+
 
 class OpenAICompatibleProvider(LLMProvider):
     name = "openai_compatible"
@@ -80,7 +110,10 @@ class OpenAICompatibleProvider(LLMProvider):
             for r in leftovers:
                 out.append({"role": "user", "content": f"[result of tool {r.name or 'unknown'}]\n{r.content}"})
             i = j
-        return out
+        # Last step before anything leaves the machine: strip secrets / sensitive IDs.
+        # This covers replayed tool turns and tool results too, not just user text.
+        from veronica.safety import privacy
+        return privacy.get_guard().scrub_wire(out)
 
     def chat(
         self,
@@ -113,16 +146,19 @@ class OpenAICompatibleProvider(LLMProvider):
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=self.timeout_s
+            resp = _post_with_retry(
+                requests, f"{self.base_url}/chat/completions", json=payload, headers=headers,
+                timeout=self.timeout_s,
             )
             if resp.status_code >= 400:  # keep the provider's own explanation in the log
                 logger.warning("Cloud LLM %s error body: %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
+            # Technical detail goes to the log; the person hears a plain sentence.
             logger.warning("Cloud LLM request failed: %s", e)
-            return LLMResponse(content=f"The cloud model request failed: {e}", ok=False)
+            offline = isinstance(e, requests.ConnectionError) and not isinstance(e, requests.Timeout)
+            return LLMResponse(content=OFFLINE_MESSAGE if offline else BUSY_MESSAGE, ok=False)
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message", {})

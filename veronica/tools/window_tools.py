@@ -105,6 +105,11 @@ class WindowControlTool(Tool):
         return bool(_MIN_ALL.search(text) or _RESTORE_ALL.search(text) or
                     (_ONE.match(text) and not _MIN_ALL.search(text)))
 
+    @staticmethod
+    def _means_everything(app: str) -> bool:
+        return bool(re.match(r"^(?:all|every|everything)\b|^(?:my\s+|the\s+)?(?:tabs|windows|apps|programs|screens)$",
+                             (app or "").strip(), re.I))
+
     def extract_arguments(self, text: str) -> dict[str, Any]:
         if _MIN_ALL.search(text):
             return {"action": "minimize_all"}
@@ -114,8 +119,11 @@ class WindowControlTool(Tool):
         if not m:
             return {}
         verb = m.group(1).lower()
+        app = m.group(2).strip()
+        if self._means_everything(app):              # "restore all tabs", "minimize my windows"
+            return {"action": "minimize_all" if verb.startswith("minimi") else "restore_all"}
         action = "minimize" if verb.startswith("minimi") else "maximize" if verb.startswith("maximi") else "focus"
-        return {"action": action, "app": m.group(2).strip()}
+        return {"action": action, "app": app}
 
     def _minimize_all(self) -> ToolResult:
         try:
@@ -217,38 +225,58 @@ def _sleep() -> None:
     subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], creationflags=_NO_WINDOW)
 
 
-# The PC must be named for sleep: a bare "go to sleep" may be meant for VERONICA herself.
+# The PC must be named: a bare "go to sleep" is said to VERONICA (it ends the
+# conversation), never to the computer.
 _PC = r"(?:my\s+|the\s+)?(?:pc|computer|laptop|system)"
-_LOCK_SLEEP = re.compile(rf"^\s*(?:please\s+)?(?:(lock)\s+(?:{_PC}|(?:my\s+|the\s+)?screen)|"
-                         rf"put\s+{_PC}\s+to\s+sleep|sleep\s+{_PC}|{_PC}\s+(?:to\s+)?sleep(?:\s+mode)?)"
-                         r"(?:\s+now)?\s*[.!]?\s*$", re.I)
+_LOCK = re.compile(rf"^\s*(?:please\s+)?lock\s+(?:{_PC}|(?:my\s+|the\s+)?screen)(?:\s+now)?\s*[.!]?\s*$", re.I)
+_SLEEP = re.compile(rf"^\s*(?:please\s+)?(?:put\s+{_PC}\s+to\s+sleep|sleep\s+{_PC}|{_PC}\s+(?:to\s+)?sleep(?:\s+mode)?)"
+                    r"(?:\s+now)?\s*[.!]?\s*$", re.I)
 
 
-class LockOrSleepTool(Tool):
-    name = "lock_or_sleep"
-    description = "Lock the PC or put it to sleep (no permission needed; nothing is lost). action: 'lock' or 'sleep'."
+class LockPCTool(Tool):
+    name = "lock_pc"
+    description = "Lock the PC (the lock screen; nothing is closed or lost). No permission needed."
     permission = PermissionLevel.MODERATE
-    parameters = {"type": "object", "properties": {"action": {"type": "string", "enum": ["lock", "sleep"]}},
-                  "required": ["action"]}
+    parameters = {"type": "object", "properties": {}, "required": []}
 
-    def __init__(self, lock: Callable = _lock, sleep: Callable = _sleep) -> None:
-        self._lock, self._sleep = lock, sleep
+    def __init__(self, lock: Callable = _lock) -> None:
+        self._lock = lock
 
     def matches(self, text: str) -> bool:
-        return bool(_LOCK_SLEEP.match(text))
+        return bool(_LOCK.match(text))
 
-    def extract_arguments(self, text: str) -> dict[str, Any]:
-        m = _LOCK_SLEEP.match(text)
-        return {"action": "lock" if m and m.group(1) else "sleep"}
-
-    def run(self, action: str = "lock", **kwargs: Any) -> ToolResult:
+    def run(self, **kwargs: Any) -> ToolResult:
         if platform.system() != "Windows" and self._lock is _lock:
             return ToolResult.fail("Only supported on Windows.")
         try:
-            (self._sleep if action == "sleep" else self._lock)()
+            self._lock()
         except Exception as e:  # noqa: BLE001
-            return ToolResult.fail(f"Couldn't {action} the PC: {e}")
-        return ToolResult.ok("Locked." if action != "sleep" else "Going to sleep.")
+            return ToolResult.fail(f"Couldn't lock the PC: {e}")
+        return ToolResult.ok("Locked.")
+
+
+class SleepPCTool(Tool):
+    name = "sleep_pc"
+    description = ("Put the COMPUTER to sleep. ALWAYS asks the user first. Only when the user clearly asks for "
+                   "the PC/laptop/computer to sleep — never for 'go to sleep', 'sleep' or 'goodnight' said to "
+                   "VERONICA, which only mean stop listening.")
+    permission = PermissionLevel.SENSITIVE   # it takes the PC away mid-task: yes/no first
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(self, sleep: Callable = _sleep) -> None:
+        self._sleep = sleep
+
+    def matches(self, text: str) -> bool:
+        return bool(_SLEEP.match(text))
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        if platform.system() != "Windows" and self._sleep is _sleep:
+            return ToolResult.fail("Only supported on Windows.")
+        try:
+            self._sleep()
+        except Exception as e:  # noqa: BLE001
+            return ToolResult.fail(f"Couldn't put the PC to sleep: {e}")
+        return ToolResult.ok("Going to sleep.")
 
 
 _SHUTDOWN = re.compile(r"^\s*(?:please\s+)?(?:(shut\s*down|turn\s+off|power\s+off)|(restart|reboot)|"
@@ -331,7 +359,9 @@ _SKIP_DIRS = {"appdata", "node_modules", ".git", "__pycache__", "$recycle.bin", 
 _OPEN_PATH = re.compile(r"^\s*(?:please\s+)?(?:open|show(?:\s+me)?)\s+(?:up\s+)?(?:the\s+|my\s+)?(.+?)\s+"
                         r"(folder|directory|file|document|pdf|photo|picture|image|video|spreadsheet|presentation)"
                         r"(?:\s+(?:in|from|inside)\s+(?:my\s+|the\s+)?(.+?))?\s*[.!]?\s*$|"
-                        r"^\s*(?:please\s+)?open\s+(?:the\s+|my\s+)?((?:[\w\- ]+[\\/])*[\w\- ]+\.\w{2,5})\s*[.!]?\s*$", re.I)
+                        r"^\s*(?:please\s+)?open\s+(?:the\s+|my\s+)?((?:[\w\- ]+[\\/])*[\w\- ]+\.\w{2,5})\s*[.!]?\s*$|"
+                        r"^\s*(?:please\s+)?open\s+(?:the\s+|my\s+|a\s+)?(folder|directory|file|document)\s+"
+                        r"(?:named|name|called|titled)\s+(.+?)\s*[.!]?\s*$", re.I)
 _DOC_KIND = {"file": None, "document": None, "pdf": {".pdf"}, "photo": {".jpg", ".jpeg", ".png", ".heic", ".webp"},
              "picture": {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp"},
              "image": {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp"},
@@ -373,6 +403,9 @@ class OpenPathTool(Tool):
             return {}
         if m.group(4):
             return {"name": m.group(4).strip(), "kind": "file"}
+        if m.group(5):
+            word = m.group(5).lower()
+            return {"name": m.group(6).strip(), "kind": "folder" if word in ("folder", "directory") else "file"}
         word = m.group(2).lower()
         args = {"name": m.group(1).strip(), "kind": "folder" if word in ("folder", "directory") else word}
         if m.group(3):

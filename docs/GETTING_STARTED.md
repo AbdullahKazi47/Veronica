@@ -93,7 +93,7 @@ extra permission — requests still go through the normal permission prompts.
 | "volume up" / "volume to 60" / "mute" / "unmute" | system volume |
 | "who was Abdul Kalam" | 2-sentence Wikipedia summary |
 | "play music in Spotify" / "play lofi on SoundCloud" / "play Arijit Singh" | any service you name (its app if installed, else the first result on its site, which starts playing); default `assistant.default_play_service` (YouTube) |
-| "what's happening around the world today" / "news about cricket" | top + world feeds fetched in parallel, summarized into a short spoken briefing (~5 s, repeats within 3 min instant) |
+| "what's happening around the world today" / "news about cricket" | India's top stories first, then world headlines (international edition), fetched in parallel and summarized into a short spoken briefing (~5 s, repeats within 3 min instant) |
 | "show me" (right after the news) / "show me the news" | opens the same news with photos and videos in the browser |
 | "what's on my screen" / "read this error" / "what does this say" | one screenshot → `llm.vision_model` → spoken answer; only when asked, never stored; text on screen is never obeyed |
 
@@ -406,7 +406,8 @@ ask. Everyday tasks have dedicated tools, so they never fall back to a shell com
 | "minimize all my tabs", "show desktop", "restore all windows" | `window_control` | no |
 | "minimize Chrome", "maximize Spotify", "switch to WhatsApp" | `window_control` | no |
 | "open the projects folder", "open veronica folder in projects", "open my resume pdf" | `open_path` | no |
-| "lock my PC", "put the laptop to sleep" | `lock_or_sleep` | no |
+| "lock my PC" | `lock_pc` | no |
+| "put the laptop to sleep" (the PC must be named; "go to sleep" only ends the conversation) | `sleep_pc` | yes / no |
 | "cancel shutdown" | `cancel_shutdown` | no |
 | "close Spotify" (unsaved work) | `close_window` | yes / no |
 | "shut down my PC", "restart in 5 minutes", "sign out" | `shutdown_pc` | yes / no, then a 30 s cancellable delay |
@@ -416,6 +417,159 @@ ask. Everyday tasks have dedicated tools, so they never fall back to a shell com
 hidden folders are skipped). It never runs programs or scripts (`.exe`, `.bat`, `.ps1`,
 `.lnk` and others): apps are opened by name with "open <app>". A bare "go to sleep" does not
 sleep the PC, because you have to name the PC.
+
+### Learning and coding (`tools/learning_tools.py`, `memory/knowledge.py`)
+
+VERONICA can study a subject and write code for you. What she learns is **memory**, not
+model training: the model already knows Python, and the notes add fresh docs, your
+preferences and lessons from her own work.
+
+| Say | What happens | Asks? |
+|---|---|---|
+| "learn Python", "study FastAPI from https://…", "read up on Docker" | Reads Wikipedia (and the page you name), writes 12–25 study notes into `data/knowledge.json` | no |
+| "what have you learned?", "what have you learned about Python?" | Lists topics, or reads highlights | no |
+| "forget what you learned about Python" | Deletes that topic's notes | no |
+| "write me a Python script that sorts my downloads by type" | Writes a project into `Documents\VERONICA Projects\<name>` and opens it in VS Code (or Notepad) | no, because nothing runs |
+| "make it also handle PDFs" | Changes the last project; the old version is kept in `.versions\` | no |
+| "run it" | Runs the project. If it fails, she fixes the code and reruns, at most `coding.max_fix_attempts` (2) times, then saves a lesson from the fix | **yes/no** |
+
+- Notes and lessons are added to a request only when it names the topic ("write some
+  Python…"), labelled as reference material. Web pages and program output are untrusted
+  data and never instructions.
+- Coding preferences you state ("I prefer pytest") are saved with `remember_fact` and used
+  whenever she writes code.
+- Code is written by the stronger routing model (role `reasoning`/`coding`). If it's busy,
+  the main model is used.
+- Her projects never contain `.exe`, `.bat`, `.ps1` or similar files, never write outside
+  their folder, and never overwrite an earlier project. Programs run without input prompts
+  and stop after `coding.run_timeout_s`.
+- Settings are in the `coding:` section of `config.yaml`. `enabled: false` turns the whole
+  feature off.
+
+### Self-heal (`core/self_heal.py`, `core/jsonsafe.py`)
+
+VERONICA watches her own health on a background thread and fixes what she safely can,
+on her own:
+
+- a stopped worker thread (the proactive monitor, a background-task worker) is **restarted**
+- a corrupt memory/knowledge file is **restored from its backup** — every save keeps a
+  `.bak`, and a damaged file is set aside as `.corrupt` rather than lost
+
+She only **reports** (can't safely auto-fix) the language model being unreachable or the
+disk being critically full. Say **"are you okay"**, **"run a self check"** or **"heal
+yourself"** to run it on demand; it needs no permission because restarting and restoring
+are non-destructive.
+
+Hard limit, by design: self-heal **never edits code, changes settings, or touches the
+permission gate.** It restarts and restores; it does not rewrite VERONICA. That boundary
+is what keeps self-modification safe.
+
+### Privacy guard — what reaches the cloud (`safety/privacy.py`)
+
+VERONICA thinks with Google's Gemini in the cloud, so the honest truth is that **your
+requests, and the facts you asked her to remember, do go to Gemini** — that is how she
+answers you. There is no way around that while using a cloud model. What the privacy guard
+guarantees is that a narrow, high-risk set **never leaves the machine**, even if you say
+one aloud, it's on your screen, or it's in a file she reads:
+
+- passwords, API keys, tokens, JWTs, bearer/authorization headers, private keys
+- card numbers (validated by the Luhn check, so random long numbers aren't touched),
+  CVV/PIN, bank account / routing / IFSC numbers
+- government IDs: US SSN, India Aadhaar and PAN
+- anything matching a regex you add in `privacy.extra_patterns`
+
+Each is replaced with `[REDACTED]` at the single point every request passes through before
+the network call — so it covers your spoken request, tool results, screen-question text and
+replayed tool turns, not just one path. The guard is **on by default and fails safe**
+(even an unconfigured guard redacts). It records only *how many* of each category it removed,
+never the values, so **"have you redacted anything?"** can be answered without keeping the
+very data it just protected. Ask **"what do you send to the cloud?"** or **"is my data
+safe?"** for the full picture.
+
+Your API key itself is never sent in a request body — it only ever goes in the
+`Authorization` header to the provider you configured, and it lives only in `config/.env`
+(gitignored). Settings are in the `privacy:` block of `config.yaml`.
+
+Deliberate boundary: the guard sanitizes outbound text. It does not weaken the permission
+gate, and the screen/camera image path still runs only when you explicitly ask her to look.
+
+### Conversation mode — no wake word between turns (`voice.conversation_mode`)
+
+With `conversation_mode: true` (the default), you say "Veronica" **once** to start, then keep
+talking freely — no wake word between turns. The conversation stays open until you end it
+("thanks", "thank you", "that's all", "bye", "stop", "never mind"). The only automatic exit
+is `conversation_idle_timeout_s` (default 300 s): if you go silent that long, she drops back
+to the wake word so the mic isn't live forever. Set it to `0` to never time out. Set
+`conversation_mode: false` to use the old short `follow_up_seconds` window instead.
+
+### Faster, interruptible, accurate voice (`voice/mic_hub.py`, `voice/barge_in.py`)
+
+**Faster replies**
+- One always-open microphone stream (`voice.shared_mic`) serves the wake word, speech
+  recognition and the talk-over listener. Each listen used to reopen the device and throw
+  away 0.5 s of warm-up silence, which also clipped words said right after the beep.
+- Replies are spoken **sentence by sentence**: the voice starts after the first sentence is
+  synthesized, and the next is prepared while the current one plays. ElevenLabs gets the
+  neighbouring sentences, so intonation stays natural.
+- The silence that ends your sentence is 0.65 s (`stt.pause_threshold`, was 0.8).
+
+**Talk over her** (`voice.barge_in: wake_word`)
+- Say **"Veronica"** while she's talking and she stops mid-word and listens, with no wake
+  word needed for what you say next. She uses the wake-word model rather than "any loud
+  sound" because laptop speakers feed her own voice into the mic. During a sentence that
+  contains her own name, the listener stands down.
+
+**Fewer mishearings**
+- Google's alternative readings are checked. If the top reading isn't a command but an
+  alternative is ("minimise all attacks" vs "minimise all tabs"), the command wins.
+- Teach her: **"when I say attacks, I mean tabs"**, **"you heard crystal but I said
+  restore"**. "What corrections do you have?" lists them, and "forget the correction for X"
+  removes one. They're stored in `data/stt_corrections.json`.
+- After the wake word, if Google reports low confidence (below
+  `stt.confirm_below_confidence`), she asks "did you say …?". Google's free service only
+  gives a confidence score for unclear audio, so clear speech is never questioned.
+
+**Ignoring background noise**
+- The room's noise level is tracked continuously, leaving out her voice and yours, so a TV
+  switched on raises the bar for what counts as you speaking.
+- Hum below 100 Hz (fans, AC) is filtered out before recognition (`stt.highpass_hz`), and
+  bursts shorter than 0.25 s (clicks, coughs) are ignored.
+- In an open conversation (no wake word that turn), she ignores speech that isn't at least
+  3× louder than the room (`voice.conversation_speech_ratio`) or that she's unsure of
+  (`voice.conversation_min_confidence`). Commands and ending phrases always get through.
+
+### When Google's AI is overloaded ("503")
+
+A **503 Service Unavailable** from `generativelanguage.googleapis.com` means Google's
+Gemini servers were overloaded. Nothing is wrong with VERONICA, your key or your PC.
+VERONICA now:
+- retries twice (after ~0.7 s and ~1.8 s), which usually gets through;
+- if Google is still down, says so plainly ("Google's AI service is overloaded right now…")
+  instead of reading out an error with a web address in it;
+- if a tool already ran that turn (a folder opened, say), tells you that too, so an outage
+  can never hide something she did;
+- handles casual phrasing locally. "Ok now minimise all", "can you restore my tabs" and
+  "open folder named X" are matched without the cloud model, so they work during an outage.
+
+Every tool she runs is logged in `data/veronica.log` as `Running tool <name>(...)`, whether it
+came from a quick command or the model chose it.
+
+**Sleep and shutdown always ask.** `sleep_pc`, `shutdown_pc` (restart and sign out included)
+and `close_window` need a yes/no. Saying "go to sleep", "goodnight", "bye" or "thanks" to her
+only ends the conversation. It never touches the PC, and it never quits VERONICA in voice mode.
+
+### Downloading a file (`tools/download_tools.py`)
+
+Give VERONICA a direct link and she'll download the file to your Downloads folder — "download
+https://example.com/report.pdf", "grab the installer from <link>". She **asks first** (it's a
+yes/no action), states the filename and size when done, and never runs what she downloaded.
+
+What she can't do, by design: she makes a plain web request with **no stored logins or
+cookies**, so she can't sign in, get past a paywall or DRM, or solve a CAPTCHA — only fetch
+what's already openly reachable at the link. That also means she can't pull copyrighted movies
+or shows from streaming or torrent sites; for video, ask her to open a service you have
+(Netflix, Prime, YouTube) instead. A single file over `download.max_mb` (default 2048) is
+refused; change it in the `download:` block of `config.yaml`.
 
 ## 7. Running the tests
 

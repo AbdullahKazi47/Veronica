@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import os
+import queue
+import re
 import sys
 import threading
+import time
 from pathlib import Path
+from typing import Callable, Optional
 
 from veronica.config import TTSConfig
 from veronica.logging_setup import get_logger
@@ -111,6 +116,70 @@ def _play_pygame(path: Path) -> bool:
 
 
 _warned_no_player = False
+_alias_ids = itertools.count(1)
+
+
+def play_interruptible(path: Path, stop: threading.Event) -> Optional[bool]:
+    """Play an mp3/wav through winmm MCI WITHOUT blocking in the driver, so `stop` can
+    cut it off mid-word. True = finished, False = interrupted, None = MCI unavailable
+    (the caller falls back to the ordinary blocking player)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        winmm = ctypes.windll.winmm
+    except (AttributeError, OSError):
+        return None
+    alias = f"veronica_{next(_alias_ids)}"   # unique: two threads never share a device
+    send = winmm.mciSendStringW
+    if send(f'open "{path}" alias {alias}', None, 0, None) != 0:
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(64)
+        send(f"status {alias} length", buf, 64, None)
+        try:
+            length_s = int(buf.value) / 1000.0
+        except ValueError:
+            length_s = 60.0
+        if send(f"play {alias}", None, 0, None) != 0:
+            return None
+        started = time.monotonic()
+        while True:
+            if stop.is_set():
+                send(f"stop {alias}", None, 0, None)
+                return False
+            send(f"status {alias} mode", buf, 64, None)
+            elapsed = time.monotonic() - started
+            if (buf.value != "playing" and elapsed > 0.15) or elapsed > length_s + 2.0:
+                return True
+            time.sleep(0.03)
+    finally:
+        send(f"close {alias}", None, 0, None)
+
+
+def split_for_speech(text: str, min_chars: int = 40, max_chars: int = 240) -> list[str]:
+    """Sentence-sized pieces for pipelined speech: the first is short so audio starts
+    fast; tiny sentences are merged so we don't make an API call per 'Okay.'"""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?;:])\s+", (text or "").strip()) if p.strip()]
+    pieces: list[str] = []
+    for part in parts:
+        while len(part) > max_chars:                      # a very long sentence: split at a comma
+            cut = part.rfind(", ", 0, max_chars)
+            cut = cut + 1 if cut > min_chars else max_chars
+            pieces.append(part[:cut].strip())
+            part = part[cut:].strip()
+        if part:
+            pieces.append(part)
+    chunks: list[str] = []
+    for part in pieces:
+        # The first chunk stays alone so the voice starts quickly; later short bits are
+        # merged into the previous chunk while it stays under max_chars.
+        mergeable = len(chunks) > 1 and len(chunks[-1]) < min_chars or (chunks and len(part) < min_chars // 2)
+        if mergeable and len(chunks[-1]) + 1 + len(part) <= max_chars:
+            chunks[-1] = f"{chunks[-1]} {part}"
+        else:
+            chunks.append(part)
+    return chunks or ([text.strip()] if text and text.strip() else [])
 
 
 class SynchronousSpeaker:
@@ -121,6 +190,11 @@ class SynchronousSpeaker:
     def speak(self, text: str) -> None:
         """Speak text and block until audio playback finishes."""
         self.tts.speak(text, block=True)
+
+    def speak_interruptible(self, text: str, stop: threading.Event,
+                            on_piece: Optional[Callable[[str], None]] = None) -> bool:
+        """Speak, returning False if `stop` cut it short (the user talked over her)."""
+        return self.tts.speak_interruptible(text, stop, on_piece=on_piece)
 
 
 class TextToSpeech:
@@ -149,6 +223,48 @@ class TextToSpeech:
             target(text)
         else:
             threading.Thread(target=target, args=(text,), daemon=True).start()
+
+    def speak_interruptible(self, text: str, stop: threading.Event,
+                            on_piece: Optional[Callable[[str], None]] = None) -> bool:
+        """Pipelined, interruptible speech. The reply is cut into sentences; sentence N+1
+        is synthesized while sentence N plays, so the voice starts after ONE sentence's
+        synthesis instead of the whole reply's. `stop` ends playback mid-word.
+        Returns True when everything was spoken, False when interrupted.
+        Backends without a file-per-clip path speak whole (not interruptible)."""
+        if not text or self.config.backend == "none":
+            return True
+        if self.config.backend != "elevenlabs":
+            self.speak(text, block=True)
+            return True
+        pieces = split_for_speech(text)
+        clips: "queue.Queue[Optional[tuple[str, Optional[Path]]]]" = queue.Queue()
+
+        def produce() -> None:
+            try:
+                for i, piece in enumerate(pieces):
+                    if stop.is_set():
+                        break
+                    clips.put((piece, self._elevenlabs_file(
+                        piece, previous=pieces[i - 1] if i else "",
+                        following=pieces[i + 1] if i + 1 < len(pieces) else "")))
+            finally:
+                clips.put(None)
+        threading.Thread(target=produce, name="tts-synth", daemon=True).start()
+
+        while True:
+            item = clips.get()
+            if item is None:
+                return not stop.is_set()
+            piece, path = item
+            if path is None:            # synthesis failed (already reported once)
+                continue
+            if on_piece is not None:
+                on_piece(piece)
+            done = play_interruptible(path, stop)
+            if done is None:
+                self._play_audio(path)  # no MCI: ordinary blocking playback
+            elif done is False:
+                return False
 
     # -- backends -----------------------------------------------------------------
     def _cache_path(self, text: str) -> Path:
@@ -291,29 +407,42 @@ class TextToSpeech:
         """ElevenLabs TTS via HTTPS API; mp3 cached like the other cloud backends.
         Like Fish Audio, failures are reported and the turn continues text-only
         (no pyttsx3 fallback)."""
+        path = self._elevenlabs_file(text)
+        if path is not None:
+            self._play_audio(path)
+
+    def _elevenlabs_file(self, text: str, previous: str = "", following: str = "") -> Optional[Path]:
+        """Synthesize `text` (cached) and return the mp3 path, or None on failure.
+        `previous`/`following` are the neighbouring sentences: ElevenLabs uses them so
+        sentence-by-sentence speech keeps one natural intonation across the reply."""
         try:
             import requests
         except ImportError:
             logger.error("ElevenLabs backend requires `pip install requests`.")
-            return
+            return None
 
         voice_id = self.config.elevenlabs_voice_id
         api_key = os.environ.get("ELEVENLABS_API_KEY")
         if not voice_id:
             self._notice_once("[voice] tts.elevenlabs_voice_id is not set in config/config.yaml; replies are text-only.")
-            return
+            return None
         if not api_key or api_key.startswith("<"):
             self._notice_once("[voice] ELEVENLABS_API_KEY is not set in config/.env; replies are text-only.")
-            return
+            return None
 
         out_path = self._cache_path(text)
         try:
             if not out_path.exists():
+                body = {"text": text, "model_id": self.config.elevenlabs_model}
+                if previous:
+                    body["previous_text"] = previous
+                if following:
+                    body["next_text"] = following
                 resp = requests.post(
                     f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
                     params={"output_format": self.config.elevenlabs_output_format},
                     headers={"xi-api-key": api_key, "Content-Type": "application/json"},
-                    json={"text": text, "model_id": self.config.elevenlabs_model},
+                    json=body,
                     timeout=30,
                 )
                 if not resp.ok:
@@ -328,13 +457,14 @@ class TextToSpeech:
                                  resp.status_code, voice_id, self.config.elevenlabs_model, reason)
                     self._notice_once(f"[voice] ElevenLabs refused the request ({resp.status_code}): {reason} "
                                       "Replies are text-only.")
-                    return
+                    return None
                 out_path.write_bytes(resp.content)
-            self._play_audio(out_path)
+            return out_path
         except Exception as e:
             logger.error("ElevenLabs TTS failed cleanly (%s); returning to loop.", e)
             self._notice_once(f"[voice] ElevenLabs voice failed ({type(e).__name__}); replies are text-only. "
                               "Details in data/veronica.log")
+            return None
 
     _noticed: set = set()
 

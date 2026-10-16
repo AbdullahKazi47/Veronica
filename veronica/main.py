@@ -69,6 +69,8 @@ def build_app(config: Config, interactive: bool = True) -> App:
     logger = get_logger("main")
     logger.info("Booting %s (llm.provider=%s, llm.model=%s)", config.assistant.name, config.llm.provider, config.llm.model)
 
+    from veronica.safety import privacy
+    privacy.configure(config)          # scrub secrets from cloud traffic before any provider exists
     llm = build_provider(config)
 
     # ---- Multi-Model Routing V1 (optional, opt-in) ----
