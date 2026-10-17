@@ -694,5 +694,6 @@ class CLIApp:
                     self._barged = True
                     self._status("[you talked over me — listening]")
                     self._beep()
-                # Stage 3: short cooldown so the room's echo dies down before listening
-                time.sleep(0.1)
+                # Stage 3: let the room's echo of her voice die down before listening; the
+                # echo transcribed by Whisper was being taken as the user speaking.
+                time.sleep(0.35)

@@ -53,11 +53,24 @@ def whisper_junk(text: str, hint: str, logprob: Optional[float], min_logprob: fl
         return "dotted letters"
     words = re.findall(r"[a-z']+", t.lower())
     hint_words = set(re.findall(r"[a-z']+", (hint or "").lower()))
-    # The hint repeated back ("Jev, Bengaluru") with a weak score is invented; a confident
-    # "Veronica" or "Jev, why?" is a real request.
-    if (words and hint_words and len(words) <= 5 and all(w in hint_words for w in words)
-            and logprob is not None and logprob < -0.55):
-        return "only the hint words"
+    if words and hint_words:
+        # The hint echoed back. Seen live: noise transcribed as "SILENCIA, Jev, Bengaluru" and
+        # "Bengaluru" from the hint "VERONICA, Jev, Bengaluru". Two hint terms side by side in
+        # the hint's own order, or a short line that is (almost) only hint words, is an echo;
+        # "Jev, why?" or "weather in Bengaluru" are real requests.
+        terms = [" ".join(re.findall(r"[a-z']+", x.lower())) for x in (hint or "").split(",")]
+        terms = [x for x in terms if x]
+        joined = " " + " ".join(words) + " "
+        if any(f" {a} {b} " in joined for a, b in zip(terms, terms[1:])):
+            return "echoed the hint"
+        in_hint = sum(w in hint_words for w in words)
+        if len(words) <= 6 and in_hint >= 2 and len(words) - in_hint <= 1:
+            return "echoed the hint"
+        if len(words) == 1 and words[0] in hint_words and (logprob is None or logprob < -0.3):
+            return "only a hint word"
+        if (len(words) <= 5 and all(w in hint_words for w in words)
+                and logprob is not None and logprob < -0.55):
+            return "only the hint words"
     return ""
 
 

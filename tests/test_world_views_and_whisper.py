@@ -215,3 +215,26 @@ def test_vocabulary_is_built_from_the_users_own_data(tmp_path, monkeypatch):
     voc._cache.clear()
     words = voc.build_vocabulary(cfg)
     assert words.startswith("VERONICA, Jev") and "work mode" in words and "layali" in words.lower()
+
+
+# ---------------------------------------------------------------- Whisper echoing the vocabulary hint
+
+_HINT = "VERONICA, Jev, Bengaluru"
+
+
+@pytest.mark.parametrize("text,logprob", [
+    ("SILENCIA, Jev, Bengaluru", -0.2),   # seen live: noise came back as the hint
+    ("Jev, Bengaluru", -0.1),
+    ("VERONICA Jev", -0.1),
+    ("Bengaluru", -0.4),
+])
+def test_hint_echo_is_rejected(text, logprob):
+    from veronica.speech.stt import whisper_junk
+    assert whisper_junk(text, _HINT, logprob)
+
+
+@pytest.mark.parametrize("text", ["Jev, why?", "Veronica", "Veronica, what's the weather in Bengaluru",
+                                  "Bengaluru weather", "Thanks!", "Is it raining in Bengaluru"])
+def test_real_requests_with_hint_words_pass(text):
+    from veronica.speech.stt import whisper_junk
+    assert whisper_junk(text, _HINT, -0.2) == ""
