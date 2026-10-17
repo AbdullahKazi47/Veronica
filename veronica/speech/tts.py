@@ -202,6 +202,44 @@ class TextToSpeech:
         self.config = config
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._primary_out_until = 0.0     # main voice refused (no credits): use the backup until then
+
+    # -- backup voice ------------------------------------------------------------------
+    def _primary_out(self) -> bool:
+        return time.time() < self._primary_out_until
+
+    def _mark_primary_out(self, reason: str) -> None:
+        minutes = float(getattr(self.config, "backup_minutes", 180) or 180)
+        self._primary_out_until = time.time() + minutes * 60
+        logger.warning("Main voice unavailable (%s); using the backup voice for %.0f min.", reason, minutes)
+        self._notice_once("[voice] My ElevenLabs voice credits have run out, so I'm using my backup voice "
+                          "until they're topped up or reset.")
+
+    def _backup_file(self, text: str) -> Optional[Path]:
+        """Synthesize with the free backup voice (edge-tts). None if that fails too."""
+        voice = getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural"
+        digest = hashlib.sha256(f"edge:{voice}:{text}".encode("utf-8")).hexdigest()[:24]
+        out = self.cache_dir / f"{digest}.mp3"
+        if out.exists():
+            return out
+        try:
+            import edge_tts
+
+            async def _gen():
+                await edge_tts.Communicate(text, voice, rate=getattr(self.config, "rate", "+0%") or "+0%").save(str(out))
+            asyncio.run(_gen())
+            return out if out.exists() and out.stat().st_size > 0 else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Backup voice failed (%s).", e)
+            return None
+
+    def _voice_file(self, text: str, previous: str = "", following: str = "") -> Optional[Path]:
+        """The main voice if it's available, else the backup."""
+        if self.config.backend == "elevenlabs" and not self._primary_out():
+            path = self._elevenlabs_file(text, previous=previous, following=following)
+            if path is not None:
+                return path
+        return self._backup_file(text)
 
     def speak(self, text: str, block: bool = False) -> None:
         """Speak `text`. Runs on a background thread by default so callers (the CLI
@@ -244,7 +282,7 @@ class TextToSpeech:
                 for i, piece in enumerate(pieces):
                     if stop.is_set():
                         break
-                    clips.put((piece, self._elevenlabs_file(
+                    clips.put((piece, self._voice_file(
                         piece, previous=pieces[i - 1] if i else "",
                         following=pieces[i + 1] if i + 1 < len(pieces) else "")))
             finally:
@@ -256,7 +294,8 @@ class TextToSpeech:
             if item is None:
                 return not stop.is_set()
             piece, path = item
-            if path is None:            # synthesis failed (already reported once)
+            if path is None:            # main and backup voices both failed: Windows' own voice
+                self._speak_pyttsx3(piece)
                 continue
             if on_piece is not None:
                 on_piece(piece)
@@ -407,9 +446,11 @@ class TextToSpeech:
         """ElevenLabs TTS via HTTPS API; mp3 cached like the other cloud backends.
         Like Fish Audio, failures are reported and the turn continues text-only
         (no pyttsx3 fallback)."""
-        path = self._elevenlabs_file(text)
+        path = self._voice_file(text)
         if path is not None:
             self._play_audio(path)
+        else:
+            self._speak_pyttsx3(text)
 
     def _elevenlabs_file(self, text: str, previous: str = "", following: str = "") -> Optional[Path]:
         """Synthesize `text` (cached) and return the mp3 path, or None on failure.
@@ -455,8 +496,12 @@ class TextToSpeech:
                         reason = resp.text[:200]
                     logger.error("ElevenLabs TTS %s (voice=%s model=%s): %s",
                                  resp.status_code, voice_id, self.config.elevenlabs_model, reason)
-                    self._notice_once(f"[voice] ElevenLabs refused the request ({resp.status_code}): {reason} "
-                                      "Replies are text-only.")
+                    if resp.status_code in (401, 402, 429) or "quota" in str(reason).lower() \
+                            or "credit" in str(reason).lower():
+                        self._mark_primary_out(f"{resp.status_code}: {reason}")
+                    else:
+                        self._notice_once(f"[voice] ElevenLabs refused the request ({resp.status_code}): {reason} "
+                                          "Using my backup voice.")
                     return None
                 out_path.write_bytes(resp.content)
             return out_path

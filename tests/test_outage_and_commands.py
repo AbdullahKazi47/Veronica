@@ -193,3 +193,14 @@ def test_screenshot_quick_command():
     from veronica.tools.system_tools import ScreenshotTool
     assert ScreenshotTool().matches("take a screenshot") and ScreenshotTool().matches("grab a screen shot")
     assert not ScreenshotTool().matches("take a screenshot of my essay and email it")
+
+
+@pytest.mark.parametrize("said,clauses", [
+    ("No, show me a random camera feed", ["show me a random camera feed"]),
+    ("Okay, open notepad and play music", ["open notepad", "play music"]),
+    ("Yes, then lock my pc", ["lock my pc"]),
+    ("No", ["No"]),
+])
+def test_leading_interjection_is_not_a_request(said, clauses):
+    from veronica.core.compound import split_compound_command
+    assert split_compound_command(said) == clauses

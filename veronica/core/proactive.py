@@ -60,7 +60,8 @@ def fullscreen_app_in_front() -> bool:
 class ProactiveMonitor:
     def __init__(self, config, speak: Callable[[str, bool], None], *,
                  collect=None, rain_probability=None, idle=idle_seconds, fullscreen=fullscreen_app_in_front,
-                 briefing: Optional[Callable[[], str]] = None, clock=time.time, now=dt.datetime.now) -> None:
+                 briefing: Optional[Callable[[], str]] = None, clock=time.time, now=dt.datetime.now,
+                 state_path=None) -> None:
         from veronica.tools.diagnostics_tools import collect as default_collect
         self.cfg = config
         self.speak = speak                       # speak(text, urgent)
@@ -75,6 +76,17 @@ class ProactiveMonitor:
         self.paused_until = 0.0
         self._held: list[tuple[str, str]] = []   # non-urgent alerts held during fullscreen
         self._stop = threading.Event()
+        # The last greeting survives restarts: restarting VERONICA five times in an hour
+        # used to greet five times (and spend voice credits on each one).
+        self._state_path = state_path
+        try:
+            if state_path is not None:
+                from veronica.core import jsonsafe
+                saved, _ = jsonsafe.read_json(state_path, default={})
+                if saved and saved.get("last_greeting"):
+                    self._last["greeting"] = float(saved["last_greeting"])
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- control ------------------------------------------------------------------------
     def pause(self, minutes: float = 60) -> None:
@@ -125,6 +137,12 @@ class ProactiveMonitor:
             return
         logger.info("Greeting the user (%s)", why)
         self._last["greeting"] = self._clock()
+        if self._state_path is not None:
+            try:
+                from veronica.core import jsonsafe
+                jsonsafe.write_json(self._state_path, {"last_greeting": self._last["greeting"]})
+            except Exception:  # noqa: BLE001
+                pass
         self._session_start = self._clock()
         try:
             text = self._briefing()

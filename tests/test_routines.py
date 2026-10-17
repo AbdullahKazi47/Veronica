@@ -151,3 +151,20 @@ def test_conversation_ending_phrase_runs_a_routine_named_like_it(store):
     app.orchestrator = SimpleNamespace(tools=SimpleNamespace(get=reg.get))
     assert not app._ends_conversation("good night")   # it's a routine: run it
     assert app._ends_conversation("thanks")            # ordinary ending still ends
+
+
+def test_greeting_is_remembered_across_restarts(tmp_path):
+    """Restarting VERONICA several times in an hour used to greet (and spend voice credits) each time."""
+    from types import SimpleNamespace
+    from veronica.core.proactive import ProactiveMonitor
+    cfg = SimpleNamespace(greet_on_open=True, greet_cooldown_minutes=60)
+    said, now = [], [1000.0]
+    kw = dict(collect=lambda **k: None, briefing=lambda: "Good morning.", clock=lambda: now[0],
+              state_path=tmp_path / "proactive_state.json")
+    ProactiveMonitor(cfg, lambda t, u: said.append(t), **kw).on_open("startup")
+    now[0] += 600                                     # restarted 10 minutes later
+    ProactiveMonitor(cfg, lambda t, u: said.append(t), **kw).on_open("startup")
+    assert said == ["Good morning."]
+    now[0] += 3600                                    # an hour later: greet again
+    ProactiveMonitor(cfg, lambda t, u: said.append(t), **kw).on_open("startup")
+    assert len(said) == 2

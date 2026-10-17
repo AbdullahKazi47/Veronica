@@ -294,21 +294,33 @@ def test_elevenlabs_synthesizes_caches_and_plays(tmp_path, monkeypatch):
     assert play.call_count == 2 and play.call_args.args[0].read_bytes() == b"MP3DATA"
 
 
-def test_elevenlabs_refusal_is_reported_and_never_falls_back(tmp_path, monkeypatch, capsys):
+def test_elevenlabs_out_of_credits_switches_to_the_backup_voice(tmp_path, monkeypatch, capsys):
+    """Regression: with the monthly credits used up she went silent ("text-only")."""
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     TextToSpeech._noticed.clear()
     tts = _eleven(tmp_path)
-    body = {"detail": {"message": "Free users cannot use library voices via the API."}}
-    fake_requests = types.SimpleNamespace(post=MagicMock(return_value=_Resp(402, body=body)))
-    with patch.dict(sys.modules, {"requests": fake_requests}), \
-            patch.object(TextToSpeech, "_play_audio") as play, \
-            patch.object(tts, "_speak_pyttsx3") as fallback:
+    body = {"detail": {"message": "This request exceeds your quota of 10000."}}
+    fake_requests = types.SimpleNamespace(post=MagicMock(return_value=_Resp(401, body=body)))
+    backup = tmp_path / "backup.mp3"
+    backup.write_bytes(b"ID3fake")
+    with patch.dict(sys.modules, {"requests": fake_requests}),             patch.object(TextToSpeech, "_play_audio") as play,             patch.object(tts, "_backup_file", return_value=backup) as backup_voice:
         tts.speak("hello", block=True)
+        tts.speak("and again", block=True)
     out = capsys.readouterr().out
-    assert "402" in out and "library voices" in out and "test-key" not in out
-    play.assert_not_called()
-    fallback.assert_not_called()
+    assert "credits have run out" in out and "test-key" not in out
+    play.assert_any_call(backup)
+    assert fake_requests.post.call_count == 1            # no more ElevenLabs calls while it's out
+    assert backup_voice.call_count == 2
     assert not list((tmp_path / "cache").glob("*.mp3"))  # an error body is never cached as audio
+
+
+def test_both_voices_failing_uses_windows_voice(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    tts = _eleven(tmp_path)
+    tts._primary_out_until = 9e18
+    with patch.object(tts, "_backup_file", return_value=None), patch.object(tts, "_speak_pyttsx3") as win:
+        tts.speak("hello", block=True)
+    win.assert_called_once_with("hello")
 
 
 def test_elevenlabs_missing_key_or_voice_does_not_call_api(tmp_path, monkeypatch):

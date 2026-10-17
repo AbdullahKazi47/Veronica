@@ -684,6 +684,17 @@ or shows from streaming or torrent sites; for video, ask her to open a service y
 (Netflix, Prime, YouTube) instead. A single file over `download.max_mb` (default 2048) is
 refused; change it in the `download:` block of `config.yaml`.
 
+### Backup voice
+
+If ElevenLabs can't speak (its monthly credits are used up, or there's no quota left),
+VERONICA switches to a free Microsoft neural voice through `edge-tts`. The default is
+`tts.backup_voice: en-GB-SoniaNeural`, British like ElevenLabs' "Alice". She tells you once,
+and tries ElevenLabs again after `tts.backup_minutes` (180). If both fail, Windows' built-in
+voice speaks, so she never goes silent. The free ElevenLabs plan has 10,000 credits a month,
+about 10,000 characters spoken. The greeting is remembered across restarts
+(`data/proactive_state.json`), so restarting VERONICA doesn't greet you, and spend credits,
+every time.
+
 ### Your location
 
 VERONICA asks Windows where the PC is. On a desktop without Wi-Fi or GPS positioning,

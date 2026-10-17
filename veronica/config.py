@@ -71,6 +71,10 @@ class TTSConfig:
     backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none" | "fish_audio" | "elevenlabs"
     voice: str = "en-US-AriaNeural"
     rate: str = "+0%"
+    # When the main voice can't speak (e.g. ElevenLabs credits used up): a free Microsoft
+    # neural voice via edge-tts, then Windows' own voice — so she never goes silent.
+    backup_voice: str = "en-GB-SoniaNeural"
+    backup_minutes: float = 180         # after a credits/quota refusal, use the backup this long
     piper_model: str = "en_US-lessac-medium"  # piper voice model name
     fish_audio_reference_id: Optional[str] = None  # Fish Audio voice reference (FRIDAY = 8ec...ae7)
     fish_audio_model: str = "s2.1-pro-free"  # Fish Audio free developer model (fix 402)

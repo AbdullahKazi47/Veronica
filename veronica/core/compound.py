@@ -49,9 +49,21 @@ _VERBS_SORTED: tuple[str, ...] = tuple(
 )
 
 
+# A lone "No," / "Okay," / "Well," at the start is how people talk, not a request of its
+# own ("No, show me a camera" was answered as two requests: "No" and the camera).
+_INTERJECTION = re.compile(r"^\s*(?:no|nope|nah|yes|yeah|yep|yup|ok(?:ay)?|well|so|hmm+|um+|uh+|actually|alright|"
+                           r"all\s+right|sure|fine|oh|right|cool|great|nice|wait|hey|listen|look)\s*[,.!?]*\s*$", re.I)
+
+
 def split_compound_command(text: str) -> list[str]:
     """Split a natural-language command into clauses, or ``[text]`` when it is a
     single action. Empty clauses are dropped; trailing conjunctions trimmed."""
+    clauses = _split_compound_command(text)
+    kept = [c for c in clauses if not _INTERJECTION.match(c)]
+    return kept if kept else clauses
+
+
+def _split_compound_command(text: str) -> list[str]:
     stripped = text.strip()
     if not stripped:
         return []

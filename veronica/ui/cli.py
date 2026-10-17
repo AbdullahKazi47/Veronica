@@ -255,7 +255,7 @@ class CLIApp:
         from veronica.tools.productivity_tools import Profile
         briefing_tool = self.orchestrator.tools.get("daily_briefing")
         monitor = ProactiveMonitor(
-            pcfg, self._proactive_say,
+            pcfg, self._proactive_say, state_path=self.config.resolve_path("data/proactive_state.json"),
             rain_probability=rain_probability_for(Profile(self.config)),
             briefing=(lambda: briefing_tool.run(include_tasks=False).message) if briefing_tool else None)
         monitor.start()

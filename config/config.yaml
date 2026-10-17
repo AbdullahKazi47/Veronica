@@ -224,6 +224,9 @@ stt:
 tts:
   # 2026-10-15: ElevenLabs. Fish Audio ("fish_audio") still works once its API credit is topped up.
   backend: "elevenlabs"
+  # When ElevenLabs can't speak (monthly credits used up): free Microsoft voice, then Windows'.
+  backup_voice: "en-GB-SoniaNeural"   # others: en-IN-NeerjaNeural, en-US-AvaNeural, en-GB-LibbyNeural
+  backup_minutes: 180
   # Free plan: only ElevenLabs' built-in voices work over the API. Built-ins tested OK:
   #   Alice Xb7hH8MSUJpSbSDYk0k2 | Jessica cgSgspJ2msm6clMCkdW9 | Matilda XrExE9yKIg1WjnnlVkGX
   # Elise (library voice) EST9Ui6982FZPSi7gCHi needs a paid ElevenLabs plan.
