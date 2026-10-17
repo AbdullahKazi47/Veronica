@@ -9,6 +9,7 @@ same wiring by calling `build_app()` instead of duplicating it.
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 
 from veronica.config import Config, load_config
@@ -361,6 +362,7 @@ def build_app(config: Config, interactive: bool = True) -> App:
 
 
 _INSTANCE_LOCK = None
+ALREADY_RUNNING = 3                      # exit code when another VERONICA is already listening
 
 
 def already_running(name: str = "VERONICA_voice") -> bool:
@@ -394,7 +396,7 @@ def main() -> None:
     args = parser.parse_args()
     if (args.voice or args.wake) and already_running():
         print("VERONICA is already running in another window.")
-        return
+        sys.exit(ALREADY_RUNNING)        # Start VERONICA.bat keeps its window open to say so
 
     from veronica.config import DEFAULT_CONFIG_PATH, DEFAULT_ENV_PATH
     config = load_config(config_path=args.config or DEFAULT_CONFIG_PATH, env_path=DEFAULT_ENV_PATH)
