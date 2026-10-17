@@ -825,6 +825,12 @@ class CLIApp:
                 finally:
                     if speak_i is not None:
                         print("\n" if shown else (f"{self.config.assistant.name}: {text}\n" if text else ""))
+                    try:            # e.g. "my ElevenLabs credits ran out": after her sentence, not inside it
+                        from veronica.speech.tts import TextToSpeech
+                        for notice in TextToSpeech.take_notices():
+                            print(notice + "\n")
+                    except Exception:  # noqa: BLE001
+                        pass
                     if monitor is not None:
                         monitor.stop()
                     if hub is not None:

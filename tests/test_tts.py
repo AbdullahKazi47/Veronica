@@ -306,7 +306,7 @@ def test_elevenlabs_out_of_credits_switches_to_the_backup_voice(tmp_path, monkey
     with patch.dict(sys.modules, {"requests": fake_requests}),             patch.object(TextToSpeech, "_play_audio") as play,             patch.object(tts, "_backup_file", return_value=backup) as backup_voice:
         tts.speak("hello", block=True)
         tts.speak("and again", block=True)
-    out = capsys.readouterr().out
+    out = " ".join(TextToSpeech.take_notices())       # shown by the CLI after her sentence
     assert "credits have run out" in out and "test-key" not in out
     play.assert_any_call(backup)
     assert fake_requests.post.call_count == 1            # no more ElevenLabs calls while it's out

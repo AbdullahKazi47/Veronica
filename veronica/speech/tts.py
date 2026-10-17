@@ -644,14 +644,22 @@ class TextToSpeech:
             return None
 
     _noticed: set = set()
+    _pending: list = []
 
     @classmethod
     def _notice_once(cls, message: str) -> None:
         """Tell the person at the terminal once per run; the log alone is easy to miss."""
         if message not in cls._noticed:
             cls._noticed.add(message)
-            # Shown like the rest of the conversation: as VERONICA saying it.
-            print("VERONICA: " + message.replace("[voice] ", "", 1))
+            # Held until the reply being spoken is finished: printed straight away it landed
+            # in the middle of her sentence ("Evening, boss.VERONICA: My ElevenLabs...").
+            cls._pending.append("VERONICA: " + message.replace("[voice] ", "", 1))
+
+    @classmethod
+    def take_notices(cls) -> list[str]:
+        """Notices waiting to be shown, once each (the CLI prints them after a reply)."""
+        out, cls._pending = cls._pending, []
+        return out
 
     def _speak_pyttsx3(self, text: str) -> None:
         try:

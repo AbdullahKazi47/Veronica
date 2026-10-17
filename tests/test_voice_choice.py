@@ -100,7 +100,9 @@ def test_kokoro_missing_falls_back_to_the_backup_voice(tmp_path):
 
 
 def test_text_appears_with_the_voice_not_before(cfg, capsys):
+    from veronica.speech.tts import TextToSpeech
     from veronica.ui.cli import CLIApp
+    TextToSpeech.take_notices()                              # none left over from other tests
     app = CLIApp.__new__(CLIApp)
     app.config, app.voice_mode, app._speak_lock = cfg, True, threading.Lock()
     app._tts_active, app._barged = False, False
@@ -134,3 +136,28 @@ def test_full_precision_model_is_preferred(tmp_path):
     for name in ("kokoro-v1.0.int8.onnx", "kokoro-v1.0.onnx"):
         (tmp_path / name).write_bytes(b"x")
     assert kokoro_voice._model(tmp_path).name == "kokoro-v1.0.onnx"
+
+
+def test_voice_notice_waits_until_her_sentence_is_done(cfg, capsys):
+    """Seen live: 'Evening, boss.VERONICA: My ElevenLabs voice credits have run out...'."""
+    from veronica.speech.tts import TextToSpeech
+    from veronica.ui.cli import CLIApp
+    TextToSpeech.take_notices()
+    app = CLIApp.__new__(CLIApp)
+    app.config, app.voice_mode, app._speak_lock = cfg, True, threading.Lock()
+    app._tts_active, app._barged = False, False
+    app._start_barge_in = lambda stop: None
+    app._status = app._beep = lambda *a: None
+
+    class Speaker:
+        def speak_interruptible(self, text, stop, on_piece=None):
+            on_piece("Evening, boss.")
+            TextToSpeech._notice_once("[voice] credits ran out (test notice).")   # raised mid-sentence
+            on_piece("What's on your mind?")
+            return True
+    app.speaker = Speaker()
+    with patch("time.sleep"):
+        app._say("Evening, boss. What's on your mind?")
+    out = capsys.readouterr().out
+    assert "VERONICA: Evening, boss. What's on your mind?\n" in out
+    assert out.index("What's on your mind?") < out.index("credits ran out (test notice)")
