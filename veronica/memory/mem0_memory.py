@@ -85,10 +85,22 @@ class Mem0Memory:
             if self._mem is None and not self._failed:
                 try:
                     self._mem = self._factory()
+                    import atexit
+                    atexit.register(self.close)
                 except Exception as e:  # noqa: BLE001
                     self._failed = f"{type(e).__name__}: {e}"
                     logger.warning("Mem0 couldn't start: %s", self._failed)
             return self._mem
+
+    def close(self) -> None:
+        """Close the local Qdrant store before Python shuts down; otherwise its clean-up
+        runs too late and prints a traceback into the terminal."""
+        client = getattr(getattr(self._mem, "vector_store", None), "client", None)
+        try:
+            if client is not None:
+                client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- writing -----------------------------------------------------------------------
     def observe(self, user_text: str, reply: str) -> bool:

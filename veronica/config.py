@@ -71,7 +71,7 @@ class STTConfig:
 
 @dataclass
 class TTSConfig:
-    backend: str = "edge_tts"           # "edge_tts" | "piper" | "pyttsx3" | "none" | "fish_audio" | "elevenlabs"
+    backend: str = "edge_tts"           # "edge_tts" | "kokoro" | "piper" | "pyttsx3" | "none" | "fish_audio" | "elevenlabs"
     voice: str = "en-US-AriaNeural"
     rate: str = "+0%"
     # When the main voice can't speak (e.g. ElevenLabs credits used up): a free Microsoft
@@ -87,6 +87,7 @@ class TTSConfig:
     elevenlabs_model: str = "eleven_flash_v2_5"      # fastest; "eleven_multilingual_v2" = richer, slower
     elevenlabs_output_format: str = "mp3_44100_128"
     cache_dir: str = "data/tts_cache"
+    kokoro_speed: float = 1.0           # backend "kokoro": 0.8 slower .. 1.3 faster
 
 
 @dataclass

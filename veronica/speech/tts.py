@@ -182,6 +182,18 @@ def split_for_speech(text: str, min_chars: int = 40, max_chars: int = 240) -> li
     return chunks or ([text.strip()] if text and text.strip() else [])
 
 
+def _short_first(pieces: list[str], longest: int = 70) -> list[str]:
+    """For a voice made on this PC, where time to the first sound grows with its length:
+    cut a long first sentence at its first comma so she starts talking sooner."""
+    if not pieces or len(pieces[0]) <= longest:
+        return pieces
+    first = pieces[0]
+    cut = first.find(", ", 15)
+    if cut < 0 or cut > len(first) - 15:
+        return pieces
+    return [first[:cut + 1], first[cut + 2:]] + pieces[1:]
+
+
 class SynchronousSpeaker:
     """Wrapper for TTS backends that blocks until playback completes."""
     def __init__(self, tts_instance):
@@ -203,6 +215,28 @@ class TextToSpeech:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._primary_out_until = 0.0     # main voice refused (no credits): use the backup until then
+
+    def warm(self) -> None:
+        """Get the voice ready in the background at start-up. The first request to
+        Microsoft's voice service in a run takes 3-7 s (connection set-up) and later ones
+        under 1 s; Kokoro needs ~2 s to load. Doing that now keeps it off the greeting."""
+        def go():
+            try:
+                if self.config.backend == "kokoro":
+                    from veronica.speech import kokoro_voice
+                    if kokoro_voice.installed(self.kokoro_folder()):
+                        kokoro_voice._engine(self.kokoro_folder())   # load the model now
+                    return
+                import edge_tts
+
+                async def ping():          # not cached: the point is the connection
+                    async for _chunk in edge_tts.Communicate("Ready.", self.config.voice).stream():
+                        pass
+                asyncio.run(ping())
+            except Exception:  # noqa: BLE001
+                pass
+        if self.config.backend in ("edge_tts", "kokoro"):
+            threading.Thread(target=go, name="tts-warm", daemon=True).start()
 
     # -- backup voice ------------------------------------------------------------------
     def _primary_out(self) -> bool:
@@ -242,11 +276,31 @@ class TextToSpeech:
             path = self._elevenlabs_file(text, previous=previous, following=following)
             if path is not None:
                 return path
+        if self.config.backend == "kokoro" and self.config.voice:
+            path = self._kokoro_file(text, self.config.voice)
+            if path is not None:
+                return path
         if self.config.backend == "edge_tts" and self.config.voice:
             path = self._edge_file(text, self.config.voice)
             if path is not None:
                 return path
         return self._backup_file(text)
+
+    def kokoro_folder(self) -> Path:
+        return self.cache_dir.parent / "models" / "kokoro"
+
+    def _kokoro_file(self, text: str, voice: str) -> Optional[Path]:
+        """One clip from Kokoro, the neural voice on this PC (speech/kokoro_voice.py)."""
+        from veronica.speech import kokoro_voice
+        folder = self.kokoro_folder()
+        if not kokoro_voice.installed(folder):
+            return None
+        speed = float(getattr(self.config, "kokoro_speed", 1.0) or 1.0)
+        digest = hashlib.sha256(f"kokoro:{voice}:{speed}:{text}".encode("utf-8")).hexdigest()[:24]
+        out = self.cache_dir / f"{digest}.wav"
+        if out.exists():
+            return out
+        return kokoro_voice.synthesize(folder, text, voice, out, speed=speed)
 
     def speak(self, text: str, block: bool = False) -> None:
         """Speak `text`. Runs on a background thread by default so callers (the CLI
@@ -254,7 +308,9 @@ class TextToSpeech:
         if not text or self.config.backend == "none":
             return
 
-        if self.config.backend == "edge_tts":
+        if self.config.backend == "kokoro":
+            target = self._speak_pipelined
+        elif self.config.backend == "edge_tts":
             target = self._speak_edge_tts
         elif self.config.backend == "piper":
             target = self._speak_piper
@@ -278,10 +334,12 @@ class TextToSpeech:
         Backends without a file-per-clip path speak whole (not interruptible)."""
         if not text or self.config.backend == "none":
             return True
-        if self.config.backend not in ("elevenlabs", "edge_tts"):
+        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro"):
             self.speak(text, block=True)
             return True
         pieces = split_for_speech(text)
+        if self.config.backend == "kokoro":
+            pieces = _short_first(pieces)
         clips: "queue.Queue[Optional[tuple[str, Optional[Path]]]]" = queue.Queue()
 
         def produce() -> None:
@@ -301,11 +359,11 @@ class TextToSpeech:
             if item is None:
                 return not stop.is_set()
             piece, path = item
+            if on_piece is not None:
+                on_piece(piece)
             if path is None:            # main and backup voices both failed: Windows' own voice
                 self._speak_pyttsx3(piece)
                 continue
-            if on_piece is not None:
-                on_piece(piece)
             done = play_interruptible(path, stop)
             if done is None:
                 self._play_audio(path)  # no MCI: ordinary blocking playback
@@ -324,6 +382,9 @@ class TextToSpeech:
             voice = self.config.voice
         digest = hashlib.sha256(f"{voice}:{text}".encode("utf-8")).hexdigest()[:24]
         return self.cache_dir / f"{digest}.mp3"
+
+    def _speak_pipelined(self, text: str) -> None:
+        self.speak_interruptible(text, threading.Event())
 
     def _speak_edge_tts(self, text: str) -> None:
         try:

@@ -176,6 +176,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.news_tools import NewsTool, ShowNewsTool
     from veronica.tools.notification_tools import ReadNotificationsTool
     from veronica.tools.screen_tools import LookAtScreenTool
+    from veronica.tools.voice_tools import ChangeVoiceTool
     from veronica.tools.gps_tools import UsePhoneGpsTool, WhereAmITool
     from veronica.tools.productivity_tools import (
         CancelReminderTool,
@@ -273,6 +274,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         SetHomeCityTool(config=config, profile=profile),
         UsePhoneGpsTool(config=config),
         WhereAmITool(config=config, profile=profile),
+        ChangeVoiceTool(config=config),         # 'change your voice to Emma', 'what voices do you have'
         SpeechCorrectionTool(config=config),    # 'when I say X I mean Y' (before forget tools)
         ForgetTopicTool(config=config),         # before ForgetFact: 'forget what you learned about X'
         ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'

@@ -102,7 +102,14 @@ class CLIApp:
         self.orchestrator = orchestrator
         self.voice_mode = voice_mode
         self.session = orchestrator.new_session()
+        try:
+            from veronica.tools.voice_tools import apply_saved_voice
+            apply_saved_voice(config)            # the voice chosen by voice last time
+        except Exception:  # noqa: BLE001
+            logger.exception("Couldn't load the saved voice.")
         self.tts = TextToSpeech(config.tts, cache_dir=config.resolve_path(config.tts.cache_dir))
+        if voice_mode:
+            self.tts.warm()
         self.speaker = SynchronousSpeaker(self.tts)
         self.stt = SpeechToText(config.stt, corrections=self._make_corrections()) if voice_mode else None
         if self.stt is not None:
@@ -690,7 +697,9 @@ class CLIApp:
 
     def _say(self, text: str) -> None:
         with self._speak_lock:  # replies and reminder announcements never overlap
-            print(f"{self.config.assistant.name}: {text}\n")
+            speak_i = getattr(self.speaker, "speak_interruptible", None) if self.voice_mode else None
+            if speak_i is None:
+                print(f"{self.config.assistant.name}: {text}\n")
             if self.voice_mode:
                 # Stage 2: speak sentence by sentence; "Veronica" mid-reply stops her.
                 self._tts_active = True
@@ -700,15 +709,25 @@ class CLIApp:
                 if hub is not None:
                     hub.self_speaking = True     # her voice is not the room's noise level
                 completed = True
+                shown: list[str] = []
+
+                def on_piece(piece: str) -> None:
+                    # Each sentence appears as she starts saying it, so the text never runs
+                    # ahead of her voice.
+                    print((f"{self.config.assistant.name}: " if not shown else " ") + piece, end="", flush=True)
+                    shown.append(piece)
+                    if monitor is not None:
+                        monitor.arm_for(piece)
                 try:
-                    speak_i = getattr(self.speaker, "speak_interruptible", None)
                     if speak_i is not None:
-                        completed = speak_i(text, stop, on_piece=monitor.arm_for if monitor else None)
+                        completed = speak_i(text, stop, on_piece=on_piece)
                     else:
                         self.speaker.speak(text)
                 except Exception as e:
                     logger.warning("TTS playback failed: %s", e)
                 finally:
+                    if speak_i is not None:
+                        print("\n" if shown else f"{self.config.assistant.name}: {text}\n")
                     if monitor is not None:
                         monitor.stop()
                     if hub is not None:
