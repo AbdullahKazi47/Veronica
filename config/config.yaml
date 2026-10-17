@@ -238,8 +238,10 @@ stt:
   corrections_path: "data/stt_corrections.json"   # "when I say X, I mean Y", taught by voice
 
 tts:
-  # 2026-10-15: ElevenLabs. Fish Audio ("fish_audio") still works once its API credit is topped up.
-  backend: "elevenlabs"
+  # 2026-10-17: free FRIDAY-style voice: a soft Irish woman's voice (Microsoft Emily, via
+  # edge-tts: free, no key, no monthly limit). A generic Irish voice, not a copy of any actor.
+  # Back to ElevenLabs: backend "elevenlabs" (free plan = 10k credits a month).
+  backend: "edge_tts"
   # When ElevenLabs can't speak (monthly credits used up): free Microsoft voice, then Windows'.
   backup_voice: "en-GB-SoniaNeural"   # others: en-IN-NeerjaNeural, en-US-AvaNeural, en-GB-LibbyNeural
   backup_minutes: 180
@@ -249,8 +251,8 @@ tts:
   elevenlabs_voice_id: "Xb7hH8MSUJpSbSDYk0k2"
   elevenlabs_model: "eleven_flash_v2_5"
   # previous: backend "fish_audio"  # FRIDAY voice (Phase 11B) — Fish Audio reference
-  voice: "en-US-AriaNeural"
-  rate: "+0%"
+  voice: "en-IE-EmilyNeural"       # edge_tts voice; others: en-GB-SoniaNeural, en-GB-LibbyNeural
+  rate: "+5%"
   piper_model: "en_US-lessac-medium"
   fish_audio_reference_id: "8ec7352282684afc90cdfef961cbdae7"
   cache_dir: "data/tts_cache"

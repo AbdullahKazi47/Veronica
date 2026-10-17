@@ -1,4 +1,0 @@
-VOICE_MODE=False
-len=100
-ok=True
-thinking_present=True

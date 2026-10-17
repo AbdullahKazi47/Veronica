@@ -15,7 +15,7 @@ Status: IMPLEMENTED, LIVE HARDWARE BLOCKED (audio packages `pyaudio`, `openwakew
 - UNMODIFIED (intentional): `veronica/safety/permissions.py`, `autonomy_policy.py`, `execution_tools`, `visual_grounding.py`, `target_verification.py`, `computer_use.py`, `memory/`, `state_machine.py` (11C/11D intact), `interruption.py`, `tts.py`.
 - NEW: `tests/test_phase_11e_voice_runtime.py` (27 tests A–AA)
 - NEW DOC: this file
-- NEW REPORT: `FINAL_PHASE_11E_REPORT.md`
+- NEW REPORT: `docs/history/FINAL_PHASE_11E_REPORT.md`
 
 ## Headless Runtime (`python -m veronica.voice.runner`)
 - `--voice`: initializes session; reports READY; starts LISTENING state; exits 0 (BLOCKED reported, never crashes). No GUI / browser / Stitch.

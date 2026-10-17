@@ -340,3 +340,21 @@ def test_cache_key_changes_with_cloud_voice(tmp_path):
     f2 = TextToSpeech(TTSConfig(backend="fish_audio", fish_audio_reference_id="Y"), cache_dir=tmp_path)
     assert a._cache_path("hi") != b._cache_path("hi")
     assert f1._cache_path("hi") != f2._cache_path("hi")
+
+
+def test_edge_voice_is_pipelined_and_uses_the_chosen_voice(tmp_path):
+    """The free FRIDAY-style voice (edge_tts, en-IE-EmilyNeural) speaks sentence by sentence,
+    interruptibly, like ElevenLabs did."""
+    import threading
+    tts = TextToSpeech(TTSConfig(backend="edge_tts", voice="en-IE-EmilyNeural"), cache_dir=tmp_path / "cache")
+    voices, played = [], []
+
+    def edge_file(text, voice):
+        voices.append(voice)
+        p = tmp_path / f"{len(voices)}.mp3"
+        p.write_bytes(b"x")
+        return p
+    with patch.object(tts, "_edge_file", side_effect=edge_file), \
+            patch.object(tts_module, "play_interruptible", side_effect=lambda p, s: played.append(p) or True):
+        assert tts.speak_interruptible("First sentence here. Second one now.", threading.Event())
+    assert voices and set(voices) == {"en-IE-EmilyNeural"} and len(played) == len(voices)

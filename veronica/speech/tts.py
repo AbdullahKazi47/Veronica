@@ -217,7 +217,10 @@ class TextToSpeech:
 
     def _backup_file(self, text: str) -> Optional[Path]:
         """Synthesize with the free backup voice (edge-tts). None if that fails too."""
-        voice = getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural"
+        return self._edge_file(text, getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural")
+
+    def _edge_file(self, text: str, voice: str) -> Optional[Path]:
+        """One clip from a free Microsoft neural voice (edge-tts), cached. None on failure."""
         digest = hashlib.sha256(f"edge:{voice}:{text}".encode("utf-8")).hexdigest()[:24]
         out = self.cache_dir / f"{digest}.mp3"
         if out.exists():
@@ -230,13 +233,17 @@ class TextToSpeech:
             asyncio.run(_gen())
             return out if out.exists() and out.stat().st_size > 0 else None
         except Exception as e:  # noqa: BLE001
-            logger.warning("Backup voice failed (%s).", e)
+            logger.warning("Edge voice %s failed (%s).", voice, e)
             return None
 
     def _voice_file(self, text: str, previous: str = "", following: str = "") -> Optional[Path]:
         """The main voice if it's available, else the backup."""
         if self.config.backend == "elevenlabs" and not self._primary_out():
             path = self._elevenlabs_file(text, previous=previous, following=following)
+            if path is not None:
+                return path
+        if self.config.backend == "edge_tts" and self.config.voice:
+            path = self._edge_file(text, self.config.voice)
             if path is not None:
                 return path
         return self._backup_file(text)
@@ -271,7 +278,7 @@ class TextToSpeech:
         Backends without a file-per-clip path speak whole (not interruptible)."""
         if not text or self.config.backend == "none":
             return True
-        if self.config.backend != "elevenlabs":
+        if self.config.backend not in ("elevenlabs", "edge_tts"):
             self.speak(text, block=True)
             return True
         pieces = split_for_speech(text)
