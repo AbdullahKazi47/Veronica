@@ -318,8 +318,9 @@ stt:
   #     Google Web Speech 10.4%             1.3 s  free, clip sent to Google
   # Offline leads because it is free, works with no internet and is already three times
   # more accurate than Google, which drops whole words (it heard "ask Jev" as "asked").
-  # Groq was the most accurate (8%) but api.groq.com answers 404 to every request from
-  # this network, so it is tried only when GROQ_API_KEY is set AND it is reachable.
+  # Groq (8% on an earlier clip set) is tried second when GROQ_API_KEY is set. On
+  # 2026-10-17 it answered 404 to everything for a day, then recovered; offline leads so
+  # an outage like that can't take her hearing with it.
   backend: "auto"
   # The accurate cloud read, used as the second opinion. Flash-Lite is as quick as Google
   # and has a far larger free quota than full Flash (~20 requests a day).
