@@ -672,13 +672,19 @@ class Orchestrator:
                     return self._stream_terminal_response(
                         "cancelled", stream_meta.get("error"), collected_results,
                         last_tool_name, routing_meta, stream_meta)
-                if stream_meta.get("terminal") == "failed":
+                if stream_meta.get("terminal") == "failed" and stream_meta.get("char_count", 0) == 0:
+                    # Nothing was said yet (e.g. Gemini "503 overloaded" before the first
+                    # word): answer through the normal path, which has the backup models.
+                    logger.info("Stream failed before any text (%s); using the normal path.",
+                                stream_meta.get("error"))
+                    stream_provider = None
+                if stream_meta.get("terminal") == "failed" and stream_provider is not None:
                     return self._stream_terminal_response(
                         "failed", stream_meta.get("error"), collected_results,
                         last_tool_name, routing_meta, stream_meta)
                 # completed stream: use the accumulated authoritative text
                 attest_meta = stream_meta
-            else:
+            if stream_provider is None:
                 # Only send the hint when it applies, so providers with the plain
                 # chat(messages, tools, temperature) signature keep working.
                 voice_kwargs = {"voice_mode": True} if _is_simple_voice_turn(text) else {}

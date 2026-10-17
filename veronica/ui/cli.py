@@ -258,14 +258,16 @@ class CLIApp:
                     self._say("Goodbye.")
                     break
 
+                live = None
                 try:
                     reply = self._background_reply(text)
                     if reply is None:
-                        reply = self.orchestrator.handle(text, self.session).text
+                        reply, live = self._answer(text)
                 except Exception:  # noqa: BLE001 - one failed request must never take VERONICA down
                     logger.exception("Request failed: %r", text)
                     reply = "Sorry, something went wrong on my end with that one. The details are in the log."
-                self._say(reply)
+                if live is None or not live.covers(reply):
+                    self._say(reply)
                 self._open_follow_up()
         finally:
             self._stop.set()
@@ -695,9 +697,45 @@ class CLIApp:
         except Exception:
             pass
 
-    def _say(self, text: str) -> None:
+    def _live_speech_on(self) -> bool:
+        cfg = getattr(self.config, "streaming", None)
+        return (self.voice_mode and bool(getattr(cfg, "enabled", False))
+                and bool(getattr(cfg, "speak_while_writing", True))
+                and hasattr(self.orchestrator, "handle_stream")
+                and getattr(self.speaker, "speak_stream", None) is not None)
+
+    def _answer(self, text: str):
+        """(reply, LiveSpeech or None). In voice mode with streaming on, she starts speaking
+        the first sentence while the model is still writing the rest; the caller only
+        speaks the reply again when the live speech didn't already say it."""
+        if not self._live_speech_on():
+            return self.orchestrator.handle(text, self.session).text, None
+        from veronica.voice.live_speech import LiveSpeech
+        live = LiveSpeech()
+        speaker: list[threading.Thread] = []
+
+        def start_speaking() -> None:
+            t = threading.Thread(target=self._say, args=("",), kwargs={"pieces": live.pieces()},
+                                 name="live-speech", daemon=True)
+            speaker.append(t)
+            t.start()
+        live.on_first_piece = start_speaking
+        self.orchestrator.stream_event_callback = live.on_event
+        try:
+            reply = self.orchestrator.handle_stream(text, self.session).text
+        finally:
+            self.orchestrator.stream_event_callback = None
+            live.close()
+            for t in speaker:
+                t.join()
+        return reply, (live if live.started else None)
+
+    def _say(self, text: str, pieces=None) -> None:
+        """Print and speak a reply. `pieces` (voice mode): sentences still arriving from a
+        reply being written (voice/live_speech.py); spoken as they come."""
         with self._speak_lock:  # replies and reminder announcements never overlap
             speak_i = getattr(self.speaker, "speak_interruptible", None) if self.voice_mode else None
+            speak_s = getattr(self.speaker, "speak_stream", None) if pieces is not None else None
             if speak_i is None:
                 print(f"{self.config.assistant.name}: {text}\n")
             if self.voice_mode:
@@ -719,7 +757,9 @@ class CLIApp:
                     if monitor is not None:
                         monitor.arm_for(piece)
                 try:
-                    if speak_i is not None:
+                    if speak_s is not None:
+                        completed = speak_s(pieces, stop, on_piece=on_piece)
+                    elif speak_i is not None:
                         completed = speak_i(text, stop, on_piece=on_piece)
                     else:
                         self.speaker.speak(text)
@@ -727,7 +767,7 @@ class CLIApp:
                     logger.warning("TTS playback failed: %s", e)
                 finally:
                     if speak_i is not None:
-                        print("\n" if shown else f"{self.config.assistant.name}: {text}\n")
+                        print("\n" if shown else (f"{self.config.assistant.name}: {text}\n" if text else ""))
                     if monitor is not None:
                         monitor.stop()
                     if hub is not None:

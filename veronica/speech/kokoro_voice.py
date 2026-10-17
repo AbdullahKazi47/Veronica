@@ -19,6 +19,11 @@ from veronica.logging_setup import get_logger
 
 logger = get_logger("speech.kokoro")
 
+# kokoro-onnx's phonemizer warns "words count mismatch" on most sentences; it is harmless
+# and would print into the clean terminal.
+import logging as _logging  # noqa: E402
+_logging.getLogger("phonemizer").setLevel(_logging.ERROR)
+
 MODEL_FILES = ("kokoro-v1.0.onnx", "kokoro-v1.0.int8.onnx")   # fastest first
 VOICES_FILE = "voices-v1.0.bin"
 

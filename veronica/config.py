@@ -332,6 +332,7 @@ class StreamingConfig:
     first_token_timeout_s: float = 30.0   # nothing received within this -> FAILED timeout
     idle_timeout_s: float = 60.0          # silence between deltas -> FAILED timeout
     overall_timeout_s: float = 300.0      # hard ceiling on one streaming turn
+    speak_while_writing: bool = True      # voice mode: speak each sentence as soon as it's written
 
 
 @dataclass

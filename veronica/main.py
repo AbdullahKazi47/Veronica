@@ -360,6 +360,30 @@ def build_app(config: Config, interactive: bool = True) -> App:
     )
 
 
+_INSTANCE_LOCK = None
+
+
+def already_running(name: str = "VERONICA_voice") -> bool:
+    """True when another VERONICA is already listening. Two would fight over the mic and
+    answer every request twice; with auto-start at sign-in plus a manual start that
+    happens easily. Windows named mutex: released automatically when the process ends."""
+    global _INSTANCE_LOCK
+    import platform
+    if platform.system() != "Windows":
+        return False
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, f"Local\\{name}")
+    if not handle:
+        return False
+    if kernel32.GetLastError() == 183:      # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return True
+    _INSTANCE_LOCK = handle                  # held for the life of this process
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="VERONICA — a JARVIS-inspired personal AI assistant.")
     parser.add_argument("--voice", action="store_true", help="Enable voice input/output.")
@@ -368,6 +392,9 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="Path to config.yaml.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate risky actions instead of executing them.")
     args = parser.parse_args()
+    if (args.voice or args.wake) and already_running():
+        print("VERONICA is already running in another window.")
+        return
 
     from veronica.config import DEFAULT_CONFIG_PATH, DEFAULT_ENV_PATH
     config = load_config(config_path=args.config or DEFAULT_CONFIG_PATH, env_path=DEFAULT_ENV_PATH)

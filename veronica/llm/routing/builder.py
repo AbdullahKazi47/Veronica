@@ -151,6 +151,11 @@ def build_routing(config: Config) -> Optional[RoutingAssembly]:
 
     seen: set[str] = set()
     for entry in entries:
+        # A cloud model whose key isn't in config/.env yet (e.g. an optional backup the user
+        # hasn't signed up for) is left out instead of failing on every turn.
+        if entry.api_key_env and not entry.default and not config.secret(entry.api_key_env):
+            logger.info("Routing model %s skipped: no %s in config/.env.", entry.model_id, entry.api_key_env)
+            continue
         if entry.model_id in seen:
             raise ValueError(f"Duplicate model in routing.models: {entry.model_id!r}")
         seen.add(entry.model_id)

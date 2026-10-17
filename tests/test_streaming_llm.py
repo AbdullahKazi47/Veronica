@@ -848,14 +848,26 @@ class TestOrchestratorStreaming(_OrchestratorHarness):
         roles = [m["role"] for m in msgs]
         assert roles == ["user"]
 
-    def test_failed_stream_returns_error_text(self, tmp_path):
+    def test_stream_failing_before_any_text_falls_back_to_normal_path(self, tmp_path):
+        """2026-10-17: a stream that dies before its first word (e.g. Gemini 503) is
+        answered through the ordinary chat path (which has the backup models). Here that
+        path fails too, and its failure is reported, never a fabricated success."""
         prov = _FailingProvider()
         sc = StreamController(coalesce_ms=0)
         orch = self._make_orch(tmp_path, llm=prov, streaming_enabled=True,
                                preferred=True, stream_controller=sc)
         session = orch.new_session()
         resp = orch.handle_stream("fail stream", session)
-        assert "stream failed" in resp.text.lower()
+        assert resp.text == "should never reach here"      # the chat path's own (failed) reply
+
+    def test_stream_failing_before_any_text_uses_a_working_chat(self, tmp_path):
+        class _StreamDownChatUp(_FailingProvider):
+            def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
+                return LLMResponse(content="(chat) answered")
+        sc = StreamController(coalesce_ms=0)
+        orch = self._make_orch(tmp_path, llm=_StreamDownChatUp(), streaming_enabled=True,
+                               preferred=True, stream_controller=sc)
+        assert orch.handle_stream("hello", orch.new_session()).text == "(chat) answered"
 
     def test_no_streaming_capable_provider_honest_fallback(self, tmp_path):
         class _NonStreaming(LLMProvider):

@@ -208,6 +208,11 @@ class SynchronousSpeaker:
         """Speak, returning False if `stop` cut it short (the user talked over her)."""
         return self.tts.speak_interruptible(text, stop, on_piece=on_piece)
 
+    def speak_stream(self, pieces, stop: threading.Event,
+                     on_piece: Optional[Callable[[str], None]] = None) -> bool:
+        """Speak sentences as they arrive (a reply still being written)."""
+        return self.tts.speak_stream(pieces, stop, on_piece=on_piece)
+
 
 class TextToSpeech:
     def __init__(self, config: TTSConfig, cache_dir: Path) -> None:
@@ -340,16 +345,34 @@ class TextToSpeech:
         pieces = split_for_speech(text)
         if self.config.backend == "kokoro":
             pieces = _short_first(pieces)
+        return self.speak_stream(pieces, stop, on_piece=on_piece)
+
+    def speak_stream(self, pieces, stop: threading.Event,
+                     on_piece: Optional[Callable[[str], None]] = None) -> bool:
+        """Speak `pieces` (any iterable of sentences; it may still be filling up while the
+        reply is being written). Each one is synthesized while the previous one plays.
+        Returns True when all were spoken, False when `stop` cut it short."""
+        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro"):
+            for piece in pieces:
+                if stop.is_set():
+                    return False
+                if on_piece is not None:
+                    on_piece(piece)
+                self.speak(piece, block=True)
+            return True
         clips: "queue.Queue[Optional[tuple[str, Optional[Path]]]]" = queue.Queue()
 
+        known = pieces if isinstance(pieces, list) else None    # whole reply known: give the next sentence too
+
         def produce() -> None:
+            previous = ""
             try:
                 for i, piece in enumerate(pieces):
                     if stop.is_set():
                         break
-                    clips.put((piece, self._voice_file(
-                        piece, previous=pieces[i - 1] if i else "",
-                        following=pieces[i + 1] if i + 1 < len(pieces) else "")))
+                    following = known[i + 1] if known is not None and i + 1 < len(known) else ""
+                    clips.put((piece, self._voice_file(piece, previous=previous, following=following)))
+                    previous = piece
             finally:
                 clips.put(None)
         threading.Thread(target=produce, name="tts-synth", daemon=True).start()

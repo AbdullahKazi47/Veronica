@@ -110,7 +110,7 @@ routing:
   enabled: true
   fallback_enabled: true
   fallback_on_empty_response: true
-  max_fallback_attempts: 3          # Flash-Lite -> Groq 20b -> Groq 120b -> Gemini Flash
+  max_fallback_attempts: 6          # Flash-Lite -> backups (Groq, Cerebras, OpenRouter) -> other Gemini models
   health_ttl_s: 30
   log_routing_decisions: true
   models:
@@ -170,6 +170,66 @@ routing:
       context_window: 131072
       base_url: "https://api.groq.com/openai/v1"
       api_key_env: "GROQ_API_KEY"
+      timeout_s: 30
+    # More Google models on the same GEMINI_API_KEY. Each model has its OWN free daily
+    # quota (Flash's is only ~20 requests a day), so when one runs out the next answers.
+    # All tested 2026-10-17 with tool calls.
+    - model_id: "gemini-3.1-flash-lite"
+      provider: "openai_compatible"
+      role: "fast"
+      priority: 15
+      speed_class: "fast"
+      reasoning_class: "light"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 1048576
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      timeout_s: 20
+    - model_id: "gemini-3.7-flash"
+      provider: "openai_compatible"
+      role: "reasoning"
+      task_types: ["reasoning", "analysis", "planning", "coding"]
+      priority: 25
+      speed_class: "medium"
+      reasoning_class: "heavy"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 1048576
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      timeout_s: 20
+    # Optional backups on other services; each switches on once its key is in config/.env
+    # (until then it is skipped). Both have free accounts:
+    #   Cerebras   cloud.cerebras.ai  -> CEREBRAS_API_KEY   (~1M tokens/day free)
+    #   OpenRouter openrouter.ai      -> OPENROUTER_API_KEY (":free" models, ~50 requests/day)
+    - model_id: "gpt-oss-120b"
+      provider: "openai_compatible"
+      role: "backup"
+      priority: 55
+      speed_class: "fast"
+      reasoning_class: "heavy"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 65536
+      base_url: "https://api.cerebras.ai/v1"
+      api_key_env: "CEREBRAS_API_KEY"
+      timeout_s: 20
+    - model_id: "nvidia/nemotron-3-super-120b-a12b:free"
+      provider: "openai_compatible"
+      role: "backup"
+      priority: 65
+      speed_class: "medium"
+      reasoning_class: "heavy"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 262144
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
       timeout_s: 30
     # Offline brain: a small model on this PC (Ollama), tried only after every cloud model
     # has failed (no internet, both services down). Short prompt, no tools, so it answers in
@@ -288,12 +348,16 @@ safety:
 # etc.). When disabled or no streaming-capable model is available, VERONICA falls back
 # to the classic chat() path and is honest about it — never a fake stream.
 streaming:
-  enabled: false               # master switch (config.streaming.enabled)
-  preferred: false             # stream on every turn the model supports (False = stream only when user asks)
+  # 2026-10-17: on, so in voice mode she starts speaking the first sentence while the
+  # model is still writing the rest (voice/live_speech.py). A stream that fails before
+  # any text falls back to the normal path and its backup models.
+  enabled: true                # master switch (config.streaming.enabled)
+  preferred: true              # stream on every turn the model supports (False = stream only when user asks)
+  speak_while_writing: true    # voice mode: speak each sentence as soon as it's written
   max_response_chars: 8192     # accumulator cap (0 = uncapped); explicit truncated=True at the cap
   max_buffer_chars: 1024       # emit-buffer cap between deltas (never changes final text)
   coalesce_ms: 60              # minimum interval between delta events (0 = per-chunk)
-  first_token_timeout_s: 30.0  # nothing received within this -> FAILED timeout
+  first_token_timeout_s: 12.0  # nothing received within this -> FAILED -> backup models
   idle_timeout_s: 60.0         # silence between deltas -> FAILED timeout
   overall_timeout_s: 300.0     # hard ceiling on one streaming turn
 
