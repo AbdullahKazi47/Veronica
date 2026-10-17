@@ -788,6 +788,13 @@ class Orchestrator:
                     return self._stream_terminal_response(
                         "cancelled", stream_meta.get("error"), collected_results,
                         last_tool_name, routing_meta, stream_meta)
+                empty = (stream_meta.get("terminal") == "completed" and not (response.content or "").strip()
+                         and not response.tool_calls)
+                if empty:
+                    # Seen live: Gemini "completed" a stream with no text and no tool call
+                    # (chars=0), and she answered "I lost the thread" to a real request.
+                    logger.info("Stream completed empty; using the normal path.")
+                    stream_provider = None
                 if stream_meta.get("terminal") == "failed" and stream_meta.get("char_count", 0) == 0:
                     # Nothing was said yet (e.g. Gemini "503 overloaded" before the first
                     # word): answer through the normal path, which has the backup models.

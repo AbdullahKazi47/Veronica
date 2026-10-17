@@ -57,6 +57,10 @@ def whisper_junk(text: str, hint: str, logprob: Optional[float], min_logprob: fl
     if re.fullmatch(r"(?:[A-Za-z]\.\s*){1,8}", t):
         return "dotted letters"
     words = re.findall(r"[a-z']+", t.lower())
+    # Noise comes back as one or two words over and over ("Mora, Mora, Mora, Mora",
+    # "Microsoft Teams, Microsoft Teams, ..."); people don't talk like that.
+    if (len(words) >= 4 and len(set(words)) == 1) or (len(words) >= 6 and len(set(words)) <= 2):
+        return "the same word over and over"
     hint_words = set(re.findall(r"[a-z']+", (hint or "").lower()))
     if words and hint_words:
         # The hint echoed back. Seen live: noise transcribed as "SILENCIA, Jev, Bengaluru" and

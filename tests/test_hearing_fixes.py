@@ -110,3 +110,39 @@ def test_browser_use_does_not_set_up_logging():
     import os
     import veronica.integrations.browser_agent  # noqa: F401
     assert os.environ.get("BROWSER_USE_SETUP_LOGGING") == "false"
+
+
+def test_repeated_word_noise_is_junk():
+    from veronica.speech.stt import whisper_junk
+    assert whisper_junk("Mora, Mora, Mora, Mora, Mora, Mora.", "", -0.2)
+    assert whisper_junk("Microsoft Teams, Microsoft Teams, Microsoft Teams, Microsoft Teams.", "", -0.2)
+    assert whisper_junk("no no no no", "", -0.1)
+    assert whisper_junk("open Spotify and play my liked songs", "", -0.2) == ""
+    assert whisper_junk("very very good", "", -0.2) == ""
+
+
+def test_an_empty_stream_falls_back_to_the_normal_path(tmp_path):
+    from veronica.config import Config
+    from veronica.core.orchestrator import Orchestrator
+    from veronica.llm.base import LLMProvider, LLMResponse, StreamChunk
+    from veronica.llm.streaming import StreamController
+    from veronica.memory.long_term import LongTermMemory
+    from veronica.safety.permissions import PermissionGate, PermissionLevel
+    from veronica.tools.registry import ToolRegistry
+
+    class Quiet(LLMProvider):
+        name = "q"
+        supports_streaming = True
+
+        def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
+            return LLMResponse(content="Muted the group, boss.")
+
+        def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
+            yield StreamChunk(text="", sequence=0)
+            yield StreamChunk(text="", sequence=1, done=True, finish_reason="stop")
+    cfg = Config()
+    cfg.routing.enabled = False
+    cfg.streaming.enabled = cfg.streaming.preferred = True
+    orch = Orchestrator(config=cfg, llm=Quiet(), tools=ToolRegistry(PermissionGate(threshold=PermissionLevel.SENSITIVE)),
+                        long_term_memory=LongTermMemory(tmp_path / "m.json"), stream_controller=StreamController(coalesce_ms=0))
+    assert orch.handle_stream("mute the batch one group in WhatsApp", orch.new_session()).text == "Muted the group, boss."
