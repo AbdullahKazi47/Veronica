@@ -24,6 +24,8 @@ from typing import Callable, Optional
 from veronica.config import STTConfig
 from veronica.logging_setup import get_logger
 
+import logging as _logging
+_logging.getLogger("faster_whisper").setLevel(_logging.WARNING)   # its per-clip INFO lines would print in the terminal
 logger = get_logger("speech.stt")
 
 WARMUP_S = 0.5             # mic output is near-silent right after opening; ignore it

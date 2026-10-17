@@ -16,6 +16,7 @@ Routing strategy (in order):
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -62,6 +63,10 @@ def _now_line() -> str:
 def _is_simple_voice_turn(text: str) -> bool:
     return bool(isinstance(text, str) and text.strip() and len(text) < 120
                 and _GREETING_RE.search(text))
+
+_TASK_NOTE = ("[MULTI-STEP TASK] Do every step of this request yourself with your tools: look_up for facts, "
+              "browser_task to research on the web, take_note to save results. Don't ask the user to do the "
+              "steps. Then reply briefly with what you found and what you saved.")
 
 _MAX_TOOL_HOPS = 8  # guard against runaway tool-call loops; raised from 4 so multi-step
                     # tasks (e.g. "read this file, then write a summary to a new one")
@@ -131,6 +136,10 @@ class Orchestrator:
         self.llm = llm
         self.tools = tools
         self.long_term_memory = long_term_memory
+        # Per-request notes (grounding sources, what was dispatched, task hints). Thread-local:
+        # background tasks run turns on worker threads alongside the conversation.
+        self._turn = threading.local()
+        self._understanding = None
         # Optional live instrumentation hook: called with a short human string each
         # time a tool is dispatched (fast-path or LLM-requested). Front-ends such as
         # the Stitch GUI use it to render a live "VERONICA ran get_weather" activity
@@ -261,7 +270,78 @@ class Orchestrator:
         if mem is not None:
             mem.observe(text, getattr(response, "text", "") or "")
 
+    # -- understanding the request (core/understanding.py, core/grounding.py) -------------
+    def understanding(self):
+        cfg = getattr(self.config, "understanding", None)
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return None
+        if self._understanding is None:
+            from veronica.core.understanding import Understanding
+            self._understanding = Understanding(self.config)
+        return self._understanding
+
+    def _begin_turn(self, text: str) -> str:
+        """Fresh per-request notes; returns the request she will act on (her own words,
+        'it' / 'again' / 'the second one', and learned corrections filled in)."""
+        self._turn.grounding = None
+        self._turn.tool_text = []
+        self._turn.action = None
+        self._turn.task = False
+        self._turn.request = text
+        self._turn.said = text
+        u = self.understanding()
+        if u is None:
+            return text
+        try:
+            prepared = u.prepare(text)
+        except Exception:  # noqa: BLE001 — understanding must never break a turn
+            logger.exception("Couldn't prepare the request.")
+            return text
+        if prepared.text != text:
+            logger.info("Understood %r as %r (%s).", text, prepared.text, prepared.note)
+        self._turn.request = prepared.text
+        return prepared.text
+
+    def _end_turn(self, response: OrchestratorResponse) -> OrchestratorResponse:
+        grounding = getattr(self._turn, "grounding", None)
+        if grounding is not None and response.text:
+            from veronica.core.grounding import check_reply
+            # What her tools returned this turn (a page she read) counts as a source too.
+            response.text = check_reply(response.text, grounding, extra=getattr(self._turn, "tool_text", []))
+        u = self.understanding()
+        if u is not None:
+            action = getattr(self._turn, "action", None) or (response.tool_used, {})
+            u.observe(getattr(self._turn, "request", ""), action[0], action[1], response.text or "",
+                      said=getattr(self._turn, "said", ""))
+        return response
+
+    def _turn_blocks(self, text: str) -> list[str]:
+        """Per-request prompt notes: style, screen, the conversation thread, the user's own
+        words, sources for a factual question, and the multi-step task note."""
+        blocks: list[str] = []
+        u = self.understanding()
+        if u is None:
+            return blocks
+        try:
+            blocks += u.blocks(text)
+            cfg = self.config.understanding
+            if getattr(self._turn, "task", False):
+                blocks.append(_TASK_NOTE)
+            elif getattr(cfg, "ground_facts", True):
+                from veronica.core.grounding import is_factual_question, look_up
+                if is_factual_question(text):
+                    if getattr(self._turn, "grounding", None) is None:
+                        self._turn.grounding = look_up(text)
+                    blocks.append(self._turn.grounding.block())
+        except Exception:  # noqa: BLE001
+            logger.exception("Couldn't build the request notes.")
+        return blocks
+
     def handle(self, text: str, session: SessionContext) -> OrchestratorResponse:
+        text = self._begin_turn(text.strip())
+        return self._end_turn(self._handle_core(text, session))
+
+    def _handle_core(self, text: str, session: SessionContext) -> OrchestratorResponse:
         text = text.strip()
         if not text:
             return OrchestratorResponse(text="I didn't catch anything.")
@@ -273,6 +353,8 @@ class Orchestrator:
         # Fast-path commands (single sentence, no agentic marker) never reach here.
         if self._is_agentic_request(text):
             return self._handle_agentic(text, session)
+        if self._multistep(text, session):
+            return self._handle_via_llm(text, session)
 
         # ---- 1. compound split -------------------------------------------------
         clauses = split_compound_command(text)
@@ -282,7 +364,22 @@ class Orchestrator:
         return self._handle_single(text, session)
 
     # -- streaming (Streaming LLM V1, opt-in) -------------------------------------
+    def _multistep(self, text: str, session: SessionContext) -> bool:
+        """'Research X, compare three and save a summary' is ONE goal for the model with its
+        tools, not three separate commands for the compound splitter."""
+        from veronica.core.understanding import is_multistep_task
+        if self.understanding() is None or not is_multistep_task(text):
+            return False
+        self._turn.task = True
+        session.turn_count += 1
+        session.short_term.add("user", text)
+        return True
+
     def handle_stream(self, text: str, session: SessionContext) -> OrchestratorResponse:
+        text = self._begin_turn(text.strip())
+        return self._end_turn(self._handle_stream_core(text, session))
+
+    def _handle_stream_core(self, text: str, session: SessionContext) -> OrchestratorResponse:
         """Same single-method entry as ``handle``, but the pure-LLM turn delivers its
         output progressively. Fast-path tools, compound commands, and agentic tasks are
         handled exactly as before (their replies are not raw model streams); only the
@@ -296,6 +393,8 @@ class Orchestrator:
         # Agentic / compound / fast-path: identical to handle(); not model streams.
         if self._is_agentic_request(text):
             return self._handle_agentic(text, session)
+        if self._multistep(text, session):
+            return self._handle_via_llm(text, session, stream=True)
         clauses = split_compound_command(text)
         if len(clauses) > 1:
             return self._run_compound(clauses, session)
@@ -310,6 +409,7 @@ class Orchestrator:
             if self.tool_event_callback:
                 self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
             result = self.tools.dispatch(tool.name, **args)
+            self._turn.action = (tool.name, dict(args or {}))
             session.last_tool_used = tool.name
             reply = result.message
             session.short_term.add("assistant", reply)
@@ -604,6 +704,7 @@ class Orchestrator:
             if self.tool_event_callback:
                 self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
             result = self.tools.dispatch(tool.name, **args)
+            self._turn.action = (tool.name, dict(args or {}))
             session.last_tool_used = tool.name
             reply = result.message
             session.short_term.add("assistant", reply)
@@ -743,6 +844,9 @@ class Orchestrator:
                 if self.tool_event_callback:
                     self.tool_event_callback(f"tool {call.name}")
                 result = self.tools.dispatch(call.name, **call.arguments)
+                self._turn.action = (call.name, dict(call.arguments or {}))
+                if hasattr(self._turn, "tool_text"):
+                    self._turn.tool_text.append(str(result.message or "")[:6000])
                 last_tool_name = call.name
                 collected_results.append(result.__dict__)
                 messages.append(
@@ -1071,6 +1175,7 @@ class Orchestrator:
         noticed = self._mem0_block(text)
         if noticed:
             sections.append(noticed)
+        sections.extend(self._turn_blocks(text))
         learned = self._knowledge_block(text)
         if learned:
             sections.append(learned)
@@ -1125,6 +1230,8 @@ class Orchestrator:
         noticed = self._mem0_block(text)
         if noticed:
             system_prompt = f"{system_prompt}\n\n{noticed}"
+        for block in self._turn_blocks(text):
+            system_prompt = f"{system_prompt}\n\n{block}"
         learned = self._knowledge_block(text)
         if learned:
             system_prompt = f"{system_prompt}\n\n{learned}"

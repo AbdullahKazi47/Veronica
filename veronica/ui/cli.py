@@ -266,8 +266,12 @@ class CLIApp:
                 except Exception:  # noqa: BLE001 - one failed request must never take VERONICA down
                     logger.exception("Request failed: %r", text)
                     reply = "Sorry, something went wrong on my end with that one. The details are in the log."
-                if live is None or not live.covers(reply):
+                if live is None:
                     self._say(reply)
+                else:
+                    rest = live.remainder(reply)   # e.g. a figure she couldn't confirm, added after
+                    if rest:
+                        self._say(rest)
                 self._open_follow_up()
         finally:
             self._stop.set()
@@ -342,6 +346,10 @@ class CLIApp:
         if is_status_request(text):
             return background.status_report()
         task = split_background_request(text)
+        if not task:
+            from veronica.core.understanding import is_multistep_task
+            if is_multistep_task(text) and getattr(getattr(self.config, "understanding", None), "enabled", False):
+                task = text.strip()          # research-and-save jobs take a while: always in the background
         if task:
             background.submit(task)
             self._status(f"[background] started: {task}")

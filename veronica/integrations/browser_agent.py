@@ -204,7 +204,8 @@ class BrowserTaskTool(_Tool):
         if self.runner.busy():
             return _Result.fail(f"I'm still working on the last browser task: {self.runner.current}.")
         announce = self._announce or _announcer
-        if announce is None:                     # text mode / no speaker: wait for it
+        from veronica.core.background import in_background
+        if announce is None or in_background():  # text mode, or inside a background task: wait for it
             try:
                 return _Result.ok(self.runner._runner(self.config, task))
             except Exception as e:  # noqa: BLE001

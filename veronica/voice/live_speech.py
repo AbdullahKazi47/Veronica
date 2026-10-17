@@ -112,6 +112,15 @@ class LiveSpeech:
     def started(self) -> bool:
         return bool(self.sent)
 
+    def remainder(self, reply: str) -> str:
+        """The part of the final reply that the live speech didn't say ('' when it said all)."""
+        if self.covers(reply):
+            return ""
+        said = _norm(" ".join(self.sent))
+        sentences = re.split(r"(?<=[.!?])\s+", _clean(reply or ""))
+        rest = [s for s in sentences if s and _norm(s) not in said]
+        return " ".join(rest)
+
     def covers(self, reply: str) -> bool:
         """Did the streamed speech already say this reply?"""
         said, want = _norm(" ".join(self.sent)), _norm(_clean(reply or ""))

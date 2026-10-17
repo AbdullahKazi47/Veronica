@@ -244,8 +244,10 @@ class RemoveEventTool(Tool):
     permission = PermissionLevel.MODERATE
     parameters = {"type": "object", "properties": {"what": {"type": "string"}}, "required": ["what"]}
 
-    def __init__(self, config=None, calendar: Optional[Calendar] = None) -> None:
+    def __init__(self, config=None, calendar: Optional[Calendar] = None, reminders=None) -> None:
         self.calendar = calendar or Calendar(config)
+        self._config = config
+        self._reminders = reminders
 
     def matches(self, text: str) -> bool:
         return bool(_REMOVE.match(text))
@@ -259,6 +261,14 @@ class RemoveEventTool(Tool):
         if gone is None:
             extra = " Events from your Google Calendar can only be changed in Google Calendar." if self.calendar.connected else ""
             return ToolResult.fail(f"I don't have an event called {what} in my calendar.{extra}")
+        try:     # the "in 10 minutes" reminder added with the event goes with it
+            reminders = self._reminders
+            if reminders is None:
+                from veronica.tools.productivity_tools import ReminderStore
+                reminders = ReminderStore(self._config)
+            reminders.cancel(f"{gone.title} in 10 minutes")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Event reminder not removed: %s", e)
         return ToolResult.ok(f"Removed {gone.title} on {gone.start.strftime('%A %d %B')}.")
 
 

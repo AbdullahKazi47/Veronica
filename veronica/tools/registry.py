@@ -176,6 +176,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.news_tools import NewsTool, ShowNewsTool
     from veronica.tools.notification_tools import ReadNotificationsTool
     from veronica.tools.screen_tools import LookAtScreenTool
+    from veronica.tools.understanding_tools import LookUpTool, ReviewFixesTool, TeachWordsTool
     from veronica.tools.voice_tools import ChangeVoiceTool
     from veronica.tools.gps_tools import UsePhoneGpsTool, WhereAmITool
     from veronica.tools.productivity_tools import (
@@ -263,7 +264,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         # Calendar before the briefing, reminders, news and time: "what's on tomorrow" is a calendar question.
         ConnectCalendarTool(config=config, calendar=calendar),
         AddEventTool(config=config, calendar=calendar, reminders=reminders),
-        RemoveEventTool(config=config, calendar=calendar),
+        RemoveEventTool(config=config, calendar=calendar, reminders=reminders),
         CalendarTool(config=config, calendar=calendar),
         DailyBriefingTool(config=config, weather_tool=weather, profile=profile,
                           reminders=reminders, todos=todos, calendar=calendar),
@@ -275,6 +276,9 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         UsePhoneGpsTool(config=config),
         WhereAmITool(config=config, profile=profile),
         ChangeVoiceTool(config=config),         # 'change your voice to Emma', 'what voices do you have'
+        TeachWordsTool(config=config),          # 'my notes means Obsidian' (before 'remember that ...')
+        ReviewFixesTool(config=config),         # 'what did you get wrong this week?'
+        LookUpTool(config=config),              # 'look up the Treaty of Versailles'
         SpeechCorrectionTool(config=config),    # 'when I say X I mean Y' (before forget tools)
         ForgetTopicTool(config=config),         # before ForgetFact: 'forget what you learned about X'
         ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'

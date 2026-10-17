@@ -183,3 +183,25 @@ def test_briefing_mentions_todays_events(tmp_path):
     cal.local.add("Call the bank", dt.datetime.now().replace(hour=23, minute=0))
     msg = b.run(include_tasks=False).message
     assert "On your calendar today" in msg and "Call the bank" in msg
+
+
+def test_removing_an_event_removes_its_reminder(tmp_path):
+    """The feature check added 'demo tomorrow at 3 pm' then removed it, but its 10-minute
+    reminder stayed and went off the next day."""
+    from veronica.tools.calendar_tools import AddEventTool, RemoveEventTool
+
+    class Reminders:
+        def __init__(self):
+            self.items = []
+        def add(self, text, due):
+            self.items.append(text)
+        def cancel(self, query):
+            hit = next((t for t in self.items if query.lower() in t.lower()), None)
+            if hit:
+                self.items.remove(hit)
+            return hit
+    cal, rem = _cal(tmp_path), Reminders()
+    add = AddEventTool(calendar=cal, reminders=rem, now=lambda: NOW)
+    assert add.run(title="demo", when="tomorrow at 3 pm").success and rem.items == ["demo in 10 minutes"]
+    assert RemoveEventTool(calendar=cal, reminders=rem).run(what="demo").success
+    assert rem.items == []

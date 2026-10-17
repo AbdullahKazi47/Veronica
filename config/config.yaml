@@ -551,6 +551,14 @@ proactive:
   quiet_start_hour: 23
   quiet_end_hour: 7
 
+# Understanding (core/understanding.py, core/grounding.py): the window you're looking at
+# ("close this"), "it" / "again" / "the second one", your own words ("my notes means
+# Obsidian"), lessons from "No, I meant ...", a style note (late, rushed, "why", a game),
+# Wikipedia sources for factual questions with figures checked, and multi-step tasks.
+understanding:
+  enabled: true
+  ground_facts: true
+
 # Mem0 (github.com/mem0ai/mem0): facts picked up from ordinary conversation ("I prefer tea",
 # "my exam is on Friday"), kept on this PC in data/mem0/. Gemini Flash-Lite writes the facts
 # and Gemini embeddings search them; text passes the privacy guard, secrets are never stored.

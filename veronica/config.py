@@ -259,6 +259,13 @@ class GodsEyeConfig:
 
 
 @dataclass
+class UnderstandingConfig:
+    """core/understanding.py + core/grounding.py. Off unless config.yaml turns it on."""
+    enabled: bool = False
+    ground_facts: bool = True        # look factual questions up (Wikipedia) and check figures
+
+
+@dataclass
 class Mem0Config:
     """Mem0 (memory/mem0_memory.py): facts picked up from conversation. Off unless config.yaml turns it on."""
     enabled: bool = False
@@ -473,6 +480,7 @@ class Config:
     gps: GpsConfig = field(default_factory=GpsConfig)
     browser_agent: BrowserAgentConfig = field(default_factory=BrowserAgentConfig)
     mem0: Mem0Config = field(default_factory=Mem0Config)
+    understanding: UnderstandingConfig = field(default_factory=UnderstandingConfig)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)
