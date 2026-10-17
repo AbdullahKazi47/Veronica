@@ -133,7 +133,8 @@ def test_home_city_set_by_voice_and_used_by_weather():
     profile = Profile()
     setter = SetHomeCityTool(profile=profile)
     assert setter.matches("my city is mumbai")
-    assert setter.run(**setter.extract_arguments("my city is mumbai")).message == "Got it, your home city is Mumbai."
+    setter._geocode = lambda name: None          # no network in unit tests
+    assert setter.run(**setter.extract_arguments("my city is mumbai")).message.startswith("Got it, your home is Mumbai.")
     weather = WeatherTool(profile=profile)
     assert weather.matches("how's the weather today?")
     assert weather.matches("is it going to rain tomorrow")

@@ -167,3 +167,29 @@ def test_summary_asks_for_india_then_world():
     assert tool.run().success
     p = prompts[0]
     assert p.index("India") < p.index("WORLD")
+
+
+# ---------------------------------------------------------------- spoken maths, screenshot
+
+@pytest.mark.parametrize("said,answer", [
+    ("what is 12 times 7", "12 times 7 is 84"), ("what is 2 plus 2", "2 plus 2 is 4"),
+    ("calculate 100 divided by 4", "100 divided by 4 is 25"), ("what is 5 squared", "5 squared is 25"),
+    ("what is twenty minus three", "20 minus 3 is 17"), ("what is 25% of 800", "25 percent of 800 is 200"),
+    ("what is the square root of 144", "the square root of 144 is 12"), ("what is 2+2?", "2 plus 2 is 4"),
+])
+def test_spoken_maths(said, answer):
+    from veronica.tools.utility_tools import CalculatorTool
+    c = CalculatorTool()
+    assert c.matches(said) and c.run(**c.extract_arguments(said)).message == answer
+
+
+@pytest.mark.parametrize("said", ["what is the capital of 7 seas", "what is chapter 5 about", "what's the news"])
+def test_non_maths_goes_to_the_model(said):
+    from veronica.tools.utility_tools import CalculatorTool
+    assert not CalculatorTool().matches(said)
+
+
+def test_screenshot_quick_command():
+    from veronica.tools.system_tools import ScreenshotTool
+    assert ScreenshotTool().matches("take a screenshot") and ScreenshotTool().matches("grab a screen shot")
+    assert not ScreenshotTool().matches("take a screenshot of my essay and email it")

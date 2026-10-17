@@ -17,6 +17,7 @@ react to "didn't understand" vs. "no microphone available" differently.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -38,6 +39,26 @@ class STTResult:
     confidence: Optional[float] = None          # recognizer's confidence in `text`, when it gives one
     alternatives: list[str] = field(default_factory=list)   # other readings, best first (text excluded)
     stats: dict = field(default_factory=dict)   # capture levels: ambient, speech, voiced seconds
+
+
+def whisper_junk(text: str, hint: str, logprob: Optional[float], min_logprob: float = -0.78) -> str:
+    """Why a Whisper transcript looks invented ('' when it looks like real speech)."""
+    t = (text or "").strip()
+    if logprob is not None and logprob < min_logprob:
+        return "low confidence"
+    letters = re.sub(r"[^A-Za-zÀ-￿]", "", t)
+    if letters and sum(1 for c in letters if ord(c) > 127) / len(letters) > 0.3:
+        return "not English"
+    if re.fullmatch(r"(?:[A-Za-z]\.\s*){1,8}", t):
+        return "dotted letters"
+    words = re.findall(r"[a-z']+", t.lower())
+    hint_words = set(re.findall(r"[a-z']+", (hint or "").lower()))
+    # The hint repeated back ("Jev, Bengaluru") with a weak score is invented; a confident
+    # "Veronica" or "Jev, why?" is a real request.
+    if (words and hint_words and len(words) <= 5 and all(w in hint_words for w in words)
+            and logprob is not None and logprob < -0.55):
+        return "only the hint words"
+    return ""
 
 
 def highpass(pcm: bytes, cutoff_hz: float, rate: int = 16000) -> bytes:
@@ -66,6 +87,8 @@ class SpeechToText:
         self.mic_factory: Optional[Callable[[int], object]] = None
         self.hub = None
         self.corrections = corrections            # speech/corrections.py, applied to every transcript
+        # Words to expect (her name, your area, routine names...): a hint for Whisper, set by the CLI.
+        self.vocabulary: Optional[Callable[[], str]] = None
 
     # -- shared microphone capture (Phase 11F) ---------------------------------------
     def _capture_utterance(self, timeout_s: float) -> tuple[Optional[bytes], str]:
@@ -191,11 +214,121 @@ class SpeechToText:
     def listen_once(self, timeout_s: int = 6) -> STTResult:
         if self.config.backend == "none":
             return STTResult(success=False, error="STT is disabled in config.")
+        if self.config.backend in ("auto", "groq_whisper"):
+            return self._listen_chain(timeout_s)
         if self.config.backend == "vosk":
             return self._listen_vosk(timeout_s)
         if self.config.backend == "faster_whisper":
             return self._listen_faster_whisper(timeout_s)
         return self._listen_google_free(timeout_s)
+
+    # -- "auto": capture once, then the most accurate engine that answers ---------
+    def _listen_chain(self, timeout_s: int) -> STTResult:
+        """Groq Whisper (with a vocabulary hint) -> Google -> offline faster-whisper.
+        Measured on this PC: 8% / 24% / 21% word errors, all about a second."""
+        pcm, err = self._capture_utterance(timeout_s)
+        stats = dict(self.last_capture_stats)
+        if pcm is None:
+            return STTResult(success=False, error=err, stats=stats)
+        pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
+        engines = [self._recognize_groq_whisper] if self._groq_key() else []
+        if self.config.backend == "auto":
+            engines += [self._recognize_google_pcm, self._recognize_local_whisper]
+        last = STTResult(success=False, error="No speech recognizer is available.")
+        for engine in engines:
+            try:
+                result = engine(pcm)
+            except Exception as e:  # noqa: BLE001 - try the next engine
+                logger.info("Speech engine %s failed: %s", engine.__name__, e)
+                continue
+            result.stats = {**stats, **(result.stats or {})}
+            if result.success or result.error.startswith("Not speech"):
+                return result              # a clear "not speech" is an answer, not an outage
+            last = result
+        return last
+
+    def _groq_key(self) -> str:
+        import os
+        name = getattr(self.config, "groq_api_key_env", "GROQ_API_KEY")
+        key = os.environ.get(name, "")
+        if not key:
+            try:
+                from veronica.config import load_config
+                key = load_config().secret(name) or ""
+            except Exception:  # noqa: BLE001
+                key = ""
+        return key
+
+    def _recognize_groq_whisper(self, pcm: bytes) -> STTResult:
+        import io
+        import math
+        import wave
+        import requests
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(pcm)
+        data = {"model": getattr(self.config, "groq_whisper_model", "whisper-large-v3-turbo"),
+                "language": (self.config.language or "en").split("-")[0], "temperature": "0",
+                "response_format": "verbose_json"}
+        hint = self.vocabulary() if callable(getattr(self, "vocabulary", None)) else ""
+        if hint:
+            data["prompt"] = hint[:600]
+        r = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", timeout=15,
+                          headers={"Authorization": f"Bearer {self._groq_key()}"},
+                          files={"file": ("speech.wav", buf.getvalue(), "audio/wav")}, data=data)
+        if r.status_code >= 400:
+            return STTResult(success=False, error=f"Groq Whisper error {r.status_code}")
+        return self._from_whisper(r.json(), hint)
+
+    def _from_whisper(self, payload: dict, hint: str = "") -> STTResult:
+        """Whisper invents words for silence and noise, so suspicious output is rejected
+        rather than acted on. Measured on this PC (Groq whisper-large-v3-turbo): real speech,
+        even a short "Yes" or "Thanks", averages a log-probability above -0.65; silence, hum,
+        fan noise and clicks came out at -0.81 or lower, as dotted letters ("S.T.A.R.S.") or
+        as the hint words repeated back ("Rek, Bengaluru"). Groq leaves no_speech_prob at 0,
+        so it isn't relied on."""
+        raw = (payload.get("text") or "").strip()
+        text = self.correct(raw)
+        if not re.sub(r"[\W_]+", "", text):
+            return STTResult(success=False, error="Couldn't understand the audio.")
+        segments = payload.get("segments") or []
+        logprob = None
+        if segments:
+            no_speech = max(float(seg.get("no_speech_prob", 0) or 0) for seg in segments)
+            if no_speech >= float(getattr(self.config, "no_speech_reject", 0.6) or 0.6):
+                return STTResult(success=False, error=f"Not speech (no-speech score; heard {text!r}).")
+            logprob = sum(float(seg.get("avg_logprob", 0) or 0) for seg in segments) / len(segments)
+        why = whisper_junk(raw, hint, logprob, float(getattr(self.config, "whisper_min_logprob", -0.78)))
+        if why:
+            return STTResult(success=False, error=f"Not speech ({why}; heard {text!r}).")
+        # Whisper's score isn't on Google's confidence scale, so the "did you say...?" and
+        # "ignore unclear speech" bars (tuned for Google) aren't fed from it.
+        return STTResult(success=True, text=text, confidence=None,
+                         stats={"whisper_logprob": round(logprob, 3) if logprob is not None else None})
+
+    def _recognize_google_pcm(self, pcm: bytes) -> STTResult:
+        import speech_recognition as sr
+        recognizer = sr.Recognizer()
+        return self._recognize_google(sr, recognizer, sr.AudioData(pcm, 16000, 2))
+
+    def _recognize_local_whisper(self, pcm: bytes) -> STTResult:
+        """Offline last resort: faster-whisper on this PC (no internet needed)."""
+        import numpy as np
+        from faster_whisper import WhisperModel
+        if self._whisper_model is None:
+            self._whisper_model = WhisperModel(getattr(self.config, "offline_whisper_model", "base"),
+                                               device="cpu", compute_type="int8")
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        hint = self.vocabulary() if callable(getattr(self, "vocabulary", None)) else None
+        segments, _ = self._whisper_model.transcribe(samples, language="en", beam_size=5,
+                                                     initial_prompt=hint or None)
+        segs = list(segments)
+        return self._from_whisper({"text": " ".join(seg.text.strip() for seg in segs),
+                                   "segments": [{"no_speech_prob": seg.no_speech_prob, "avg_logprob": seg.avg_logprob}
+                                                for seg in segs]}, hint or "")
 
     # -- backends -----------------------------------------------------------------
     def _listen_google_free(self, timeout_s: int) -> STTResult:

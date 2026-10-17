@@ -334,6 +334,15 @@ def build_app(config: Config, interactive: bool = True) -> App:
         stream_controller=stream_controller,
         context_manager=context_manager,
     )
+    # Routines run each step as an ordinary command, in their own session, through the
+    # same orchestrator (and so the same permission gate) as anything the user says.
+    route_tool = tools.get("jev_route")
+    if route_tool is not None and routing_assembly is not None:
+        route_tool.router, route_tool.analyzer = routing_assembly.router, routing_assembly.analyzer
+    routine_tool = tools.get("run_routine")
+    if routine_tool is not None:
+        routine_session = orchestrator.new_session()
+        routine_tool.runner = lambda step: orchestrator.handle(step, routine_session).text
     return App(
         config=config,
         llm=llm,

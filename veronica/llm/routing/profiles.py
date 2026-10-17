@@ -46,9 +46,12 @@ ROLE_FAST = "fast"
 ROLE_REASONING = "reasoning"
 ROLE_CODING = "coding"
 ROLE_VISION = "vision"
+# A model from a DIFFERENT provider kept for when the main ones fail (e.g. Groq while
+# Google's Gemini is overloaded). Never the first choice while the main models work.
+ROLE_BACKUP = "backup"
 
 ALL_ROLES = frozenset({
-    ROLE_GENERAL, ROLE_FAST, ROLE_REASONING, ROLE_CODING, ROLE_VISION,
+    ROLE_GENERAL, ROLE_FAST, ROLE_REASONING, ROLE_CODING, ROLE_VISION, ROLE_BACKUP,
 })
 
 # Qualitative classes used for deterministic ranking (never a probe).
@@ -149,7 +152,7 @@ __all__ = [
     "TASK_TOOL_USE", "TASK_VISION", "TASK_ANALYSIS", "TASK_SUMMARIZATION",
     "ALL_TASK_TYPES",
     "CAP_TOOLS", "CAP_VISION", "CAP_STREAMING", "ALL_CAPABILITIES",
-    "ROLE_GENERAL", "ROLE_FAST", "ROLE_REASONING", "ROLE_CODING", "ROLE_VISION",
+    "ROLE_GENERAL", "ROLE_FAST", "ROLE_REASONING", "ROLE_CODING", "ROLE_VISION", "ROLE_BACKUP",
     "ALL_ROLES",
     "SPEED_FAST", "SPEED_MEDIUM", "SPEED_SLOW",
     "REASONING_NONE", "REASONING_LIGHT", "REASONING_HEAVY",

@@ -64,13 +64,27 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
         from veronica.safety import privacy
         question = privacy.get_guard().scrub_text(question)   # the image itself can't be scrubbed
         data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
-        resp = requests.post(f"{base}/chat/completions", timeout=30,
-                             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                             json={"model": model, "temperature": 0.2, "messages": [
-                                 {"role": "system", "content": system},
-                                 {"role": "user", "content": [
-                                     {"type": "text", "text": question},
-                                     {"type": "image_url", "image_url": {"url": data_url}}]}]})
+        import time as _time
+        # The vision model first, then the main model (also image-capable, with its own free
+        # quota): a 429 on one usually means that model's quota, not Gemini as a whole.
+        models = [model] + ([llm.model] if llm.model and llm.model != model else [])
+        resp = None
+        for which in models:
+            for delay in (0.0, 1.5):
+                if delay:
+                    _time.sleep(delay)
+                resp = requests.post(f"{base}/chat/completions", timeout=30,
+                                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                                     json={"model": which, "temperature": 0.2, "messages": [
+                                         {"role": "system", "content": system},
+                                         {"role": "user", "content": [
+                                             {"type": "text", "text": question},
+                                             {"type": "image_url", "image_url": {"url": data_url}}]}]})
+                if resp.status_code not in (429, 500, 502, 503, 504):
+                    break
+            if resp.status_code not in (429, 500, 502, 503, 504):
+                break
+            logger.info("Vision model %s busy (%s); trying the next one.", which, resp.status_code)
         resp.raise_for_status()
         return ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     return ask

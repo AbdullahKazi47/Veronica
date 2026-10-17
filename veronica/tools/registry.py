@@ -48,6 +48,10 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         logger.info("Registered tool '%s' (permission=%s)", tool.name, tool.permission.name)
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool (used only for abilities the user added and later removed)."""
+        return self._tools.pop(name, None) is not None
+
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)
 
@@ -137,6 +141,7 @@ def _summarizer(llm):
 
 
 _CODING_TOOLS = {"learn_topic", "recall_learning", "forget_topic", "write_code", "update_code", "run_code"}
+# (build_ability & co. are added after the main list, also only when coding is enabled)
 
 
 def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolRegistry:
@@ -188,6 +193,12 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.privacy_tools import PrivacyReportTool
     from veronica.tools.download_tools import DownloadFileTool
     from veronica.tools.speech_tools import SpeechCorrectionTool
+    from veronica.tools.voice_test_tools import VoiceTestTool
+    from veronica.integrations.earth_views import (
+        EarthGlobeTool, LookFromSpaceTool, NasaWorldviewTool, SatelliteTracker3DTool,
+    )
+    from veronica.tools.calendar_tools import AddEventTool, CalendarTool, ConnectCalendarTool, RemoveEventTool
+    from veronica.integrations.calendar import Calendar
     from veronica.tools.learning_tools import (
         ForgetTopicTool,
         LearnTopicTool,
@@ -208,6 +219,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.youtube_tools import YouTubeSearchTool
 
     profile, reminders, todos = Profile(config), ReminderStore(config), TodoStore(config)
+    calendar = Calendar(config)
     # Installed apps/browsers are discovered, not listed; both 'open' tools share one parse.
     from veronica.tools.app_index import shared_index
     from veronica.tools.system_tools import _OpenRouting
@@ -217,15 +229,39 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     news = NewsTool(config=config, summarizer=_summarizer(llm))
     registry = ToolRegistry(gate)
     coding_on = getattr(getattr(config, "coding", None), "enabled", True)
+    # Jev (decision layer) early: "Jev, should I ..." must not be taken for another command.
+    # It only advises; the router/analyzer for "how would you handle X" are attached in main.
+    from veronica.core.jev import Jev
+    from veronica.tools.jev_tools import JevDecideTool, JevRouteTool, JevWhyTool
+    from veronica.tools.learning_tools import _facts_reader
+    jev = Jev(config=config, llm=llm, facts=_facts_reader(config) if config is not None else None)
+    for tool in (JevRouteTool(registry), JevWhyTool(jev), JevDecideTool(jev)):
+        registry.register(tool)
+    # Routines first: their names are the user's own phrases ("good night", "work mode")
+    # and must win over every built-in matcher. Each step is still gated on its own.
+    from veronica.tools.routine_tools import CreateRoutineTool, EditRoutineTool, RoutineInfoTool, RunRoutineTool
+    for tool in (CreateRoutineTool(config=config), EditRoutineTool(config=config),
+                 RoutineInfoTool(config=config), RunRoutineTool(config=config)):
+        registry.register(tool)
     # God's Eye View first: its 'open the globe' / 'show me that' must win over 'open <site>'.
     from veronica.integrations.gods_eye import register_gods_eye
+    from veronica.integrations.world_monitor import register_world_monitor
     if config is not None:
         register_gods_eye(registry, config, profile)
+        try:
+            register_world_monitor(registry, config)      # tools appear once its Docker stack answers
+        except Exception:  # noqa: BLE001 - never block start-up
+            logger.exception("World Monitor registration failed.")
     for tool in (
         # Voice productivity first: their fast-path phrases ("remind me in 10 minutes to
         # check the weather") must win over the generic weather/time/calc matchers.
+        # Calendar before the briefing, reminders, news and time: "what's on tomorrow" is a calendar question.
+        ConnectCalendarTool(config=config, calendar=calendar),
+        AddEventTool(config=config, calendar=calendar, reminders=reminders),
+        RemoveEventTool(config=config, calendar=calendar),
+        CalendarTool(config=config, calendar=calendar),
         DailyBriefingTool(config=config, weather_tool=weather, profile=profile,
-                          reminders=reminders, todos=todos),
+                          reminders=reminders, todos=todos, calendar=calendar),
         SetReminderTool(config=config, store=reminders),
         ListRemindersTool(config=config, store=reminders),
         CancelReminderTool(config=config, store=reminders),
@@ -237,12 +273,18 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         ForgetFactTool(config=config),
         RecallMemoryTool(config=config),
         RememberFactTool(config=config),
+        # Views of the planet (KeepTrack, NASA Worldview, Earth) before 'open <site/app>'.
+        SatelliteTracker3DTool(config=config, index=apps),
+        LookFromSpaceTool(config=config, index=apps),
+        NasaWorldviewTool(config=config, index=apps),
+        EarthGlobeTool(config=config, index=apps),
         ShowNewsTool(config=config, news=news, index=apps),  # before news: 'show me the news'
         news,
         MediaControlTool(),                    # before YouTube: bare 'play'/'pause'
         LookAtScreenTool(config=config),
         LookThroughCameraTool(config=config),
         ReadNotificationsTool(config=config),
+        VoiceTestTool(),                       # "run a voice test" (before self-heal: "check your hearing")
         SelfHealTool(config=config),           # "heal yourself" / "are you okay"
         PrivacyReportTool(config=config),      # "what do you send to the cloud"
         RunDiagnosticsTool(),                  # before system_status: the deeper check
@@ -286,4 +328,21 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         if not coding_on and tool.name in _CODING_TOOLS:
             continue
         registry.register(tool)
+    # Abilities added by voice: built/approved through these tools; approved ones (code
+    # unchanged since approval, safety check passed again) are loaded last, read-only.
+    if coding_on:
+        from veronica.core.abilities import AbilityManager
+        from veronica.tools.ability_tools import (
+            ActivateAbilityTool, BuildAbilityTool, ListAbilitiesTool, RemoveAbilityTool,
+        )
+        manager = AbilityManager(config=config, registry=registry, llm=llm)
+        for tool in (BuildAbilityTool(manager), ActivateAbilityTool(manager), ListAbilitiesTool(manager),
+                     RemoveAbilityTool(manager)):
+            registry.register(tool)
+        try:
+            loaded = manager.load_approved()
+            if loaded:
+                logger.info("Added abilities loaded: %s", ", ".join(loaded))
+        except Exception:  # noqa: BLE001 - a broken ability must never stop VERONICA starting
+            logger.exception("Couldn't load added abilities.")
     return registry

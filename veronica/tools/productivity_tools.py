@@ -98,9 +98,15 @@ _PS_LOCATION = (
     "if (-not $c.IsUnknown) { '{0} {1} {2}' -f $c.Latitude, $c.Longitude, $c.HorizontalAccuracy }")
 
 
-def _windows_location() -> Optional[tuple[float, float]]:
-    """Coordinates from Windows location services (Wi-Fi/GPS based; far more precise
-    than the internet provider's city). None when location is off or unavailable."""
+# Windows' estimate is only trusted down to a neighbourhood when it's this precise. On a
+# PC without Wi-Fi/GPS positioning it is a ~5 km guess from the internet connection, and
+# naming the village under that point ("Naganahalli", "Kokti") sounds exact but is wrong.
+PRECISE_ENOUGH_M = 1500
+
+
+def _windows_location() -> Optional[tuple[float, float, float]]:
+    """(lat, lon, accuracy in metres) from Windows location services. None when location
+    is off or unavailable."""
     import platform
     import subprocess
     if platform.system() != "Windows":
@@ -108,26 +114,55 @@ def _windows_location() -> Optional[tuple[float, float]]:
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", _PS_LOCATION], capture_output=True,
                              text=True, timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        lat, lon, _acc = (float(x) for x in out.stdout.split()[:3])
-        return lat, lon
+        lat, lon, acc = (float(x) for x in out.stdout.split()[:3])
+        return lat, lon, acc
     except Exception:  # noqa: BLE001
         return None
 
 
-def _place_name(lat: float, lon: float) -> Optional[str]:
-    """Most specific place name for coordinates (OpenStreetMap Nominatim, keyless)."""
+def _clean_city(name: str) -> str:
+    """'Bengaluru Urban' (a district) -> 'Bengaluru'."""
+    return re.sub(r"\s+(?:urban|rural|district)$", "", (name or "").strip(), flags=re.I)
+
+
+def _place_name(lat: float, lon: float, accuracy_m: Optional[float] = None) -> Optional[str]:
+    """Place name for coordinates (OpenStreetMap Nominatim, keyless). Only as specific as
+    the position is: a rough fix gives the city, a precise one 'neighbourhood, city'."""
     import requests
+    coarse = accuracy_m is not None and accuracy_m > PRECISE_ENOUGH_M
     try:
         a = requests.get("https://nominatim.openstreetmap.org/reverse", timeout=6,
-                         params={"lat": lat, "lon": lon, "format": "json", "zoom": 14, "addressdetails": 1},
+                         params={"lat": lat, "lon": lon, "format": "json", "zoom": 10 if coarse else 14,
+                                 "addressdetails": 1},
                          headers={"User-Agent": "VERONICA/1.0 personal voice assistant"}).json().get("address", {})
     except Exception:  # noqa: BLE001
         return None
-    local = next((a[k] for k in ("suburb", "neighbourhood", "village", "town", "city_district", "county") if a.get(k)), "")
-    city = next((a[k] for k in ("city", "town", "state_district") if a.get(k)), "")
+    city = _clean_city(next((a[k] for k in ("city", "town", "state_district", "county") if a.get(k)), ""))
+    if coarse:
+        return city or None
+    local = next((a[k] for k in ("suburb", "neighbourhood", "village", "town", "city_district") if a.get(k)), "")
     if local and city and local != city:
         return f"{local}, {city}"
     return local or city or None
+
+
+def geocode_place(name: str) -> Optional[dict]:
+    """'Indiranagar, Bengaluru' -> {'lat', 'lon', 'name'} (Nominatim search). None if unknown."""
+    import requests
+    try:
+        hits = requests.get("https://nominatim.openstreetmap.org/search", timeout=8,
+                            params={"q": name, "format": "json", "limit": 1, "addressdetails": 1},
+                            headers={"User-Agent": "VERONICA/1.0 personal voice assistant"}).json()
+    except Exception:  # noqa: BLE001
+        return None
+    if not hits:
+        return None
+    h = hits[0]
+    a = h.get("address", {})
+    local = next((a[k] for k in ("suburb", "neighbourhood", "village", "quarter", "city_district") if a.get(k)), "")
+    city = _clean_city(next((a[k] for k in ("city", "town", "state_district", "county") if a.get(k)), ""))
+    label = f"{local}, {city}" if local and city and local != city else (city or local or name)
+    return {"lat": float(h["lat"]), "lon": float(h["lon"]), "name": label}
 
 
 def _detect_city_by_ip() -> Optional[str]:
@@ -147,11 +182,12 @@ def _detect_city_by_ip() -> Optional[str]:
 
 def _detect_location() -> Optional[dict]:
     """{'name', 'lat', 'lon', 'via'}: Windows location first, then the IP guess."""
-    coords = _windows_location()
-    if coords:
-        name = _place_name(*coords)
+    fix = _windows_location()
+    if fix:
+        lat, lon, acc = fix
+        name = _place_name(lat, lon, acc)
         if name:
-            return {"name": name, "lat": coords[0], "lon": coords[1], "via": "Windows location"}
+            return {"name": name, "lat": lat, "lon": lon, "via": "Windows location", "accuracy_m": acc}
     city = _detect_city_by_ip()
     return {"name": city, "via": "your internet connection"} if city else None
 
@@ -190,14 +226,18 @@ class Profile:
         if found and found.get("name"):
             self._store.update(lambda d: ({**d, "detected_city": found["name"], "detected_lat": found.get("lat"),
                                            "detected_lon": found.get("lon"), "detected_via": found.get("via", ""),
+                                           "detected_accuracy_m": found.get("accuracy_m"),
                                            "detected_at": dt.datetime.now().timestamp()}, None))
             return found["name"], "detected"
         return detected, "detected" if detected else ""  # stale beats nothing when offline
 
     def detected_coords(self) -> Optional[tuple[float, float]]:
-        """Exact coordinates when the current city came from Windows location."""
+        """Coordinates for 'here': the area the user told me (looked up when they said it),
+        else Windows location. None when only a city name is known."""
         city, source = self.city_and_source()
         data = self._store.load()
+        if source == "user" and data.get("home_lat") is not None and data.get("home_lon") is not None:
+            return float(data["home_lat"]), float(data["home_lon"])
         if source == "detected" and data.get("detected_lat") is not None and data.get("detected_lon") is not None:
             return float(data["detected_lat"]), float(data["detected_lon"])
         return None
@@ -212,16 +252,21 @@ class Profile:
             return ""
         self._store.update(lambda d: ({**d, "detected_announced": city}, None))
         via = data.get("detected_via") or "your internet connection"
-        return f" (I detected you're in {city} from {via}; say 'my city is ...' to change it.)"
+        acc = data.get("detected_accuracy_m")
+        rough = (f" Windows only knows your position to within about {round(acc / 1000)} kilometres, so tell me "
+                 f"your area, like 'I live in Indiranagar, Bengaluru', for exact weather."
+                 if acc and acc > PRECISE_ENOUGH_M else " Say 'I live in ...' to change it.")
+        return f" (I think you're in {city}, from {via}.{rough})"
 
-    def set_home_city(self, city: str) -> None:
-        self._store.update(lambda data: ({**data, "home_city": city}, None))
+    def set_home_city(self, city: str, lat: Optional[float] = None, lon: Optional[float] = None) -> None:
+        self._store.update(lambda data: ({**data, "home_city": city, "home_lat": lat, "home_lon": lon}, None))
 
 
 _SET_CITY = re.compile(
     r"^\s*(?:(?:please\s+)?set\s+my\s+(?:home\s+)?(?:city|location)\s+(?:to|as)|"
-    r"my\s+(?:home\s+)?(?:city|location)\s+is|i\s+live\s+in|i(?:'m|\s+am)\s+(?:based|located)\s+in)\s+"
-    r"([a-zA-Z][a-zA-Z\s.\-]{1,40}?)\s*[.!]?\s*$", re.I)
+    r"my\s+(?:home\s+)?(?:city|location|area)\s+is|i\s+live\s+in|i(?:'m|\s+am)\s+(?:based|located|staying)\s+in|"
+    r"i\s+stay\s+in|my\s+home\s+is\s+in)\s+"
+    r"([a-zA-Z][a-zA-Z\s.,'\-]{1,60}?)\s*[.!]?\s*$", re.I)
 
 
 class SetHomeCityTool(Tool):
@@ -235,22 +280,33 @@ class SetHomeCityTool(Tool):
         "required": ["city"],
     }
 
-    def __init__(self, config=None, profile: Optional[Profile] = None) -> None:
+    def __init__(self, config=None, profile: Optional[Profile] = None, geocode=None) -> None:
         self.profile = profile or Profile(config)
+        self._geocode = geocode           # None = look up via geocode_place at call time
 
     def matches(self, text: str) -> bool:
         return bool(_SET_CITY.match(text))
 
     def extract_arguments(self, text: str) -> dict[str, Any]:
         m = _SET_CITY.match(text)
-        return {"city": m.group(1).strip().title()} if m else {}
+        return {"city": m.group(1).strip(" ,").title()} if m else {}
 
     def run(self, city: str = "", **kwargs: Any) -> ToolResult:
-        city = (city or "").strip()
+        city = (city or "").strip(" ,.")
         if not city:
-            return ToolResult.fail("Which city should I use?")
+            return ToolResult.fail("Which city or area should I use?")
+        found = None
+        try:
+            found = (self._geocode or geocode_place)(city)
+        except Exception:  # noqa: BLE001 - offline: keep the name, look it up later
+            found = None
+        if found:
+            self.profile.set_home_city(found["name"], found["lat"], found["lon"])
+            return ToolResult.ok(f"Got it, you're in {found['name']}. I'll use that for weather and anything "
+                                 "near you.", city=found["name"], lat=found["lat"], lon=found["lon"])
         self.profile.set_home_city(city)
-        return ToolResult.ok(f"Got it, your home city is {city}.", city=city)
+        return ToolResult.ok(f"Got it, your home is {city}. I couldn't find it on the map, so I'll use the name.",
+                             city=city)
 
 
 # ---------------------------------------------------------------- reminders and timers

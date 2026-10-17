@@ -124,7 +124,7 @@ def test_no_detection_unless_enabled():
 
 def test_detection_is_announced_once():
     p = Profile(cfg(auto_detect_location=True), detector=lambda: "Hyderabad")
-    assert "I detected you're in Hyderabad" in p.detection_notice()
+    assert "I think you're in Hyderabad" in p.detection_notice()
     assert p.detection_notice() == ""
 
 
@@ -139,7 +139,7 @@ def test_weather_includes_today_forecast_and_detection_notice():
     with patch.dict(sys.modules, {"requests": fake}):
         msg = WeatherTool(profile=p).run().message
     assert msg.startswith("Hyderabad: 29°C, partly cloudy, wind 7 km/h. Today: high 33°, low 23°, 40% chance of rain.")
-    assert "I detected you're in Hyderabad" in msg
+    assert "I think you're in Hyderabad" in msg
 
 
 # ---------------------------------------------------------------- screen
@@ -189,3 +189,45 @@ def test_nothing_is_frequent_before_enough_observation():
     policy._track_focus("code.exe", 0)
     policy._track_focus("code.exe", 30)
     assert not policy.is_frequent_app("code.exe")
+
+
+# ---------------------------------------------------------------- location honesty (2026-10-17)
+
+def test_rough_windows_fix_names_only_the_city(monkeypatch):
+    import veronica.tools.productivity_tools as pt
+    seen = {}
+
+    class R:
+        def json(self): return {"address": {"village": "Naganahalli", "state_district": "Bengaluru Urban"}}
+    def fake_get(url, params=None, **kw):
+        seen["zoom"] = params["zoom"]
+        return R()
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert pt._place_name(12.97, 77.36, 5000) == "Bengaluru" and seen["zoom"] == 10
+    assert pt._place_name(12.97, 77.36, 40) == "Naganahalli, Bengaluru" and seen["zoom"] == 14
+
+
+def test_rough_fix_tells_the_user_how_to_be_exact(tmp_path):
+    from veronica.config import Config
+    from veronica.tools.productivity_tools import Profile
+    cfg = Config(); cfg.assistant.auto_detect_location = True
+    cfg.memory.long_term_path = str(tmp_path / "m.json")
+    p = Profile(cfg, detector=lambda: {"name": "Bengaluru", "lat": 12.97, "lon": 77.36,
+                                        "via": "Windows location", "accuracy_m": 5000})
+    p._store.path = tmp_path / "profile.json"
+    note = p.detection_notice()
+    assert "within about 5 kilometres" in note and "I live in" in note
+
+
+def test_area_set_by_voice_gives_exact_coordinates(tmp_path):
+    from veronica.config import Config
+    from veronica.tools.productivity_tools import Profile, SetHomeCityTool
+    cfg = Config()
+    p = Profile(cfg, detector=lambda: None)
+    p._store.path = tmp_path / "profile.json"
+    tool = SetHomeCityTool(profile=p, geocode=lambda n: {"lat": 12.973, "lon": 77.640, "name": "Indiranagar, Bengaluru"})
+    args = tool.extract_arguments("I live in Indiranagar, Bengaluru")
+    assert args == {"city": "Indiranagar, Bengaluru"}
+    assert "Indiranagar, Bengaluru" in tool.run(**args).message
+    assert p.home_city() == "Indiranagar, Bengaluru" and p.detected_coords() == (12.973, 77.640)

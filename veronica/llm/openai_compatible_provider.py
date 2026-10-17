@@ -17,9 +17,9 @@ logger = get_logger("llm.openai_compatible")
 _MAX_REMEMBERED_TURNS = 32
 
 # Google answers 503 ("overloaded") and 429 ("too many requests") in short bursts; a quick
-# retry usually lands. Two retries, ~0.7 s then ~1.8 s, keep a voice turn under ~3 s extra.
+# retry usually lands. Two retries, ~0.5 s then ~1.2 s; after that the backup model (Groq) answers.
 _RETRY_STATUS = {429, 500, 502, 503, 504}
-_RETRY_DELAYS_S = (0.7, 1.8)
+_RETRY_DELAYS_S = (0.5, 1.2)
 BUSY_MESSAGE = ("Google's AI service is overloaded right now, so I couldn't think that one through. "
                 "Quick commands like opening apps or folders still work. Try again in a moment.")
 OFFLINE_MESSAGE = ("I can't reach Google's AI service right now. Check the internet connection; "

@@ -75,6 +75,79 @@ def _construct_provider(
     )
 
 
+class FallbackProvider(LLMProvider):
+    """The main provider, with backups from other services. If the main one fails (an
+    outage, an overload) the next answers instead; after a failure the backup is asked
+    first for `cooldown_s`, so each turn doesn't wait on a request that will fail."""
+
+    name = "fallback"
+
+    def __init__(self, primary: LLMProvider, backups: list[LLMProvider], cooldown_s: float = 45.0,
+                 clock=None) -> None:
+        import time as _time
+        self.primary, self.backups = primary, list(backups)
+        self.supports_streaming = getattr(primary, "supports_streaming", False)
+        self.model = getattr(primary, "model", "")
+        self._cooldown, self._clock = cooldown_s, clock or _time.time
+        self._primary_down_until = 0.0
+
+    def is_available(self) -> bool:
+        return any(_safe_available(p) for p in [self.primary] + self.backups)
+
+    def chat(self, messages, tools=None, temperature: float = 0.4, voice_mode: bool = False) -> LLMResponse:
+        order = [self.primary] + self.backups
+        if self._clock() < self._primary_down_until:
+            order = self.backups + [self.primary]
+        extra = {"voice_mode": True} if voice_mode else {}
+        last: Optional[LLMResponse] = None
+        for p in order:
+            try:
+                resp = p.chat(messages, tools=tools, temperature=temperature, **extra)
+            except Exception as e:  # noqa: BLE001 - providers shouldn't raise; defend anyway
+                logger.warning("Provider %s raised: %s", getattr(p, "model", p), e)
+                resp = LLMResponse(content="", ok=False)
+            if getattr(resp, "ok", True) and (resp.content or resp.tool_calls):
+                if p is self.primary:
+                    self._primary_down_until = 0.0
+                elif p is not order[0] or self._primary_down_until:
+                    logger.info("Answered by the backup model %s.", getattr(p, "model", "?"))
+                return resp
+            if p is self.primary:
+                self._primary_down_until = self._clock() + self._cooldown
+                logger.warning("Main model failed; using the backup for the next %.0f s.", self._cooldown)
+            last = resp
+        return last or LLMResponse(content="", ok=False)
+
+    def chat_stream(self, messages, tools=None, temperature: float = 0.4, voice_mode: bool = False):
+        yield from self.primary.chat_stream(messages, tools=tools, temperature=temperature, voice_mode=voice_mode)
+
+
+def _safe_available(p) -> bool:
+    try:
+        return bool(p.is_available())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _backup_providers(config: Config) -> list[LLMProvider]:
+    raw = getattr(config.llm, "backup", None)
+    items = raw if isinstance(raw, list) else ([raw] if raw else [])
+    out = []
+    for b in items:
+        try:
+            key = config.secret(b.get("api_key_env", "")) if b.get("api_key_env") else None
+            if b.get("api_key_env") and not key:
+                logger.warning("Backup model %s skipped: %s is not set in config/.env.",
+                               b.get("model"), b.get("api_key_env"))
+                continue
+            out.append(_construct_provider(b.get("provider", "openai_compatible"), model=b["model"],
+                                           base_url=b.get("base_url", ""), api_key=key,
+                                           timeout_s=int(b.get("timeout_s", 30))))
+        except Exception as e:  # noqa: BLE001 - a bad backup entry must not stop startup
+            logger.warning("Backup model entry ignored (%s): %s", b, e)
+    return out
+
+
 def build_provider(config: Config) -> LLMProvider:
     provider_name = config.llm.provider.lower()
     provider = _construct_provider(
@@ -92,6 +165,10 @@ def build_provider(config: Config) -> LLMProvider:
             "until you `ollama serve` and `ollama pull %s`.",
             config.llm.base_url, config.llm.model,
         )
+    backups = _backup_providers(config)
+    if backups:
+        logger.info("Backup model(s) ready: %s", ", ".join(getattr(b, "model", "?") for b in backups))
+        return FallbackProvider(provider, backups)
     return provider
 
 

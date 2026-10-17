@@ -34,11 +34,19 @@ class LLMConfig:
     max_history_turns: int = 12
     request_timeout_s: int = 60
     voice_num_predict: int = 96
+    # Another provider for when this one fails (e.g. Groq while Gemini is overloaded):
+    # {provider, model, base_url, api_key_env}. None = no backup.
+    backup: Optional[dict] = None
 
 
 @dataclass
 class STTConfig:
-    backend: str = "google_free"        # "google_free" | "vosk" | "faster_whisper" | "none"
+    backend: str = "google_free"        # "auto" | "groq_whisper" | "google_free" | "vosk" | "faster_whisper" | "none"
+    # "auto": Groq Whisper (most accurate) -> Google -> offline faster-whisper, in that order.
+    groq_whisper_model: str = "whisper-large-v3-turbo"
+    groq_api_key_env: str = "GROQ_API_KEY"
+    no_speech_reject: float = 0.6       # Whisper: drop a clip it thinks is probably not speech
+    offline_whisper_model: str = "base" # local fallback when there's no internet
     vosk_model_path: str = "models/vosk-model-small-en-us"
     faster_whisper_model: str = "base"  # "tiny" | "base" | "small" | "medium" | "large-v3" (faster-whisper)
     faster_whisper_compute_type: str = "float32"  # "float16" (CUDA) | "int8" | "float32"
@@ -243,6 +251,19 @@ class GodsEyeConfig:
 
 
 @dataclass
+class WorldMonitorConfig:
+    """World Monitor, self-hosted with Docker (integrations/world_monitor.py). Off by default."""
+    enabled: bool = False
+    path: str = "external/worldmonitor"
+    base_url: str = "http://localhost:3000"
+    key_env: str = "WORLDMONITOR_KEY"        # operator key; also in World Monitor's own .env
+    auto_start: bool = True                  # docker compose up -d in the background when needed
+    seed_every_minutes: float = 60           # refresh its data from public sources (0 = never)
+    max_tools: int = 40
+    tools: list[str] = field(default_factory=list)   # empty = every tool it offers
+
+
+@dataclass
 class RoutingConfig:
     """Multi-Model Routing V1. ``enabled=False`` (default) keeps VERONICA on the
     classic single-provider path — byte-identical behaviour."""
@@ -380,6 +401,7 @@ class AssistantConfig:
         "done something you have not actually done. When a tool is available for a "
         "task, you use it instead of guessing."
     )
+    tool_guide: str = ""                 # operational tool rules, kept apart from the character
     wake_phrase: str = "veronica"
     # Default city for weather/briefings. Saying "my city is X" stores one in
     # data/profile.json, which takes precedence over this.
@@ -411,6 +433,7 @@ class Config:
     coding: CodingConfig = field(default_factory=CodingConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
+    world_monitor: WorldMonitorConfig = field(default_factory=WorldMonitorConfig)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)

@@ -22,7 +22,7 @@ from veronica.llm.base import ChatMessage, LLMResponse
 from veronica.llm.routing.profiles import (
     CAP_STREAMING, CAP_TOOLS, CAP_VISION,
     COST_ORDER, REASONING_HEAVY, REASONING_LIGHT, REASONING_NONE,
-    ROLE_CODING, ROLE_FAST, ROLE_GENERAL, ROLE_REASONING, ROLE_VISION,
+    ROLE_BACKUP, ROLE_CODING, ROLE_FAST, ROLE_GENERAL, ROLE_REASONING, ROLE_VISION,
     SPEED_FAST, SPEED_MEDIUM, SPEED_SLOW,
     TASK_ANALYSIS, TASK_CHAT, TASK_CODING, TASK_GENERAL, TASK_PLANNING,
     TASK_REASONING, TASK_SUMMARIZATION, TASK_TOOL_USE, TASK_VISION,
@@ -198,7 +198,7 @@ class ModelSelection:
         """Attempt one model. Returns {'response' or None, 'meta', 'failure_content'}.
         Never raises — every failure mode is captured and recorded on health."""
         h = entry.health
-        if h.state is HealthState.UNAVAILABLE and h.method != "assumed":
+        if h.state is HealthState.UNAVAILABLE and h.method != "assumed" and not h.retry_due():
             return {"response": None, "meta": {"skipped": "unavailable"}, "failure_content": None}
 
         try:
@@ -375,9 +375,9 @@ class ModelRouter:
                 _registry=self.registry, _config=self.config,
             )
 
-        primary = ranked[0]
+        primary, rest = self._with_backups(ranked, t)
         # fallback: capability-compliant next-best models (preserves hard caps)
-        fallbacks = [e.model_id for e in ranked[1: 1 + self.config.max_fallback_attempts]]
+        fallbacks = [e.model_id for e in rest[: self.config.max_fallback_attempts]]
 
         extras: list[str] = []
         if explicit_unknown:
@@ -445,6 +445,24 @@ class ModelRouter:
                 ";".join(reason),
             )
         return sel
+
+    @staticmethod
+    def _with_backups(ranked: list[ModelEntry], t: Any) -> tuple[ModelEntry, list[ModelEntry]]:
+        """(primary, fallbacks in order). Backup-role models (another provider) come
+        FIRST among the fallbacks: when one Gemini model is overloaded the other
+        usually is too, so the next try should be a different service. While the main
+        model is in a recent outage and a backup is healthy, the backup goes first, so
+        each turn doesn't wait on a request that is about to fail."""
+        backups = [e for e in ranked if e.profile.role == ROLE_BACKUP]
+        mains = [e for e in ranked if e.profile.role != ROLE_BACKUP]
+        if not backups or not mains:
+            return ranked[0], ranked[1:]
+        heavy = getattr(t, "task_type", "") in (TASK_REASONING, TASK_CODING, TASK_ANALYSIS, TASK_PLANNING)
+        if heavy:   # thinking tasks: the stronger backup first
+            backups.sort(key=lambda e: 0 if e.profile.reasoning_class == "heavy" else 1)
+        if mains[0].health.recently_failed() and not backups[0].health.recently_failed():
+            return backups[0], backups[1:] + mains
+        return mains[0], backups + mains[1:]
 
     def _rank(self, entries: list[ModelEntry], t: Any, ctx: dict) -> list[ModelEntry]:
         """Deterministic ranking with the spec's priority order as explicit TIERS:

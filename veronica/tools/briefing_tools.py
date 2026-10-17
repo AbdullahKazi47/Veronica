@@ -45,8 +45,9 @@ class DailyBriefingTool(Tool):
 
     def __init__(self, config=None, weather_tool=None, profile: Optional[Profile] = None,
                  reminders: Optional[ReminderStore] = None, todos: Optional[TodoStore] = None,
-                 headlines=None) -> None:
+                 headlines=None, calendar=None) -> None:
         from veronica.tools.weather_tools import WeatherTool
+        self.calendar = calendar
         self.profile = profile or Profile(config)
         self.weather = weather_tool or WeatherTool(config=config, profile=self.profile)
         self.reminders = reminders or ReminderStore(config)
@@ -82,6 +83,20 @@ class DailyBriefingTool(Tool):
                      for r in today[:3]]
             parts.append(f"You have {len(today)} reminder{'s' if len(today) != 1 else ''} today: {_join(items)}.")
 
+        events_today = 0
+        if self.calendar is not None:
+            try:
+                from veronica.tools.calendar_tools import _clock
+                rest_of_day = now.replace(hour=23, minute=59)
+                evs = [e for e in self.calendar.events(now, rest_of_day) if not e.all_day]
+                events_today = len(evs)
+                if evs:
+                    items = [f"{e.title} at {_clock(e.start)}" for e in evs[:3]]
+                    more = f" and {len(evs) - 3} more" if len(evs) > 3 else ""
+                    parts.append(f"On your calendar today: {_join(items)}{more}.")
+            except Exception as e:  # noqa: BLE001 - the greeting never fails over a calendar
+                logger.warning("Briefing calendar unavailable: %s", e)
+
         todo = [t["text"] for t in self.todos.open_items()] if include_tasks else []
         if todo:
             shown = todo[:3] + ([f"{len(todo) - 3} more"] if len(todo) > 3 else [])
@@ -96,4 +111,4 @@ class DailyBriefingTool(Tool):
             parts.append("Top headlines: " + "; ".join(h.rsplit(" (", 1)[0] for h in heads) + ".")
 
         return ToolResult.ok(" ".join(parts), city=city, reminders=len(today), todos=len(todo),
-                             headlines=len(heads))
+                             headlines=len(heads), events=events_today)

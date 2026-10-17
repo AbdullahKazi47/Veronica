@@ -538,6 +538,119 @@ to the wake word so the mic isn't live forever. Set it to `0` to never time out.
   3× louder than the room (`voice.conversation_speech_ratio`) or that she's unsure of
   (`voice.conversation_min_confidence`). Commands and ending phrases always get through.
 
+### Jev, the decision layer (`core/jev.py`)
+
+Jev is a fast, structured way of deciding that sits beside VERONICA's conversational brain.
+It doesn't replace her; it only advises and never acts.
+
+| Say | What happens |
+|---|---|
+| "Jev, should I take the metro or an auto?" / "help me choose between a Pixel and an iPhone" / "compare Python and JavaScript for a beginner" | A recommendation, the score, the main reason, the main risk, and what would change the answer |
+| "Jev, why?" / "why did you pick that?" | The criteria, their weights and every score |
+| "Jev, how would you handle 'minimise all'?" | Which quick command or which model would handle it, and the backups (without running it) |
+
+How it works: the stronger model (Gemini Flash, or Groq if Gemini is down) lists the
+options, the criteria that matter with weights from 1 to 5, and a 1–10 score for each option
+on each criterion. **The ranking is computed in code as a weighted average**, so the
+recommendation always follows from the scores and the model can't simply announce a winner.
+Results within 0.5 are reported as a close call. Your remembered facts (city, preferences)
+inform the scores. The last 50 decisions are kept in `data/decisions.json`. Speech
+recognition often hears "Jev" as "Jeff" or "Chev", and those work too.
+
+### Adding a new ability by voice (`core/abilities.py`, `plugin_api.py`)
+
+Say **"add an ability for flight tracking"** (or "build a skill that tells me cricket scores").
+1. **Build.** The coding model writes one small add-on.
+2. **Safety check, before any of it runs.** Only plain-data imports and VERONICA's ability
+   toolkit are allowed. There's no file or OS access, no `eval`/`getattr`, no names starting
+   with `_`, and no `str.format`, which closes the known ways out of a Python sandbox.
+3. **Test.** Its examples run in a separate Python process with a time limit. If they fail,
+   she fixes the code and tries again, at most twice.
+4. **Report.** She tells you what it does, which websites it uses and how the tests went.
+5. **Approve.** "Activate it" asks yes/no. Nothing goes live without that.
+
+What an added ability **can** do: look things up on the internet (web GET requests only) and
+give you an answer. What it **can't** do: control your PC, read or write files, run
+programs, reach your local network or localhost, or use VERONICA's own API keys. It can
+only contact the websites it declared, and that is checked on every request, including
+redirects. Approved code is fingerprinted (SHA-256), and an ability whose file has changed
+since you approved it is refused at startup. "What abilities have you added?" lists them;
+"remove the flight tracking ability" asks, then sets the code aside in
+`data/abilities/removed/` rather than deleting it.
+
+Tested live: "flight tracking" was built in ~40 s (OpenStreetMap to find the city, OpenSky for
+the aircraft) and answered "There are 122 planes flying over London right now…".
+
+### Calendar (`integrations/calendar.py`)
+
+| Say | What happens |
+|---|---|
+| "what's on today?" / "what's on my calendar tomorrow?" / "what do I have this week?" / "anything on Friday?" | Reads the events |
+| "what's my next meeting?" | The next event |
+| "am I free tomorrow afternoon?" | Checks that time span (morning 6–12, afternoon 12–17, evening 17–22) |
+| "add dentist to my calendar tomorrow at 4 pm" / "schedule a call with Ravi on Friday at 3" | Adds it to VERONICA's own calendar, with a reminder 10 minutes before |
+| "remove dentist from my calendar" | Removes an event she added |
+| "connect my google calendar" | Explains how to set it up |
+
+The greeting when you open the laptop includes the rest of today's events.
+
+**Connecting Google Calendar (read-only):**
+1. Open Google Calendar settings, pick the calendar, and go to **Integrate calendar**.
+2. Copy the **Secret address in iCal format**.
+3. Add it to `config/.env` as `CALENDAR_ICS_URLS=<address>`, using commas to separate several
+   calendars.
+4. Restart VERONICA.
+
+That address works like a password for reading the calendar, so keep it only in `.env`.
+VERONICA reads repeating events, time zones, all-day events, skipped and moved occurrences,
+and leaves out cancelled events. She can't change your Google events (that would need a
+Google sign-in app). Events you add by voice are kept in `data/calendar.json`.
+
+### Voice self-test
+
+Say **"run a voice test"** (or "test your microphone") for a one-minute check:
+1. She measures the room's noise while you stay quiet.
+2. You say a test sentence. She reports what she heard, how sure she was, and how much
+   louder you were than the room. If you were close to the "ignore background speech" bar
+   (`voice.conversation_speech_ratio`), she offers to lower it, and only changes it if you
+   say yes.
+3. She reads a long sentence while you say "Veronica". She reports whether talk-over stopped
+   her, and how quickly.
+
+### Routines: one phrase, several commands (`core/routines.py`)
+
+| Say | What happens |
+|---|---|
+| "create a routine called good night: set an alarm for 7 am, then lock my PC" | Saves it (steps split on commas, "then", "and then") |
+| "good night" / "run work mode" / "start my leaving routine" | Runs each step in order and tells you what happened |
+| "what routines do I have?" / "what does good night do?" | Lists them / reads the steps |
+| "add mute the volume to my good night routine" / "remove step 2 from good night" | Edits it |
+| "delete the work mode routine" | Removes it |
+
+Each step is an ordinary spoken command and goes through the normal command path, so
+**every step still asks permission where it normally would**. A routine with "put the
+laptop to sleep" still asks yes/no. A routine can't start another routine. If a routine is
+named like an ending phrase ("good night"), saying it runs the routine. Stored in
+`data/routines.json`.
+
+### Backup brain: Groq (`routing.models` role `backup`, `llm.backup`)
+
+When Google's Gemini fails (its "503 overloaded" errors, or no connection), Groq answers
+instead. The key goes in `config/.env` as `GROQ_API_KEY`.
+
+- The routing chain is Gemini Flash-Lite → **Groq `openai/gpt-oss-20b`** → **Groq
+  `openai/gpt-oss-120b`** → Gemini Flash. A different service is tried before the second
+  Gemini model, because both Gemini models are usually down together.
+- After a Gemini failure, the next ~45 s of turns go **straight to Groq**, so each turn
+  doesn't wait on a request that's about to fail. Then Gemini gets another chance.
+  (Before, a model that failed twice was skipped until VERONICA restarted.)
+- Reasoning and coding tasks try the stronger 120b backup first.
+- Direct model calls (news summaries, studying, writing code) fall back to Groq too
+  (`llm.backup`).
+- Measured on this PC: Groq 20b answers in ~1.4 s, 120b in ~3.5 s, and both call
+  VERONICA's tools correctly.
+- Groq sees the same requests Gemini would, and the privacy guard scrubs them the same way.
+
 ### When Google's AI is overloaded ("503")
 
 A **503 Service Unavailable** from `generativelanguage.googleapis.com` means Google's
@@ -570,6 +683,101 @@ what's already openly reachable at the link. That also means she can't pull copy
 or shows from streaming or torrent sites; for video, ask her to open a service you have
 (Netflix, Prime, YouTube) instead. A single file over `download.max_mb` (default 2048) is
 refused; change it in the `download:` block of `config.yaml`.
+
+### Your location
+
+VERONICA asks Windows where the PC is. On a desktop without Wi-Fi or GPS positioning,
+Windows only knows it to within about 5 km, worked out from the internet connection.
+She used to name the village under that rough point ("Naganahalli", "Kokti"). Now, when
+Windows' estimate is rough (worse than 1.5 km), she says only the city, and tells you once
+how to be exact. Say **"I live in Indiranagar, Bengaluru"** (or "my area is HSR Layout"):
+she looks the area up on OpenStreetMap and saves its exact coordinates. Weather, rain
+alerts, the satellite and space views, and God's Eye's "near me" all use them.
+
+### Views of Earth (`integrations/earth_views.py`)
+
+| Say | Opens / does | Project |
+|---|---|---|
+| "show me the ISS in 3D", "track the Hubble", "open the satellite tracker" | 3D satellite and debris tracker on that object | [KeepTrack](https://github.com/thkruz/keeptrack.space) |
+| "show me a satellite view of Kerala today" | That day's real satellite image of the place | [NASA Worldview](https://github.com/nasa-gibs/worldview) |
+| "what does India look like from space today?" | Fetches NASA's image and **describes it aloud** (clouds, storms, haze, snow) | NASA GIBS + vision model |
+| "show me the wind over India", "air pollution map of Delhi", "ocean currents near Chennai", "rain map" | Live animated globe (wind, temperature, rain, clouds, humidity, pressure, currents, waves, PM2.5/PM10) | [Earth](https://github.com/cambecc/earth) (earth.nullschool.net) |
+
+Imagery uses VIIRS (wide swaths, no gaps over India). Before about 2 pm, "today" means
+yesterday's complete picture. Places are looked up at run time, and "here" means your
+saved area. Describing an image tries Gemini Flash first, then Flash-Lite, which has its
+own free quota.
+
+### World Monitor (`integrations/world_monitor.py`)
+
+[World Monitor](https://github.com/koala73/worldmonitor) is a live global intelligence
+dashboard: conflicts, military flights, ships, markets, internet outages, disasters and
+country risk. Its hosted API and MCP are paid, but **self-hosted they're free**, so it runs
+on this PC in Docker from `external/worldmonitor`, with secrets generated locally in its
+`.env`. VERONICA connects to its MCP at `http://localhost:3000/api/mcp` with the operator key
+`WORLDMONITOR_KEY` (in `config/.env`). Its tools appear as `wm_*` and are read-only, and
+"open World Monitor" shows the dashboard.
+
+Requirements: **Docker Desktop running**. Accept Docker's terms the first time you open it.
+The first start builds World Monitor's images, which is slow and happens once. VERONICA
+starts the stack in the background when needed and refreshes its data every 60 minutes
+(`world_monitor.seed_every_minutes`). It uses a few GB of disk and some RAM while running.
+Its own AI briefings need an AI key, which isn't given to it by default.
+
+### Speech recognition: Groq Whisper (`stt.backend: auto`)
+
+Measured on this PC (ElevenLabs speaking test commands with local names):
+
+| Engine | Word errors | Time |
+|---|---|---|
+| Google free (old default) | 24% | ~1.0 s |
+| Groq Whisper large-v3-turbo | 15% | ~1.0 s |
+| **Groq Whisper + vocabulary hint** (new default) | **8%** | ~0.9 s |
+| faster-whisper base, offline | 21% | ~0.6 s |
+
+`auto` uses Groq Whisper, then Google if Groq fails, then faster-whisper on the PC if
+there's no internet. The **vocabulary hint** (`speech/vocabulary.py`) is built from your own
+data: her name, Jev, your area, your routine and ability names, and the words you taught
+her. Whisper invents text for silence and noise (it gave "S.T.A.R.S." and "Rek, Bengaluru"
+in tests). Those clips are rejected by confidence score and shape before VERONICA acts, and
+the microphone stage already drops most silence and noise. Audio now goes to Groq instead
+of Google.
+
+### Live feature check (`scripts/feature_check.py`)
+
+```
+python scripts/feature_check.py
+```
+
+This builds the real VERONICA and checks every feature against the real services. The
+report goes to `data/feature_check.md`. What it does with each kind of feature:
+- **Runs** the information features: the brain (including a simulated Gemini outage handled
+  by Groq), weather, news, Wikipedia, maths, diagnostics, briefing, memory, to-dos,
+  reminders, calendar, routines, coding, Jev, privacy, self-heal, downloads (to a temp
+  folder), the voice round trip (ElevenLabs speaks, Google hears), microphone, wake word and
+  God's Eye.
+- **Routes only** anything that would change your PC (open apps or sites, volume, windows,
+  lock/sleep/shutdown, close): it checks your words reach the right command, without running
+  it.
+- **Checks permission** on destructive actions. Every permission question is answered "no"
+  automatically, so nothing destructive can run.
+- **Skips** screen, webcam and notifications, so a test never sends your personal content to
+  the cloud.
+- Removes everything it creates: a test reminder, calendar event, routine, memory fact and
+  correction.
+
+Last run: 87 passed, 0 failed, 1 skipped.
+
+### God's Eye: public cameras worldwide
+
+God's Eye shows official public road and weather cameras published as open data by
+transport authorities: the US, Canada, the UK, Finland, Norway, Estonia, Catalonia,
+Australia (NSW), and now **Hong Kong** (Transport Department, ~850 cameras), **New
+Zealand** (Waka Kotahi, ~300) and **Singapore** (LTA). Say "show me public cameras in Hong
+Kong" or "what does the traffic camera near Auckland show?". Only official public feeds are
+used, never unsecured private cameras. India has no official open camera feed yet, so there
+are no Indian cameras. To show more than the default 300 Hong Kong cameras, set
+`CCTV_HONGKONG_MAX_SOURCES` (and similar) in God's Eye's environment.
 
 ## 7. Running the tests
 

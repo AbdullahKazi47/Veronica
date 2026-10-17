@@ -50,6 +50,15 @@ logger = get_logger("core.orchestrator")
 _GREETING_RE = re.compile(r"\b(?:hi|hello)\b", re.IGNORECASE)
 
 
+def _now_line() -> str:
+    """The moment, so she can be situationally aware ("it's past midnight, boss")."""
+    import datetime as _dt
+    now = _dt.datetime.now()
+    part = ("late night" if now.hour < 5 else "morning" if now.hour < 12 else
+            "afternoon" if now.hour < 17 else "evening" if now.hour < 22 else "late night")
+    return f"[NOW] {now:%A %d %B %Y}, {now:%I:%M %p}".replace(" 0", " ") + f" ({part})."
+
+
 def _is_simple_voice_turn(text: str) -> bool:
     return bool(isinstance(text, str) and text.strip() and len(text) < 120
                 and _GREETING_RE.search(text))
@@ -1012,6 +1021,10 @@ class Orchestrator:
         persona = self.config.assistant.persona
         if persona:
             sections.append(persona)
+        guide = getattr(self.config.assistant, "tool_guide", "")
+        if guide:
+            sections.append(guide)
+        sections.append(_now_line())
         facts = self._known_facts_block()
         if facts:
             sections.append(facts)
@@ -1035,11 +1048,14 @@ class Orchestrator:
         persona = self.config.assistant.persona
         is_simple_voice_turn = _is_simple_voice_turn(text)
         if is_simple_voice_turn:
-            # Minimal voice-only path: persona + brief voice instruction only.
+            # Minimal voice-only path: the character + one style line (no tool rules).
             # Capabilities, task context, thread memory omitted intentionally for speed.
-            system_prompt = f"{persona}\n\nAnswer briefly and concisely. Confirm before any action."
+            system_prompt = f"{persona}\n\nAnswer briefly and concisely. Stay in character and talk like a person."
         else:
             system_prompt = persona
+            guide = getattr(self.config.assistant, "tool_guide", "")
+            if guide:
+                system_prompt = f"{system_prompt}\n\n{guide}"
             if self.capabilities is not None:
                 caps = self.capabilities.describe_for_prompt()
                 if caps:
@@ -1059,6 +1075,7 @@ class Orchestrator:
                     system_prompt = f"{system_prompt}\n\n{experience_context}"
         # Known facts go on every turn, simple voice turns included: "when is my
         # sister's birthday?" is short and conversational, and still needs them.
+        system_prompt = f"{system_prompt}\n\n{_now_line()}"
         facts = self._known_facts_block()
         if facts:
             system_prompt = f"{system_prompt}\n\n{facts}"

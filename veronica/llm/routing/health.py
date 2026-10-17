@@ -41,6 +41,17 @@ class ModelHealth:
     successful_calls: int = 0
     degraded_threshold: int = 1
     unavailable_threshold: int = 2
+    cooldown_s: float = 45.0      # after a failure, give the model another chance this much later
+
+    def recently_failed(self, now: Optional[float] = None) -> bool:
+        """Failed within the cooldown: route around it for now."""
+        if self.state not in (HealthState.DEGRADED, HealthState.UNAVAILABLE) or self.checked_at is None:
+            return False
+        return ((now or time.time()) - self.checked_at) < self.cooldown_s
+
+    def retry_due(self, now: Optional[float] = None) -> bool:
+        """An observed outage is temporary: after the cooldown the model may be tried again."""
+        return self.checked_at is not None and ((now or time.time()) - self.checked_at) >= self.cooldown_s
 
     def record_success(self, latency_s: Optional[float] = None) -> None:
         self.total_calls += 1

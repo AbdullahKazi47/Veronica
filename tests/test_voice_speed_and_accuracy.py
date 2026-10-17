@@ -272,7 +272,9 @@ def test_open_conversation_ignores_unclear_speech_but_keeps_commands():
     app = _app(fast_match=lambda t: t.startswith("open"))
     assert app._accept(_r("blah something", conf=0.3), open_conversation=True) is None
     assert app._accept(_r("open notepad", conf=0.3), open_conversation=True) == "open notepad"
-    assert app._accept(_r("thanks", conf=0.2, speech=30), open_conversation=True) == "thanks"   # always ends
+    # An ending phrase must be clearly the user too (regression: echoed "Thank you." ended chats)
+    assert app._accept(_r("thanks", conf=0.2, speech=30), open_conversation=True) is None
+    assert app._accept(_r("thanks", speech=300), open_conversation=True) == "thanks"
 
 
 def test_after_wake_word_unclear_speech_is_checked():
@@ -343,3 +345,17 @@ def test_capture_marks_user_speech_on_the_hub():
     stt.mic_factory = lambda chunk: Mic(levels)
     pcm, _ = stt._capture_utterance(timeout_s=2)
     assert pcm and any(seen) and stt.hub.user_speaking is False
+
+
+
+def test_doubtful_ending_phrase_does_not_end_the_conversation():
+    from veronica.speech.stt import STTResult
+    app = _app()
+    short = STTResult(success=True, text="Thank you.", stats={"ambient_rms": 20, "speech_rms": 300, "voiced_s": 0.3})
+    shaky = STTResult(success=True, text="Thank you.", stats={"ambient_rms": 20, "speech_rms": 300, "voiced_s": 0.9,
+                                                              "whisper_logprob": -0.7})
+    clear = STTResult(success=True, text="Thank you.", stats={"ambient_rms": 20, "speech_rms": 300, "voiced_s": 0.9,
+                                                              "whisper_logprob": -0.2})
+    assert app._accept(short, open_conversation=True) is None
+    assert app._accept(shaky, open_conversation=True) is None
+    assert app._accept(clear, open_conversation=True) == "Thank you."

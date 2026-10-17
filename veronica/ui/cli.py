@@ -105,6 +105,9 @@ class CLIApp:
         self.tts = TextToSpeech(config.tts, cache_dir=config.resolve_path(config.tts.cache_dir))
         self.speaker = SynchronousSpeaker(self.tts)
         self.stt = SpeechToText(config.stt, corrections=self._make_corrections()) if voice_mode else None
+        if self.stt is not None:
+            from veronica.speech.vocabulary import build_vocabulary
+            self.stt.vocabulary = lambda: build_vocabulary(config)   # spelling hint for Whisper
         self._tts_active = False  # prevents self-listening during playback
         self.hub = self._make_mic_hub() if voice_mode else None
         if self.hub is not None and self.stt is not None:
@@ -119,6 +122,8 @@ class CLIApp:
         if voice_mode:
             global _voice_confirmer
             _voice_confirmer = self._confirm_by_voice
+            from veronica.tools.voice_test_tools import set_voice_tester
+            set_voice_tester(self._voice_test)
 
     def _make_corrections(self):
         from veronica.speech.corrections import Corrections
@@ -218,7 +223,7 @@ class CLIApp:
 
                 if not text:
                     continue
-                if self.voice_mode and _ENDS_CONVERSATION.match(text):
+                if self.voice_mode and self._ends_conversation(text):
                     # Voice: "bye" / "go to sleep" / "thanks" end the conversation; she
                     # goes back to waiting for her name. She is never quit by voice, and
                     # nothing here touches the PC itself.
@@ -392,6 +397,18 @@ class CLIApp:
         return False
 
     # -- conversation mode -----------------------------------------------------------
+    def _ends_conversation(self, text: str) -> bool:
+        """An ending phrase ("thanks", "good night") — unless it is the name of one of the
+        user's routines, which then runs instead."""
+        if not _ENDS_CONVERSATION.match(text or ""):
+            return False
+        tools = getattr(getattr(self, "orchestrator", None), "tools", None)
+        routine = tools.get("run_routine") if tools is not None and hasattr(tools, "get") else None
+        try:
+            return not (routine is not None and routine.matches(text))
+        except Exception:  # noqa: BLE001
+            return True
+
     def _conversation_mode(self) -> bool:
         return bool(getattr(self.config.voice, "conversation_mode", False))
 
@@ -424,7 +441,7 @@ class CLIApp:
         if not text:
             self._status(f"[back to waiting for \"{self.config.assistant.name}\"]")
             return ""
-        if _ENDS_CONVERSATION.match(text):
+        if self._ends_conversation(text):
             self._say("Okay.")
             return ""
         return text
@@ -437,14 +454,18 @@ class CLIApp:
         self._status("[conversation — just speak; say 'thanks' or 'bye' to end]")
         while time.monotonic() < deadline:
             result = self._listen(timeout_s=6)
+            if not result.success and result.error and not result.error.startswith("No speech detected"):
+                logger.info("Conversation: nothing usable heard (%s).", result.error)
             text = self._accept(result, open_conversation=True) if result.success else None
             if not text:
                 continue                        # silence or background speech: keep it open
-            if _ENDS_CONVERSATION.match(text):
+            logger.info("Conversation: heard %r", text)
+            if self._ends_conversation(text):
                 self._say("Anytime.")
                 self._follow_up_until = 0.0
                 return ""                       # user ended it: back to the wake word
             return text
+        logger.info("Conversation ended: quiet for %s s.", getattr(self.config.voice, "conversation_idle_timeout_s", 300))
         self._status(f"[quiet for a while — back to waiting for \"{name}\"]")
         self._follow_up_until = 0.0
         return ""
@@ -492,6 +513,63 @@ class CLIApp:
             return self._accept(result, open_conversation=False) or ""
         return input("You: ")
 
+    def _voice_test(self) -> str:
+        """The guided voice check on the real mic and speaker (voice/voice_test.py)."""
+        from veronica.voice.mic_hub import rms
+        from veronica.voice.voice_test import persist_number, run_voice_test, summarize
+        hub = getattr(self, "hub", None)
+
+        def measure(seconds: float):
+            if hub is None:
+                return getattr(self.stt, "known_ambient_rms", None)
+            tap = hub.tap(320)
+            if not tap.open():
+                return None
+            levels, end = [], time.monotonic() + seconds
+            try:
+                while time.monotonic() < end:
+                    b = tap.read()
+                    if b:
+                        levels.append(rms(b))
+            finally:
+                tap.close()
+            levels.sort()
+            return levels[len(levels) // 4] if levels else None
+
+        def speak_and_watch(text: str):
+            stop = threading.Event()
+            monitor = self._start_barge_in(stop)
+            started = time.monotonic()
+            if hub is not None:
+                hub.self_speaking = True
+            try:
+                completed = self.speaker.speak_interruptible(text, stop, on_piece=monitor.arm_for if monitor else None)
+            finally:
+                if monitor is not None:
+                    monitor.stop()
+                if hub is not None:
+                    hub.self_speaking = False
+            return completed, time.monotonic() - started
+
+        can_talk_over = hub is not None and getattr(self, "wake_gate", None) is not None             and hasattr(self.speaker, "speak_interruptible")
+        ratio = float(getattr(self.config.voice, "conversation_speech_ratio", 3.0) or 3.0)
+        report = run_voice_test(say=self._say, listen=lambda: self._listen(timeout_s=8), measure_room=measure,
+                                speak_interruptible=speak_and_watch if can_talk_over else None, needed_ratio=ratio)
+        summary = summarize(report)
+        if report.suggested_ratio:
+            self._say(f"Want me to lower that bar to {report.suggested_ratio}? Say yes or no.")
+            heard = self._listen()
+            answer = parse_confirmation(heard.text if heard.success else "", PermissionLevel.SENSITIVE)
+            if answer:
+                self.config.voice.conversation_speech_ratio = report.suggested_ratio
+                saved = persist_number(self.config.resolve_path("config/config.yaml"),
+                                       "conversation_speech_ratio", report.suggested_ratio)
+                summary += (f" Done: lowered to {report.suggested_ratio}"
+                            + (" and saved in config." if saved else " for now."))
+            else:
+                summary += " I left the setting as it was."
+        return summary
+
     def _start_barge_in(self, stop: threading.Event):
         """The talk-over listener for one reply (None when unavailable or switched off)."""
         if (getattr(self, "hub", None) is None or getattr(self, "wake_gate", None) is None
@@ -527,16 +605,26 @@ class CLIApp:
                     break
         conf = getattr(result, "confidence", None)
         if open_conversation:
-            if _ENDS_CONVERSATION.match(text):
-                print(f"You: {text}")
-                return text
             stats = getattr(result, "stats", None) or {}
             ambient, speech = stats.get("ambient_rms"), stats.get("speech_rms")
             voice = getattr(self.config, "voice", None)
             ratio = float(getattr(voice, "conversation_speech_ratio", 0) or 0)
+            # The same "is this really the user?" checks apply to ending phrases: Whisper
+            # turns the echo of her own last word, or a short noise, into "Thank you." —
+            # which used to end the conversation by itself.
             if ratio and ambient and speech and speech < ambient * ratio:
                 logger.info("Ignored background speech %r (level %s vs room %s).", text, speech, ambient)
                 return None
+            if self._ends_conversation(text):
+                voiced = stats.get("voiced_s")
+                logprob = stats.get("whisper_logprob")
+                if (voiced is not None and voiced < 0.45) or (logprob is not None and logprob < -0.5):
+                    logger.info("Ignored a doubtful ending phrase %r (voiced %ss, whisper score %s).",
+                                text, voiced, logprob)
+                    return None
+                print(f"You: {text}")
+                logger.info("Conversation ended by the user: %r", text)
+                return text
             floor = float(getattr(voice, "conversation_min_confidence", 0) or 0)
             if floor and conf is not None and conf < floor and not matches(text):
                 logger.info("Ignored unclear speech %r (confidence %.2f).", text, conf)

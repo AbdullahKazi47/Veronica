@@ -235,6 +235,11 @@ class ScreenshotTool(Tool):
         self.config = config
         self.out_dir = config.resolve_path("data/screenshots") if config else Path("data/screenshots")
 
+    def matches(self, text: str) -> bool:
+        return bool(re.match(r"^\s*(?:please\s+)?(?:take|grab|capture|save)\s+(?:a\s+|the\s+)?"
+                             r"(?:screen\s*shot|screen\s+capture|picture\s+of\s+(?:my\s+|the\s+)?screen)\s*[.!]?\s*$",
+                             text, re.I))
+
     def run(self, **kwargs: Any) -> ToolResult:
         try:
             import pyautogui
