@@ -243,9 +243,8 @@ def register_world_monitor(registry, config) -> Optional[WorldMonitorService]:
             logger.warning("World Monitor not connected (%s): %s", service.status, e)
             return
         added = 0
-        for spec in specs[: int(getattr(wcfg, "max_tools", 40))]:
-            if allowed and spec.get("name") not in allowed:
-                continue
+        chosen = [sp for sp in specs if not allowed or sp.get("name") in allowed]   # filter first, then cap
+        for spec in chosen[: int(getattr(wcfg, "max_tools", 40))]:
             tool = WorldMonitorTool(service.client, spec)
             if registry.get(tool.name) is None:
                 registry.register(tool)
