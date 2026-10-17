@@ -192,16 +192,43 @@ def _detect_location() -> Optional[dict]:
     return {"name": city, "via": "your internet connection"} if city else None
 
 
+def _gps_fix():
+    from veronica.integrations.gps import current_fix
+    return current_fix()
+
+
 class Profile:
     """User facts VERONICA needs to act on by default (home city). Order: what the user
     said by voice > config `assistant.home_city` > detected from the IP (only when
     `assistant.auto_detect_location` is on; cached for a week)."""
 
-    def __init__(self, config=None, detector=None) -> None:
+    def __init__(self, config=None, detector=None, gps=None, namer=None) -> None:
         self.config = config
         self._store = _JsonStore(_data_path(config, "profile.json"), {})
         # detector() -> {'name', 'lat'?, 'lon'?, 'via'} or a plain city string (tests)
         self._detector = detector or _detect_location
+        self._gps = gps or _gps_fix              # () -> a fresh gps.Fix or None
+        self._namer = namer or _place_name
+        self._gps_names: dict[tuple[int, int], str] = {}
+
+    def gps_place(self) -> Optional[tuple[str, float, float, float]]:
+        """(place, lat, lon, accuracy) from a live GPS fix, or None. A real GPS is where the
+        user is right now, so it beats every other source. Names are looked up once per
+        ~1 km square."""
+        try:
+            fix = self._gps()
+        except Exception:  # noqa: BLE001
+            fix = None
+        if fix is None:
+            return None
+        cell = (round(fix.lat * 100), round(fix.lon * 100))
+        name = self._gps_names.get(cell)
+        if name is None:
+            name = self._namer(fix.lat, fix.lon, fix.accuracy_m)
+            if not name:
+                return None
+            self._gps_names[cell] = name
+        return name, fix.lat, fix.lon, fix.accuracy_m
 
     def _assistant(self, field: str, default=None):
         return getattr(getattr(self.config, "assistant", None), field, default)
@@ -210,6 +237,9 @@ class Profile:
         return self.city_and_source()[0]
 
     def city_and_source(self) -> tuple[Optional[str], str]:
+        live = self.gps_place()
+        if live:
+            return live[0], "gps"
         data = self._store.load()
         if data.get("home_city"):
             return data["home_city"], "user"
@@ -234,6 +264,9 @@ class Profile:
     def detected_coords(self) -> Optional[tuple[float, float]]:
         """Coordinates for 'here': the area the user told me (looked up when they said it),
         else Windows location. None when only a city name is known."""
+        live = self.gps_place()
+        if live:
+            return live[1], live[2]
         city, source = self.city_and_source()
         data = self._store.load()
         if source == "user" and data.get("home_lat") is not None and data.get("home_lon") is not None:

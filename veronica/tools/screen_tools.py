@@ -51,15 +51,25 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
     instruction for this kind of image (screen by default; the webcam passes its own)."""
     system = system or _SYSTEM
     llm = getattr(config, "llm", None)
+    local = _local_vision(config, system)
     if llm is None or llm.provider != "openai_compatible":
-        return None
+        return local
     key = config.secret(llm.api_key_env)
     model = getattr(llm, "vision_model", None) or llm.model
     if not key:
-        return None
+        return local
     base = llm.base_url.rstrip("/")
 
     def ask(question: str, jpeg: bytes) -> str:
+        try:
+            return cloud(question, jpeg)
+        except Exception as e:  # noqa: BLE001 - no internet or every cloud model busy
+            if local is None:
+                raise
+            logger.info("Cloud vision failed (%s); asking the model on this PC.", type(e).__name__)
+            return local(question, jpeg)
+
+    def cloud(question: str, jpeg: bytes) -> str:
         import requests
         from veronica.safety import privacy
         question = privacy.get_guard().scrub_text(question)   # the image itself can't be scrubbed
@@ -87,6 +97,27 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
             logger.info("Vision model %s busy (%s); trying the next one.", which, resp.status_code)
         resp.raise_for_status()
         return ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    return ask
+
+
+def _local_vision(config, system: str) -> Optional[Callable[[str, bytes], str]]:
+    """The vision model on this PC (Ollama), used when the cloud one can't answer. The image
+    never leaves the computer this way."""
+    llm = getattr(config, "llm", None)
+    model = getattr(llm, "offline_vision_model", None) if llm is not None else None
+    if not model:
+        return None
+    base = (getattr(llm, "offline_base_url", None) or "http://localhost:11434").rstrip("/")
+
+    def ask(question: str, jpeg: bytes) -> str:
+        import requests
+        resp = requests.post(f"{base}/api/chat", timeout=90, json={
+            "model": model, "stream": False, "think": False, "options": {"temperature": 0.2},
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": question,
+                          "images": [base64.b64encode(jpeg).decode("ascii")]}]})
+        resp.raise_for_status()
+        return ((resp.json().get("message") or {}).get("content") or "").strip()
     return ask
 
 

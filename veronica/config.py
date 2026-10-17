@@ -26,6 +26,9 @@ DEFAULT_ENV_PATH = PROJECT_ROOT / "config" / ".env"
 class LLMConfig:
     provider: str = "ollama"            # "ollama" | "openai_compatible" | "anthropic" | "echo"
     vision_model: Optional[str] = None  # model for "what's on my screen" (default: model)
+    # A vision model on this PC (Ollama) for when the cloud one can't be reached. None = off.
+    offline_vision_model: Optional[str] = None
+    offline_base_url: str = "http://localhost:11434"
     anthropic_effort: str = "low"       # Claude only: low | medium | high | xhigh | max (low = fastest)
     model: str = "llama3.1:8b"
     base_url: str = "http://localhost:11434"
@@ -169,7 +172,7 @@ class ModelEntryConfig:
     """One routable model as declared in config.yaml under ``routing.models``."""
     model_id: str
     provider: str                        # "ollama" | "openai_compatible" | "echo"
-    role: str = "general"                # general | fast | reasoning | coding | vision
+    role: str = "general"                # general | fast | reasoning | coding | vision | backup | offline
     capabilities: tuple[str, ...] = ()   # extensible (e.g. ("tools", "vision"))
     task_types: tuple[str, ...] = ()     # empty = general-purpose
     context_window: int = 8192
@@ -252,6 +255,33 @@ class GodsEyeConfig:
     auto_start: bool = True                  # start the app's server hidden when VERONICA starts
     default_radius_km: float = 100.0         # "planes over me" = within this distance
     tools: list[str] = field(default_factory=lambda: list(_GODS_EYE_DEFAULT_TOOLS))
+
+
+@dataclass
+class Mem0Config:
+    """Mem0 (memory/mem0_memory.py): facts picked up from conversation. Off unless config.yaml turns it on."""
+    enabled: bool = False
+    model: Optional[str] = None     # None = llm.model (Flash-Lite)
+    recall_k: int = 5
+
+
+@dataclass
+class BrowserAgentConfig:
+    """browser-use (integrations/browser_agent.py): web tasks in VERONICA's own browser."""
+    enabled: bool = True
+    headless: bool = False          # False = you can watch her browse
+    model: Optional[str] = None     # None = llm.model (Flash-Lite: one call per step)
+    max_steps: int = 25
+
+
+@dataclass
+class GpsConfig:
+    """GPS (integrations/gps.py): a USB GPS found on a COM port, or the user's phone sending
+    NMEA over UDP (turned on by voice) or serving it over TCP ("host:port")."""
+    enabled: bool = True
+    scan_serial: bool = True
+    udp_port: int = 10110
+    tcp: str = ""
 
 
 @dataclass
@@ -438,6 +468,9 @@ class Config:
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
     world_monitor: WorldMonitorConfig = field(default_factory=WorldMonitorConfig)
+    gps: GpsConfig = field(default_factory=GpsConfig)
+    browser_agent: BrowserAgentConfig = field(default_factory=BrowserAgentConfig)
+    mem0: Mem0Config = field(default_factory=Mem0Config)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)

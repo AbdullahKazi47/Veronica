@@ -22,7 +22,7 @@ from veronica.logging_setup import get_logger
 logger = get_logger("llm.routing.builder")
 
 # Validate our task/role vocabulary against what role names are legal.
-_ALLOWED_ROLES = {"general", "fast", "reasoning", "coding", "vision", "backup"}
+_ALLOWED_ROLES = {"general", "fast", "reasoning", "coding", "vision", "backup", "offline"}
 
 
 @dataclass

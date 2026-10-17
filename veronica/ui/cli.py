@@ -208,6 +208,23 @@ class CLIApp:
         threading.Thread(target=self._announce_reminders, name="reminder-announcer", daemon=True).start()
         # Locating via Windows can take ~10 s the first time; do it now, not on the first question.
         threading.Thread(target=self._warm_location, name="locate", daemon=True).start()
+        try:
+            from veronica.memory.mem0_memory import get_mem0
+            mem = get_mem0(self.config)
+            if mem is not None:
+                mem.warm()
+        except Exception:  # noqa: BLE001 - Mem0 is optional
+            pass
+        try:
+            from veronica.integrations.browser_agent import set_announcer
+            set_announcer(self._announce_browser)
+        except Exception:  # noqa: BLE001 - browser-use is optional
+            pass
+        try:
+            from veronica.integrations.gps import start_gps
+            start_gps(self.config)               # a USB GPS or the phone, if there is one
+        except Exception:  # noqa: BLE001 - GPS is optional
+            logger.exception("Couldn't start GPS.")
         from veronica.core.background import BackgroundTasks
         self.background = BackgroundTasks(self.orchestrator, self._announce_task,
                                           store_path=self.config.resolve_path("data/background_tasks.json"))
@@ -321,6 +338,13 @@ class CLIApp:
             self._status(f"[background] started: {task}")
             return "On it. I'll work on that in the background and tell you when it's done."
         return None
+
+    def _announce_browser(self, text: str) -> None:
+        while self._capturing.is_set() and not self._stop.is_set():
+            time.sleep(0.2)  # never talk over the user's own capture
+        self._status("[browser] done")
+        self._beep()
+        self._say(text)
 
     def _announce_task(self, task) -> None:
         while self._capturing.is_set() and not self._stop.is_set():

@@ -82,6 +82,7 @@ llm:
   provider: "openai_compatible"   # "ollama" (local, free, default) | "openai_compatible" | "echo" (tests)
   model: "gemini-3.5-flash-lite"
   vision_model: "gemini-3.5-flash"   # reads your screen on request ("what's on my screen?")
+  offline_vision_model: "qwen3.5:0.8b"   # on this PC, used when cloud vision can't be reached (moondream also works)
   base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
   api_key_env: "GEMINI_API_KEY"   # key lives in config/.env; only read if provider is openai_compatible
   # Backup for direct model calls (news summaries, studying, writing code) when Gemini fails.
@@ -170,6 +171,21 @@ routing:
       base_url: "https://api.groq.com/openai/v1"
       api_key_env: "GROQ_API_KEY"
       timeout_s: 30
+    # Offline brain: a small model on this PC (Ollama), tried only after every cloud model
+    # has failed (no internet, both services down). Short prompt, no tools, so it answers in
+    # a few seconds on this CPU; she says she can't do actions until the connection is back.
+    - model_id: "qwen3.5:0.8b"
+      provider: "ollama"
+      role: "offline"
+      priority: 90
+      speed_class: "fast"
+      reasoning_class: "none"
+      cost_class: "local"
+      supports_tools: false
+      supports_streaming: false
+      context_window: 32768
+      base_url: "http://localhost:11434"
+      timeout_s: 60
 # Original commented example kept below for reference:
 # routing:
 #   enabled: true
@@ -465,3 +481,26 @@ proactive:
   break_after_minutes: 120
   quiet_start_hour: 23
   quiet_end_hour: 7
+
+# Mem0 (github.com/mem0ai/mem0): facts picked up from ordinary conversation ("I prefer tea",
+# "my exam is on Friday"), kept on this PC in data/mem0/. Gemini Flash-Lite writes the facts
+# and Gemini embeddings search them; text passes the privacy guard, secrets are never stored.
+mem0:
+  enabled: true
+  recall_k: 5
+
+# browser-use (github.com/browser-use/browser-use): "use the browser to find ...". Her OWN
+# browser profile (no logins), never signs in, buys, books, sends or submits anything.
+browser_agent:
+  enabled: true
+  headless: false        # you can watch her browse
+  max_steps: 25
+
+# GPS: this laptop has none. A USB GPS (NMEA on a COM port) is found automatically; say
+# "use my phone as GPS" to receive a phone app's NMEA over UDP on udp_port; or set
+# tcp: "phone-ip:port" for an app that serves NMEA over TCP.
+gps:
+  enabled: true
+  scan_serial: true
+  udp_port: 10110
+  tcp: ""

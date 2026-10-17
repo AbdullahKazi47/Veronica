@@ -50,12 +50,24 @@ def _first_person_to_second(text: str) -> str:
 
 
 class _MemoryToolBase(Tool):
-    def __init__(self, config=None, memory: Optional[LongTermMemory] = None) -> None:
+    def __init__(self, config=None, memory: Optional[LongTermMemory] = None, mem0=None) -> None:
+        self.config = config
+        self._mem0_override = mem0
         if memory is None:
             path = config.resolve_path(config.memory.long_term_path) if config else None
             from pathlib import Path
             memory = LongTermMemory(path or Path("data/memory.json"))
         self.memory = memory
+
+    def mem0(self):
+        """Facts picked up from conversation (Mem0), or None when that is off."""
+        if self._mem0_override is not None:
+            return self._mem0_override
+        try:
+            from veronica.memory.mem0_memory import get_mem0
+            return get_mem0(self.config)
+        except Exception:  # noqa: BLE001
+            return None
 
 
 # Not "remember to ..." (a task) or "remember when/what ..." (a question).
@@ -119,6 +131,14 @@ class RecallMemoryTool(_MemoryToolBase):
 
     def run(self, topic: str = "", **kwargs: Any) -> ToolResult:
         facts = self.memory.search(topic) if topic else self.memory.all_facts()
+        mem = self.mem0()
+        noticed = (mem.recall(topic, k=6) if topic else [m.get("memory", "") for m in mem.all(limit=6)]) if mem else []
+        noticed = [n for n in noticed if n]
+        if noticed:
+            told = "; ".join(_first_person_to_second(str(f.value)) for f in facts[:5])
+            return ToolResult.ok(((f"You asked me to remember: {told}. " if told else "")
+                                  + "From our conversations I've noted: " + "; ".join(noticed) + "."),
+                                 count=len(facts) + len(noticed))
         if not facts:
             return ToolResult.ok(f"I don't have anything saved{' about ' + topic if topic else ''} yet. "
                                  "Say 'remember that ...' to teach me.", count=0)
@@ -166,10 +186,14 @@ class ForgetFactTool(_MemoryToolBase):
         if not (which or "").strip():
             return ToolResult.fail("What should I forget?")
         hit = self._find(which)
-        if hit is None:
+        mem = self.mem0()
+        noticed = mem.forget_matching(which) if mem else []
+        if hit is None and not noticed:
             return ToolResult.fail(f"I don't have anything saved about {which}.")
-        self.memory.forget(hit.key)
-        return ToolResult.ok(f"Forgotten: {_first_person_to_second(str(hit.value))}.", key=hit.key)
+        gone = ([_first_person_to_second(str(hit.value))] if hit is not None else []) + noticed
+        if hit is not None:
+            self.memory.forget(hit.key)
+        return ToolResult.ok("Forgotten: " + "; ".join(gone) + ".", key=hit.key if hit is not None else "")
 
 
 class ForgetAllMemoriesTool(_MemoryToolBase):
@@ -185,5 +209,7 @@ class ForgetAllMemoriesTool(_MemoryToolBase):
         facts = self.memory.all_facts()
         for f in facts:
             self.memory.forget(f.key)
-        return ToolResult.ok(f"Done. I've forgotten all {len(facts)} thing{'s' if len(facts) != 1 else ''} I knew about you.",
-                             count=len(facts))
+        mem = self.mem0()
+        n = len(facts) + (mem.forget_all() if mem else 0)
+        return ToolResult.ok(f"Done. I've forgotten all {n} thing{'s' if n != 1 else ''} I knew about you.",
+                             count=n)

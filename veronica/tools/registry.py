@@ -176,6 +176,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.news_tools import NewsTool, ShowNewsTool
     from veronica.tools.notification_tools import ReadNotificationsTool
     from veronica.tools.screen_tools import LookAtScreenTool
+    from veronica.tools.gps_tools import UsePhoneGpsTool, WhereAmITool
     from veronica.tools.productivity_tools import (
         CancelReminderTool,
         ListRemindersTool,
@@ -252,6 +253,9 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
             register_world_monitor(registry, config)      # tools appear once its Docker stack answers
         except Exception:  # noqa: BLE001 - never block start-up
             logger.exception("World Monitor registration failed.")
+        from veronica.integrations import browser_agent
+        if getattr(config.browser_agent, "enabled", True) and browser_agent.available():
+            registry.register(browser_agent.BrowserTaskTool(config=config))
     for tool in (
         # Voice productivity first: their fast-path phrases ("remind me in 10 minutes to
         # check the weather") must win over the generic weather/time/calc matchers.
@@ -267,6 +271,8 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         CancelReminderTool(config=config, store=reminders),
         TodoTool(config=config, store=todos),
         SetHomeCityTool(config=config, profile=profile),
+        UsePhoneGpsTool(config=config),
+        WhereAmITool(config=config, profile=profile),
         SpeechCorrectionTool(config=config),    # 'when I say X I mean Y' (before forget tools)
         ForgetTopicTool(config=config),         # before ForgetFact: 'forget what you learned about X'
         ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'

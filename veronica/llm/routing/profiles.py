@@ -49,9 +49,12 @@ ROLE_VISION = "vision"
 # A model from a DIFFERENT provider kept for when the main ones fail (e.g. Groq while
 # Google's Gemini is overloaded). Never the first choice while the main models work.
 ROLE_BACKUP = "backup"
+# A small model on this PC (Ollama) for when every cloud model fails or the internet is
+# down. Never chosen by routing; tried last, with a short prompt and no tools.
+ROLE_OFFLINE = "offline"
 
 ALL_ROLES = frozenset({
-    ROLE_GENERAL, ROLE_FAST, ROLE_REASONING, ROLE_CODING, ROLE_VISION, ROLE_BACKUP,
+    ROLE_GENERAL, ROLE_FAST, ROLE_REASONING, ROLE_CODING, ROLE_VISION, ROLE_BACKUP, ROLE_OFFLINE,
 })
 
 # Qualitative classes used for deterministic ranking (never a probe).
@@ -152,7 +155,7 @@ __all__ = [
     "TASK_TOOL_USE", "TASK_VISION", "TASK_ANALYSIS", "TASK_SUMMARIZATION",
     "ALL_TASK_TYPES",
     "CAP_TOOLS", "CAP_VISION", "CAP_STREAMING", "ALL_CAPABILITIES",
-    "ROLE_GENERAL", "ROLE_FAST", "ROLE_REASONING", "ROLE_CODING", "ROLE_VISION", "ROLE_BACKUP",
+    "ROLE_GENERAL", "ROLE_FAST", "ROLE_REASONING", "ROLE_CODING", "ROLE_VISION", "ROLE_BACKUP", "ROLE_OFFLINE",
     "ALL_ROLES",
     "SPEED_FAST", "SPEED_MEDIUM", "SPEED_SLOW",
     "REASONING_NONE", "REASONING_LIGHT", "REASONING_HEAVY",

@@ -22,7 +22,7 @@ from veronica.llm.base import ChatMessage, LLMResponse
 from veronica.llm.routing.profiles import (
     CAP_STREAMING, CAP_TOOLS, CAP_VISION,
     COST_ORDER, REASONING_HEAVY, REASONING_LIGHT, REASONING_NONE,
-    ROLE_BACKUP, ROLE_CODING, ROLE_FAST, ROLE_GENERAL, ROLE_REASONING, ROLE_VISION,
+    ROLE_BACKUP, ROLE_CODING, ROLE_OFFLINE, ROLE_FAST, ROLE_GENERAL, ROLE_REASONING, ROLE_VISION,
     SPEED_FAST, SPEED_MEDIUM, SPEED_SLOW,
     TASK_ANALYSIS, TASK_CHAT, TASK_CODING, TASK_GENERAL, TASK_PLANNING,
     TASK_REASONING, TASK_SUMMARIZATION, TASK_TOOL_USE, TASK_VISION,
@@ -32,6 +32,34 @@ from veronica.llm.routing.registry import ModelEntry, ModelRegistry
 from veronica.logging_setup import get_logger
 
 logger = get_logger("llm.routing.router")
+
+# What the offline model is told on top of her character: it is small, has no tools and
+# no internet, and must say so rather than pretend to have done something.
+OFFLINE_NOTE = (
+    "[OFFLINE] The cloud models can't be reached right now, so you are running on a small "
+    "model on this PC with no internet and no tools. Keep replies short. You can talk, "
+    "explain and answer from what you know; you cannot open, search, check or change "
+    "anything right now. If asked to, say plainly that you need the connection back for "
+    "that. Never claim you did something.")
+_OFFLINE_SYSTEM_CHARS = 2400
+_OFFLINE_TURNS = 6
+
+
+def offline_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """A short prompt a small local model can read quickly: the start of the system prompt
+    (her character), the offline note, and the last few plain turns. Tool calls and tool
+    results are left out because the offline model has no tools."""
+    system = next((m.content for m in messages if m.role == "system" and isinstance(m.content, str)), "")
+    head, size = [], 0
+    for part in system.split("\n\n"):
+        if head and size + len(part) > _OFFLINE_SYSTEM_CHARS:
+            break
+        head.append(part)
+        size += len(part) + 2
+    turns = [m for m in messages if m.role in ("user", "assistant")
+             and isinstance(m.content, str) and m.content.strip()]
+    out = [ChatMessage(role="system", content="\n\n".join(head + [OFFLINE_NOTE]).strip())]
+    return out + [ChatMessage(role=m.role, content=m.content) for m in turns[-_OFFLINE_TURNS:]]
 
 # Task type -> preferred roles, most-preferred first. Config role tags beat nothing,
 # but explicit task_types on a profile beat the role heuristic (they are more specific).
@@ -167,6 +195,23 @@ class ModelSelection:
             if attempt.get("failure_content"):
                 last_failure_content = attempt["failure_content"]
 
+        # Every cloud model failed: the small model on this PC, with no tools.
+        for entry in self._offline_entries():
+            # voice_mode turns the model's "thinking" off: on this CPU a thinking reply
+            # takes over a minute, a plain one a few seconds.
+            attempt = self._try_one(entry, offline_messages(messages), None, temperature, cfg,
+                                    len(attempts), voice_mode=True)
+            attempts.append({"model_id": entry.model_id, "position": len(attempts), "offline": True,
+                             **attempt["meta"]})
+            if attempt["response"] is not None:
+                resp = attempt["response"]
+                logger.info("Answered by the offline model %s.", entry.model_id)
+                routing = dict(self.to_metadata())
+                routing.update({"attempts": attempts, "used_fallback": True, "fallback_used": True,
+                                "offline": True, "succeeded": True})
+                return RoutedResponse(content=resp.content, tool_calls=[], raw=resp.raw, ok=True,
+                                      routing=routing, succeeded=True)
+
         # Everything failed → controlled error. No fabricated success.
         if last_failure_content:
             content = last_failure_content
@@ -238,6 +283,11 @@ class ModelSelection:
 
         h.record_success(latency_s=latency)
         return {"response": response, "meta": {"latency_s": round(latency, 3)}, "failure_content": None}
+
+    def _offline_entries(self) -> list[ModelEntry]:
+        if self._registry is None:
+            return []
+        return [e for e in self._registry.list() if e.profile.role == ROLE_OFFLINE and e.profile.enabled]
 
     def _unsatisfied_response(self) -> "RoutedResponse":
         return RoutedResponse(
@@ -343,7 +393,8 @@ class ModelRouter:
         # (3) context requirements (context_window fit)
         need = getattr(t, "estimated_context_size", 0) or 0
 
-        candidates = [e for e in self.registry.list() if e.profile.enabled]
+        candidates = [e for e in self.registry.list()
+                      if e.profile.enabled and e.profile.role != ROLE_OFFLINE]
         if hard_caps:
             compliant = [e for e in candidates if all(e.profile.has_capability(c) for c in hard_caps)]
             if not compliant:
