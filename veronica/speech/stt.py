@@ -1,5 +1,8 @@
 """
-Speech-to-text, behind one interface with three backends:
+Speech-to-text, behind one interface with several backends:
+  - "auto" (recommended): offline Whisper on this PC first, then a cloud engine only when
+    the offline read doubts itself. See SpeechToText._engines for the order and the
+    measurements behind it, and _second_opinion for when a clip is allowed off this PC.
   - "google_free": speech_recognition's free Google Web Speech endpoint (no API key,
     needs internet). This is what Prodigy-AI/J.A.R.V.I.S use, generalized behind a
     real interface instead of being called ad-hoc from a GUI callback.
@@ -104,6 +107,13 @@ class SpeechToText:
         self.corrections = corrections            # speech/corrections.py, applied to every transcript
         # Words to expect (her name, your area, routine names...): a hint for Whisper, set by the CLI.
         self.vocabulary: Optional[Callable[[], str]] = None
+        # Only these terms may convict a transcript of parroting the hint. Unset = the
+        # whole hint, which is right when it is just a few rare names; once app names are
+        # in it, pass the narrower set or real commands get rejected as echoes.
+        self.echo_terms: Optional[Callable[[], str]] = None
+        # "does this name a program I can't find?" — the signal that a transcript is
+        # worth a second opinion. Injected so this module needn't know about app lookup.
+        self.unknown_target: Optional[Callable[[str], bool]] = None
 
     # -- shared microphone capture (Phase 11F) ---------------------------------------
     def _capture_utterance(self, timeout_s: float) -> tuple[Optional[bytes], str]:
@@ -238,41 +248,140 @@ class SpeechToText:
         return self._listen_google_free(timeout_s)
 
     # -- "auto": capture once, then the most accurate engine that answers ---------
+    def _engines(self) -> list:
+        """The recognizers to try, best first.
+
+        Measured on this PC over identical clips (Windows SAPI, 16 kHz mono; real room
+        audio is harder, so these are only useful against each other):
+
+            offline Whisper base   2.9% word errors   1.2 s   free, no internet
+            Gemini Flash-Lite      1.3%               1.9 s   free daily quota, cloud
+            Google Web Speech     10.4%               1.3 s   free, cloud
+            Groq whisper-v3-turbo  8%         5.4 s   free quota, cloud, comes and goes
+
+        Offline leads: it is free, needs no internet, keeps your voice on this PC, and is
+        already three times more accurate than Google. Gemini is more accurate still but
+        spends a limited daily quota and sends the clip off this PC, so it is kept for the
+        second opinion (see _second_opinion) rather than every sentence. Google is last
+        because it drops whole words — it heard "Veronica, ask Jev whether the bus from
+        Bhatkal..." as "Veronica asked whether the bus from Badkal...", losing both the
+        verb and the tool name.
+
+        Groq sits second, ahead of the other cloud engines, but is not depended on: for a
+        day every request from this network answered 404 — unauthenticated ones too, so it
+        was not the key — and then it simply started working again. Its 8% is from an
+        earlier clip set, not the one above, so treat it as "roughly between offline and
+        Google" rather than a comparable number. Being a rung that sometimes vanishes is
+        exactly why offline leads instead.
+
+        Each engine carries a label, and callers key on the label rather than on the
+        function: `self._recognize_local_whisper` builds a *new* bound method on every
+        attribute access, so `engine is self._recognize_local_whisper` is never true and
+        anything gated on that comparison silently never runs.
+        """
+        if self.config.backend == "groq_whisper":        # explicitly asked for Groq only
+            return [("groq", self._recognize_groq_whisper)] if self._groq_key() else []
+        engines = [("offline", self._recognize_local_whisper)]
+        if self._groq_key():
+            engines.append(("groq", self._recognize_groq_whisper))
+        if self._gemini_key():
+            engines.append(("gemini", self._recognize_gemini))
+        engines.append(("google", self._recognize_google_pcm))
+        return engines
+
     def _listen_chain(self, timeout_s: int) -> STTResult:
-        """Groq Whisper (with a vocabulary hint) -> Google -> offline faster-whisper.
-        Measured on this PC: 8% / 24% / 21% word errors, all about a second."""
         pcm, err = self._capture_utterance(timeout_s)
         stats = dict(self.last_capture_stats)
         if pcm is None:
             return STTResult(success=False, error=err, stats=stats)
         pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
-        engines = [self._recognize_groq_whisper] if self._groq_key() else []
-        if self.config.backend == "auto":
-            engines += [self._recognize_google_pcm, self._recognize_local_whisper]
         last = STTResult(success=False, error="No speech recognizer is available.")
-        for engine in engines:
+        for name, engine in self._engines():
             try:
                 result = engine(pcm)
             except Exception as e:  # noqa: BLE001 - try the next engine
-                logger.info("Speech engine %s failed: %s", engine.__name__, e)
+                logger.info("Speech engine %s failed: %s", name, e)
                 continue
             result.stats = {**stats, **(result.stats or {})}
-            if result.success or result.error.startswith("Not speech"):
+            if result.success:
+                better = self._second_opinion(name, result, pcm)
+                if better is not None:
+                    better.stats = {**stats, **(better.stats or {})}
+                    return better
+                return result
+            if result.error.startswith("Not speech"):
                 return result              # a clear "not speech" is an answer, not an outage
             last = result
         return last
 
-    def _groq_key(self) -> str:
+    def _why_escalate(self, result: STTResult) -> str:
+        """Why this offline read needs checking against the cloud ("" = it doesn't).
+
+        Two different signals, because one is not enough. Whisper's own log-probability
+        catches the clips it struggled with, but it is confidently wrong about names: on
+        this PC "close Chrome" came back as "close Crow" at -0.50, "open Notepad" as "open
+        NodePad" at -0.28 — both above any bar that would not escalate half of all speech.
+        What those have in common is not low confidence, it is naming a program that does
+        not exist. So an unresolvable target is its own reason to ask again.
+        """
+        bar = float(getattr(self.config, "escalate_below_logprob", 0.0) or 0.0)
+        score = (result.stats or {}).get("whisper_logprob")
+        if bar and score is not None and score < bar:
+            return f"unsure (score {score:.2f})"
+        if callable(getattr(self, "unknown_target", None)):
+            try:
+                if self.unknown_target(result.text):
+                    return "named a program I couldn't find"
+            except Exception:  # noqa: BLE001 - never force a cloud call on a broken lookup
+                return ""
+        return ""
+
+    def _second_opinion(self, engine: str, result: STTResult, pcm: bytes) -> Optional[STTResult]:
+        """A cloud re-read when the offline one looks wrong, else None.
+
+        A misheard word in a command costs more than one cloud request, but a request on
+        every sentence would spend the day's free quota by mid-morning and send all of your
+        speech to Google. Only the clips that look wrong leave this PC — see _why_escalate.
+
+        `engine` is the label from _engines, not the function: bound methods compare unequal
+        to themselves, so an identity check here would disable escalation entirely.
+        """
+        if engine != "offline" or not self._gemini_key():
+            return None
+        why = self._why_escalate(result)
+        if not why:
+            return None
+        try:
+            second = self._recognize_gemini(pcm)
+        except Exception as e:  # noqa: BLE001 - the offline read still stands
+            logger.info("Second opinion failed: %s", e)
+            return None
+        if not second.success or second.text.strip().lower() == result.text.strip().lower():
+            return None
+        logger.info("Offline read %r %s; used the cloud read %r instead",
+                    result.text, why, second.text)
+        second.stats = {**(second.stats or {}),
+                        "whisper_logprob": (result.stats or {}).get("whisper_logprob"),
+                        "escalated_from": result.text, "escalated_because": why}
+        return second
+
+    def _secret(self, env_name: str) -> str:
+        """An API key from the environment, falling back to config/.env."""
         import os
-        name = getattr(self.config, "groq_api_key_env", "GROQ_API_KEY")
-        key = os.environ.get(name, "")
+        key = os.environ.get(env_name, "")
         if not key:
             try:
                 from veronica.config import load_config
-                key = load_config().secret(name) or ""
-            except Exception:  # noqa: BLE001
+                key = load_config().secret(env_name) or ""
+            except Exception:  # noqa: BLE001 - no key is a normal state, not an error
                 key = ""
         return key
+
+    def _groq_key(self) -> str:
+        return self._secret(getattr(self.config, "groq_api_key_env", "GROQ_API_KEY"))
+
+    def _gemini_key(self) -> str:
+        return self._secret(getattr(self.config, "gemini_api_key_env", "GEMINI_API_KEY"))
 
     def _recognize_groq_whisper(self, pcm: bytes) -> STTResult:
         import io
@@ -316,7 +425,8 @@ class SpeechToText:
             if no_speech >= float(getattr(self.config, "no_speech_reject", 0.6) or 0.6):
                 return STTResult(success=False, error=f"Not speech (no-speech score; heard {text!r}).")
             logprob = sum(float(seg.get("avg_logprob", 0) or 0) for seg in segments) / len(segments)
-        why = whisper_junk(raw, hint, logprob, float(getattr(self.config, "whisper_min_logprob", -0.78)))
+        why = whisper_junk(raw, self._echo_hint(hint), logprob,
+                           float(getattr(self.config, "whisper_min_logprob", -0.78)))
         if why:
             return STTResult(success=False, error=f"Not speech ({why}; heard {text!r}).")
         # Whisper's score isn't on Google's confidence scale, so the "did you say...?" and
@@ -324,26 +434,117 @@ class SpeechToText:
         return STTResult(success=True, text=text, confidence=None,
                          stats={"whisper_logprob": round(logprob, 3) if logprob is not None else None})
 
+    def _echo_hint(self, hint: str) -> str:
+        """The terms the echo check is allowed to use (see self.echo_terms)."""
+        if callable(getattr(self, "echo_terms", None)):
+            return self.echo_terms() or ""
+        return hint
+
+    def _wav_bytes(self, pcm: bytes) -> bytes:
+        """The captured PCM as a WAV file, for the engines that want one uploaded."""
+        import io
+        import wave
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(pcm)
+        return buf.getvalue()
+
+    def _recognize_gemini(self, pcm: bytes) -> STTResult:
+        """Gemini transcribing the clip — the accurate cloud read.
+
+        Takes the audio inline, so there is no upload step and no file left behind. It
+        spends the free daily quota and the clip leaves this PC, which is why the chain
+        reaches for it only as a second opinion.
+        """
+        import base64
+        import requests
+        hint = self.vocabulary() if callable(getattr(self, "vocabulary", None)) else ""
+        ask = ("Transcribe this audio verbatim. Reply with the transcript only — no "
+               "preamble, no quotes, no translation, no explanation. Reply with nothing "
+               "at all if it is not speech.")
+        if hint:
+            ask += " Proper nouns you may hear: " + hint[:400]
+        model = getattr(self.config, "gemini_stt_model", "gemini-flash-lite-latest")
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": self._gemini_key()}, timeout=20,
+            json={"contents": [{"parts": [
+                      {"text": ask},
+                      {"inline_data": {"mime_type": "audio/wav",
+                                       "data": base64.b64encode(self._wav_bytes(pcm)).decode()}}]}],
+                  "generationConfig": {"temperature": 0.0}})
+        if r.status_code >= 400:
+            return STTResult(success=False, error=f"Gemini speech error {r.status_code}")
+        parts = (((r.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+        raw = "".join(p.get("text") or "" for p in parts).strip()
+        text = self.correct(raw)
+        if not re.sub(r"[\W_]+", "", text):
+            return STTResult(success=False, error="Couldn't understand the audio.")
+        # Asked for a transcript, a model sometimes comments instead ("I'm sorry, I can't
+        # quite make out..."). Speech runs about 15 characters a second, so a reply much
+        # longer than the clip is commentary and must not be acted on as a command.
+        seconds = len(pcm) / 2 / 16000
+        if len(text) > 60 + 25 * seconds:
+            return STTResult(success=False, error="Not speech (reply too long for the clip).")
+        why = whisper_junk(text, self._echo_hint(hint), None,
+                           float(getattr(self.config, "whisper_min_logprob", -0.78)))
+        if why:
+            return STTResult(success=False, error=f"Not speech ({why}; heard {text!r}).")
+        return STTResult(success=True, text=text, confidence=None,
+                         stats={"stt_engine": "gemini"})
+
     def _recognize_google_pcm(self, pcm: bytes) -> STTResult:
         import speech_recognition as sr
         recognizer = sr.Recognizer()
         return self._recognize_google(sr, recognizer, sr.AudioData(pcm, 16000, 2))
 
-    def _recognize_local_whisper(self, pcm: bytes) -> STTResult:
-        """Offline last resort: faster-whisper on this PC (no internet needed)."""
-        import numpy as np
+    def _offline_model(self):
+        """The local Whisper model, loaded once. Takes 13-19 s cold, hence warm_up()."""
         from faster_whisper import WhisperModel
         if self._whisper_model is None:
-            self._whisper_model = WhisperModel(getattr(self.config, "offline_whisper_model", "base"),
-                                               device="cpu", compute_type="int8")
+            self._whisper_model = WhisperModel(
+                getattr(self.config, "offline_whisper_model", "base"),
+                device="cpu", compute_type="int8")
+        return self._whisper_model
+
+    def warm_up(self) -> None:
+        """Load the offline model now rather than on the first thing you say.
+
+        Cold, the load costs 13-19 s on this PC — long enough to look broken. Called at
+        start-up alongside the voice warm-up. Never fatal: if the model or the package is
+        missing, the chain simply falls through to the cloud engines as before.
+        """
+        if self.config.backend in ("none", "google_free", "vosk"):
+            return
+        try:
+            self._offline_model()
+        except Exception as e:  # noqa: BLE001 - the cloud engines still work
+            logger.info("Offline speech model not warmed up: %s", e)
+
+    def _recognize_local_whisper(self, pcm: bytes) -> STTResult:
+        """Offline Whisper on this PC: no internet, no quota, no audio leaving the machine.
+
+        Fed the microphone PCM as float32 samples rather than a path, so faster-whisper's
+        own file decoder is never used — it calls av.open(..., metadata_errors=...), which
+        PyAV 19 removed, and that raises TypeError.
+        """
+        import numpy as np
+        model = self._offline_model()
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         hint = self.vocabulary() if callable(getattr(self, "vocabulary", None)) else None
-        segments, _ = self._whisper_model.transcribe(samples, language="en", beam_size=5,
-                                                     initial_prompt=hint or None)
+        segments, _ = model.transcribe(samples, language="en", beam_size=5,
+                                       initial_prompt=hint or None)
         segs = list(segments)
-        return self._from_whisper({"text": " ".join(seg.text.strip() for seg in segs),
-                                   "segments": [{"no_speech_prob": seg.no_speech_prob, "avg_logprob": seg.avg_logprob}
-                                                for seg in segs]}, hint or "")
+        result = self._from_whisper(
+            {"text": " ".join(seg.text.strip() for seg in segs),
+             "segments": [{"no_speech_prob": seg.no_speech_prob, "avg_logprob": seg.avg_logprob}
+                          for seg in segs]}, hint or "")
+        if result.success:
+            result.stats = {**(result.stats or {}), "stt_engine": "offline_whisper"}
+        return result
 
     # -- backends -----------------------------------------------------------------
     def _listen_google_free(self, timeout_s: int) -> STTResult:

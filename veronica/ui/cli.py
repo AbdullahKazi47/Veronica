@@ -113,8 +113,18 @@ class CLIApp:
         self.speaker = SynchronousSpeaker(self.tts)
         self.stt = SpeechToText(config.stt, corrections=self._make_corrections()) if voice_mode else None
         if self.stt is not None:
-            from veronica.speech.vocabulary import build_vocabulary
+            from veronica.speech.vocabulary import build_echo_terms, build_vocabulary
             self.stt.vocabulary = lambda: build_vocabulary(config)   # spelling hint for Whisper
+            # Her name and the local place names, not the app names: see build_echo_terms.
+            self.stt.echo_terms = lambda: build_echo_terms(config)
+
+            def names_unknown_app(text: str) -> bool:
+                from veronica.tools.app_index import names_an_unknown_app, shared_index
+                return names_an_unknown_app(shared_index(config), text)
+            self.stt.unknown_target = names_unknown_app
+            # Loading the offline Whisper model takes 13-19 s on this PC. Off the main
+            # thread, so it happens while she greets you instead of before your first word.
+            threading.Thread(target=self.stt.warm_up, name="stt-warm", daemon=True).start()
         self._tts_active = False  # prevents self-listening during playback
         self.hub = self._make_mic_hub() if voice_mode else None
         if self.hub is not None and self.stt is not None:

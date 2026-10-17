@@ -26,6 +26,10 @@ DEFAULT_ENV_PATH = PROJECT_ROOT / "config" / ".env"
 class LLMConfig:
     provider: str = "ollama"            # "ollama" | "openai_compatible" | "anthropic" | "echo"
     vision_model: Optional[str] = None  # model for "what's on my screen" (default: model)
+    # More image-capable models to try when the ones above are out of quota. Each model on
+    # the key has its own small free daily allowance, so this list is extra screen-reading
+    # attempts, not redundancy.
+    vision_fallback_models: list[str] = field(default_factory=list)
     # A vision model on this PC (Ollama) for when the cloud one can't be reached. None = off.
     offline_vision_model: Optional[str] = None
     offline_base_url: str = "http://localhost:11434"
@@ -45,10 +49,17 @@ class LLMConfig:
 @dataclass
 class STTConfig:
     backend: str = "google_free"        # "auto" | "groq_whisper" | "google_free" | "vosk" | "faster_whisper" | "none"
-    # "auto": Groq Whisper (most accurate) -> Google -> offline faster-whisper, in that order.
+    # "auto": offline Whisper first, then the cloud only when it is unsure. See
+    # SpeechToText._engines for the order and the measurements behind it.
     groq_whisper_model: str = "whisper-large-v3-turbo"
     groq_api_key_env: str = "GROQ_API_KEY"
+    gemini_stt_model: str = "gemini-flash-lite-latest"  # second opinion when offline is unsure
+    gemini_api_key_env: str = "GEMINI_API_KEY"
     no_speech_reject: float = 0.6       # Whisper: drop a clip it thinks is probably not speech
+    whisper_min_logprob: float = -0.78  # below this a Whisper transcript is treated as invented
+    # When the offline read scores below this, ask the cloud for a second opinion and
+    # prefer it. 0 = never escalate (offline answers alone, nothing leaves this PC).
+    escalate_below_logprob: float = -0.55
     offline_whisper_model: str = "base" # local fallback when there's no internet
     vosk_model_path: str = "models/vosk-model-small-en-us"
     faster_whisper_model: str = "base"  # "tiny" | "base" | "small" | "medium" | "large-v3" (faster-whisper)

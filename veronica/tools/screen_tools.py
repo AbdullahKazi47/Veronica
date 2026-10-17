@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+import time
 from typing import Any, Callable, Optional
 
 from veronica.logging_setup import get_logger
@@ -74,15 +75,20 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
         from veronica.safety import privacy
         question = privacy.get_guard().scrub_text(question)   # the image itself can't be scrubbed
         data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
-        import time as _time
-        # The vision model first, then the main model (also image-capable, with its own free
-        # quota): a 429 on one usually means that model's quota, not Gemini as a whole.
-        models = [model] + ([llm.model] if llm.model and llm.model != model else [])
+        # Every image-capable model on this key, each with its OWN small free daily quota —
+        # the vision model, then the main one, then whatever else is configured. On this PC
+        # the per-model free quota ran out after a handful of requests, so the breadth of
+        # this list is what decides whether "what's on my screen?" still works this evening.
+        extra = list(getattr(llm, "vision_fallback_models", None) or [])
+        models = list(dict.fromkeys([model, llm.model, *extra]))   # ordered, no duplicates
+        models = [m for m in models if m]
         resp = None
         for which in models:
-            for delay in (0.0, 1.5):
-                if delay:
-                    _time.sleep(delay)
+            # 429 is that model's quota for the day; sleeping cannot fix it, so move on at
+            # once. Only a 5xx is worth one retry — that one really is "busy right now".
+            for attempt in (0, 1):
+                if attempt:
+                    time.sleep(1.5)
                 resp = requests.post(f"{base}/chat/completions", timeout=30,
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                                      json={"model": which, "temperature": 0.2, "messages": [
@@ -90,11 +96,11 @@ def _openai_vision(config, system: Optional[str] = None) -> Optional[Callable[[s
                                          {"role": "user", "content": [
                                              {"type": "text", "text": question},
                                              {"type": "image_url", "image_url": {"url": data_url}}]}]})
-                if resp.status_code not in (429, 500, 502, 503, 504):
+                if resp.status_code not in (500, 502, 503, 504):
                     break
             if resp.status_code not in (429, 500, 502, 503, 504):
                 break
-            logger.info("Vision model %s busy (%s); trying the next one.", which, resp.status_code)
+            logger.info("Vision model %s unavailable (%s); trying the next one.", which, resp.status_code)
         resp.raise_for_status()
         return ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     return ask

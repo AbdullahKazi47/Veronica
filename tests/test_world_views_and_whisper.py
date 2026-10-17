@@ -171,35 +171,247 @@ def test_whisper_result_has_no_google_scale_confidence():
     assert res.success and res.confidence is None and res.stats["whisper_logprob"] == -0.2
 
 
-def test_chain_falls_back_from_groq_to_google(monkeypatch):
+def _chain(monkeypatch, *, offline, gemini=None, google=None, groq_key="", gemini_key="k"):
+    """An "auto" recognizer with every engine stubbed, and a log of which ones ran.
+
+    The offline model must be stubbed or the real one loads and transcribes the fake PCM,
+    which is slow and gives a different answer on every machine.
+    """
     from veronica.speech.stt import STTResult
     stt = _stt()
+    ran = []
+
+    def stub(name, outcome):
+        def engine(pcm):
+            ran.append(name)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return engine
+
     monkeypatch.setattr(stt, "_capture_utterance", lambda t: (b"\x00\x01" * 8000, ""))
-    monkeypatch.setattr(stt, "_groq_key", lambda: "gsk_test")
-    monkeypatch.setattr(stt, "_recognize_groq_whisper", lambda pcm: STTResult(success=False, error="Groq Whisper error 503"))
-    monkeypatch.setattr(stt, "_recognize_google_pcm", lambda pcm: STTResult(success=True, text="minimise all"))
+    monkeypatch.setattr(stt, "_groq_key", lambda: groq_key)
+    monkeypatch.setattr(stt, "_gemini_key", lambda: gemini_key)
+    monkeypatch.setattr(stt, "_recognize_local_whisper", stub("offline", offline))
+    monkeypatch.setattr(stt, "_recognize_gemini",
+                        stub("gemini", gemini if gemini is not None
+                             else STTResult(success=False, error="not stubbed")))
+    monkeypatch.setattr(stt, "_recognize_google_pcm",
+                        stub("google", google if google is not None
+                             else STTResult(success=False, error="not stubbed")))
+    return stt, ran
+
+
+def _ok(text, logprob=-0.2):
+    from veronica.speech.stt import STTResult
+    return STTResult(success=True, text=text, stats={"whisper_logprob": logprob})
+
+
+def test_offline_leads_and_nothing_is_sent_to_the_cloud(monkeypatch):
+    """A confident offline read answers on its own — the audio never leaves the PC."""
+    stt, ran = _chain(monkeypatch, offline=_ok("minimise all"))
     assert stt.listen_once().text == "minimise all"
+    assert ran == ["offline"]
+
+
+def test_chain_falls_back_to_the_cloud_when_offline_fails(monkeypatch):
+    from veronica.speech.stt import STTResult
+    stt, ran = _chain(monkeypatch,
+                      offline=STTResult(success=False, error="faster-whisper not installed"),
+                      gemini=_ok("open the projects folder"))
+    assert stt.listen_once().text == "open the projects folder"
+    assert ran == ["offline", "gemini"]
+
+
+def test_google_is_last_because_it_drops_words(monkeypatch):
+    from veronica.speech.stt import STTResult
+    stt, ran = _chain(monkeypatch,
+                      offline=STTResult(success=False, error="no model"),
+                      gemini=STTResult(success=False, error="Gemini speech error 429"),
+                      google=_ok("hello"))
+    assert stt.listen_once().text == "hello"
+    assert ran == ["offline", "gemini", "google"]
+
+
+def test_chain_without_a_gemini_key_still_reaches_google(monkeypatch):
+    from veronica.speech.stt import STTResult
+    stt, ran = _chain(monkeypatch, offline=STTResult(success=False, error="no model"),
+                      gemini_key="", google=_ok("hello"))
+    assert stt.listen_once().text == "hello"
+    assert ran == ["offline", "google"]      # gemini skipped, no key
 
 
 def test_chain_noise_is_an_answer_not_an_outage(monkeypatch):
     from veronica.speech.stt import STTResult
-    stt = _stt()
-    called = []
-    monkeypatch.setattr(stt, "_capture_utterance", lambda t: (b"\x00\x01" * 8000, ""))
-    monkeypatch.setattr(stt, "_groq_key", lambda: "gsk_test")
-    monkeypatch.setattr(stt, "_recognize_groq_whisper", lambda pcm: STTResult(success=False, error="Not speech (low confidence)"))
-    monkeypatch.setattr(stt, "_recognize_google_pcm", lambda pcm: called.append(1) or STTResult(success=True, text="x"))
+    stt, ran = _chain(monkeypatch,
+                      offline=STTResult(success=False, error="Not speech (low confidence)"),
+                      gemini=_ok("x"), google=_ok("x"))
     res = stt.listen_once()
-    assert not res.success and called == []        # noise isn't sent on to another engine
+    assert not res.success and ran == ["offline"]   # noise isn't sent on to another engine
 
 
-def test_chain_without_groq_key_uses_google(monkeypatch):
-    from veronica.speech.stt import STTResult
+def test_an_engine_that_raises_is_skipped_not_fatal(monkeypatch):
+    stt, ran = _chain(monkeypatch, offline=RuntimeError("model file corrupt"),
+                      gemini=_ok("volume to forty"))
+    assert stt.listen_once().text == "volume to forty"
+    assert ran == ["offline", "gemini"]
+
+
+# -- second opinion: only unsure offline reads go to the cloud --------------------
+def test_an_unsure_offline_read_is_checked_against_the_cloud(monkeypatch):
+    stt, ran = _chain(monkeypatch, offline=_ok("ask Jeff", logprob=-0.7),
+                      gemini=_ok("ask Jev"))
+    res = stt.listen_once()
+    assert res.text == "ask Jev" and ran == ["offline", "gemini"]
+    assert res.stats["escalated_from"] == "ask Jeff"   # says what it overrode
+
+
+def test_a_confident_offline_read_is_never_second_guessed(monkeypatch):
+    stt, ran = _chain(monkeypatch, offline=_ok("ask Jev", logprob=-0.2), gemini=_ok("wrong"))
+    assert stt.listen_once().text == "ask Jev"
+    assert ran == ["offline"]        # no quota spent, no audio sent
+
+
+def test_escalation_can_be_turned_off(monkeypatch):
+    stt, ran = _chain(monkeypatch, offline=_ok("ask Jeff", logprob=-0.7), gemini=_ok("ask Jev"))
+    stt.config.escalate_below_logprob = 0.0
+    assert stt.listen_once().text == "ask Jeff"
+    assert ran == ["offline"]        # 0 = offline answers alone, nothing leaves this PC
+
+
+def test_escalation_fires_through_the_real_offline_method(monkeypatch):
+    """The regression that mocking hid: escalate without replacing the engine itself.
+
+    Every other test here monkeypatches `_recognize_local_whisper`, which stores a plain
+    function on the instance. The shipped code gated escalation on
+    `engine is self._recognize_local_whisper`, and a bound method is rebuilt on every
+    attribute access — so the comparison was always false and nothing ever escalated,
+    while the mocked tests all passed. This one stubs the *decoder* and leaves the real
+    bound method in the chain, so only the labels can carry the gate.
+    """
+    class Segment:
+        text, no_speech_prob, avg_logprob = " close Crow", 0.01, -0.7
+
+    class Model:
+        @staticmethod
+        def transcribe(samples, **kwargs):
+            return iter([Segment()]), None
+
     stt = _stt()
+    cloud = []
     monkeypatch.setattr(stt, "_capture_utterance", lambda t: (b"\x00\x01" * 8000, ""))
     monkeypatch.setattr(stt, "_groq_key", lambda: "")
-    monkeypatch.setattr(stt, "_recognize_google_pcm", lambda pcm: STTResult(success=True, text="hello"))
-    assert stt.listen_once().text == "hello"
+    monkeypatch.setattr(stt, "_gemini_key", lambda: "key")
+    monkeypatch.setattr(stt, "_offline_model", lambda: Model())
+    monkeypatch.setattr(stt, "_recognize_gemini",
+                        lambda pcm: (cloud.append(pcm), _ok("close Chrome"))[1])
+
+    res = stt.listen_once()
+    assert res.text == "close Chrome"
+    assert cloud, "the unsure offline read never reached the second opinion"
+    assert res.stats["escalated_from"] == "close Crow"
+
+
+def test_a_failed_second_opinion_leaves_the_offline_read_standing(monkeypatch):
+    stt, ran = _chain(monkeypatch, offline=_ok("ask Jeff", logprob=-0.7),
+                      gemini=RuntimeError("no internet"))
+    assert stt.listen_once().text == "ask Jeff"      # unsure beats nothing
+    assert ran == ["offline", "gemini"]
+
+
+# -- the Gemini recognizer itself -------------------------------------------------
+def _gemini(monkeypatch, reply, status=200, pcm_seconds=4.0, hint=""):
+    """Call _recognize_gemini against a stubbed HTTP reply; returns (result, request)."""
+    import veronica.speech.stt as stt_mod
+    sent = {}
+
+    class Response:
+        status_code = status
+
+        @staticmethod
+        def json():
+            if isinstance(reply, dict):
+                return reply
+            return {"candidates": [{"content": {"parts": [{"text": reply}]}}]}
+
+    class FakeRequests:
+        @staticmethod
+        def post(url, **kw):
+            sent.update(url=url, **kw)
+            return Response()
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", FakeRequests)
+    stt = _stt()
+    monkeypatch.setattr(stt, "_gemini_key", lambda: "key")
+    if hint:
+        stt.vocabulary = lambda: hint
+    pcm = b"\x00\x01" * int(8000 * pcm_seconds)
+    return stt._recognize_gemini(pcm), sent
+
+
+def test_gemini_transcript_is_read_out_of_the_reply(monkeypatch):
+    res, _ = _gemini(monkeypatch, "open the projects folder")
+    assert res.success and res.text == "open the projects folder"
+    assert res.stats["stt_engine"] == "gemini"
+
+
+def test_gemini_gets_the_audio_inline_and_the_vocabulary_hint(monkeypatch):
+    _, sent = _gemini(monkeypatch, "hello", hint="Jev, Bhatkal")
+    parts = sent["json"]["contents"][0]["parts"]
+    assert parts[1]["inline_data"]["mime_type"] == "audio/wav"
+    assert parts[1]["inline_data"]["data"]            # base64 payload, not a file path
+    assert "Jev, Bhatkal" in parts[0]["text"]
+    assert sent["json"]["generationConfig"]["temperature"] == 0.0   # verbatim, not creative
+    assert "key" not in sent["url"]                   # the key goes in params, not the URL
+
+
+def test_gemini_commentary_is_not_treated_as_a_command(monkeypatch):
+    """Asked for a transcript, a model sometimes explains itself. A reply far longer than
+    the clip could be is commentary, and must never reach the tool router."""
+    waffle = ("I'm sorry, I can't quite make out what is being said in this audio clip. "
+              "It sounds like there may be background noise. Could you try again?")
+    res, _ = _gemini(monkeypatch, waffle, pcm_seconds=2.0)
+    assert not res.success and "too long for the clip" in res.error
+
+
+def test_gemini_hint_echo_is_rejected(monkeypatch):
+    res, _ = _gemini(monkeypatch, "Jev, Bengaluru", hint="VERONICA, Jev, Bengaluru")
+    assert not res.success and "Not speech" in res.error
+
+
+def test_gemini_empty_reply_for_silence(monkeypatch):
+    res, _ = _gemini(monkeypatch, "   ")
+    assert not res.success and "understand" in res.error
+
+
+def test_gemini_http_error_is_a_clean_failure_not_a_crash(monkeypatch):
+    res, _ = _gemini(monkeypatch, "", status=429)
+    assert not res.success and "429" in res.error
+
+
+def test_gemini_applies_the_users_own_corrections(monkeypatch):
+    import veronica.speech.stt as stt_mod
+    monkeypatch.setattr(stt_mod.SpeechToText, "correct",
+                        lambda self, text: text.replace("Veronika", "Veronica"))
+    res, _ = _gemini(monkeypatch, "Veronika open Chrome")
+    assert res.text == "Veronica open Chrome"
+
+
+def test_warm_up_loads_the_offline_model_once(monkeypatch):
+    stt = _stt()
+    loads = []
+    monkeypatch.setattr(stt, "_offline_model", lambda: loads.append(1))
+    stt.warm_up()
+    assert loads == [1]
+
+
+def test_warm_up_never_breaks_start_up(monkeypatch):
+    """A missing model must not stop VERONICA starting — the cloud engines still work."""
+    stt = _stt()
+    def boom():
+        raise OSError("model not downloaded")
+    monkeypatch.setattr(stt, "_offline_model", boom)
+    stt.warm_up()        # must not raise
 
 
 def test_vocabulary_is_built_from_the_users_own_data(tmp_path, monkeypatch):

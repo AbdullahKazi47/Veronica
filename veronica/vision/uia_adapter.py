@@ -350,7 +350,7 @@ class UIAutomationAdapter:
                 # Get parent
                 try:
                     current = current.GetCurrentParent()
-                except:
+                except Exception:
                     break  # No parent or error
 
             return None
@@ -388,7 +388,7 @@ class UIAutomationAdapter:
                 )
                 if pid is not None:
                     process_id = int(pid)
-            except:
+            except Exception:
                 pass
 
             # Get bounding rectangle — use left/right/top/bottom, NOT nonexistent width()/height()
@@ -399,7 +399,7 @@ class UIAutomationAdapter:
                 )
                 if rect:
                     bounding_box = self._rect_to_bounding_box(rect)
-            except:
+            except Exception:
                 pass
 
             # Get window state
@@ -408,7 +408,7 @@ class UIAutomationAdapter:
                 is_visible = bool(element.GetCurrentPropertyValue(
                     self._uia_module.UIA_IsOffscreenPropertyId
                 )) == False  # IsOffscreen inverted
-            except:
+            except Exception:
                 pass
 
             is_enabled = True
@@ -416,7 +416,7 @@ class UIAutomationAdapter:
                 is_enabled = bool(element.GetCurrentPropertyValue(
                     self._uia_module.UIA_IsEnabledPropertyId
                 ))
-            except:
+            except Exception:
                 pass
 
             # Determine if active (has focus)
@@ -426,7 +426,7 @@ class UIAutomationAdapter:
                 if focused:
                     # Check if this window contains the focused element
                     is_active = self._element_contains(focused, element)
-            except:
+            except Exception:
                 pass
 
             return WindowInfo(
@@ -489,7 +489,7 @@ class UIAutomationAdapter:
                 )
                 if rect:
                     bounding_box = self._rect_to_bounding_box(rect)
-            except:
+            except Exception:
                 pass
 
             # Get element states
@@ -498,7 +498,7 @@ class UIAutomationAdapter:
                 is_enabled = bool(element.GetCurrentPropertyValue(
                     self._uia_module.UIA_IsEnabledPropertyId
                 ))
-            except:
+            except Exception:
                 pass
 
             is_visible = True
@@ -506,7 +506,7 @@ class UIAutomationAdapter:
                 is_visible = (bool(element.GetCurrentPropertyValue(
                     self._uia_module.UIA_IsOffscreenPropertyId
                 )) == False)  # IsOffscreen inverted
-            except:
+            except Exception:
                 pass
 
             # Get value (for text fields, etc.)
@@ -517,7 +517,7 @@ class UIAutomationAdapter:
                 )
                 if value is not None:
                     value = str(value)
-            except:
+            except Exception:
                 pass
 
             # Create UIElement
@@ -552,10 +552,10 @@ class UIAutomationAdapter:
                                 )
                                 if child_ui:
                                     child_elements.append(child_ui)
-                            except:
+                            except Exception:
                                 continue
                     ui_element.children = child_elements
-                except:
+                except Exception:
                     pass  # Children are optional
 
             return ui_element
@@ -670,7 +670,7 @@ class UIAutomationAdapter:
             import psutil
             process = psutil.Process(process_id)
             return process.name()
-        except:
+        except Exception:
             # Fallback to tasklist if psutil not available
             try:
                 import subprocess
@@ -685,7 +685,7 @@ class UIAutomationAdapter:
                         if len(parts) >= 2:
                             # Remove quotes
                             return parts[0].strip('"')
-            except:
+            except Exception:
                 pass
             return "unknown"
 
@@ -707,10 +707,10 @@ class UIAutomationAdapter:
                     return True
                 try:
                     current = current.GetCurrentParent()
-                except:
+                except Exception:
                     break
             return False
-        except:
+        except Exception:
             return False
 
     def get_perception_sources(self) -> List[str]:

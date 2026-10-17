@@ -82,6 +82,10 @@ llm:
   provider: "openai_compatible"   # "ollama" (local, free, default) | "openai_compatible" | "echo" (tests)
   model: "gemini-3.5-flash-lite"
   vision_model: "gemini-3.5-flash"   # reads your screen on request ("what's on my screen?")
+  # Tried in turn when the models above are out of quota, before giving up on the cloud.
+  # Each has its own small free daily allowance; all verified to read text out of an image
+  # (3.5-flash-lite 3.7 s, 3.1-flash-lite 5.4 s, 3.7-flash 16 s).
+  vision_fallback_models: ["gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash"]
   offline_vision_model: "qwen3.5:0.8b"   # on this PC, used when cloud vision can't be reached (moondream also works)
   base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
   api_key_env: "GEMINI_API_KEY"   # key lives in config/.env; only read if provider is openai_compatible
@@ -110,7 +114,7 @@ routing:
   enabled: true
   fallback_enabled: true
   fallback_on_empty_response: true
-  max_fallback_attempts: 6          # Flash-Lite -> backups (Groq, Cerebras, OpenRouter) -> other Gemini models
+  max_fallback_attempts: 8          # Flash-Lite -> backups (Groq, Cerebras, OpenRouter) -> the other Gemini models
   health_ttl_s: 30
   log_routing_decisions: true
   models:
@@ -173,7 +177,40 @@ routing:
       timeout_s: 30
     # More Google models on the same GEMINI_API_KEY. Each model has its OWN free daily
     # quota (Flash's is only ~20 requests a day), so when one runs out the next answers.
-    # All tested 2026-10-17 with tool calls.
+    # All tested with text, tool calls and streaming; latencies measured on this PC.
+    #
+    #   gemini-3.6-flash   2.0-2.6 s   leads the reasoning role: newest and fastest
+    #   gemini-3.5-flash   4-6 s       was out of quota (HTTP 429) when measured
+    #   gemini-3.7-flash   3.8-5.1 s
+    #   gemini-3.8-flash   6.0-10.6 s  slowest, so it is the last Google rung
+    - model_id: "gemini-3.6-flash"
+      provider: "openai_compatible"
+      role: "reasoning"
+      task_types: ["reasoning", "analysis", "planning", "coding"]
+      priority: 18                  # ahead of 3.5-flash: measured 2.5x faster, same quota cost
+      speed_class: "medium"
+      reasoning_class: "heavy"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 1048576
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      timeout_s: 20
+    - model_id: "gemini-3.8-flash"
+      provider: "openai_compatible"
+      role: "reasoning"
+      task_types: ["reasoning", "analysis", "planning", "coding"]
+      priority: 28                  # last Google rung: works, but 6-10 s
+      speed_class: "medium"
+      reasoning_class: "heavy"
+      cost_class: "free"
+      supports_tools: true
+      supports_streaming: true
+      context_window: 1048576
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      timeout_s: 45                 # it is genuinely this slow; a short timeout wastes the rung
     - model_id: "gemini-3.1-flash-lite"
       provider: "openai_compatible"
       role: "fast"
@@ -274,10 +311,26 @@ stt:
   # offline and capture audio via sounddevice instead.
   # Phase 11F: google_free and faster_whisper now both capture through VERONICA's
   # sounddevice MicrophoneInput, so PyAudio is no longer needed for either.
-  # 2026-10-17: "auto" = Groq Whisper (with a hint of your own words: her name, your area,
-  # routines) -> Google -> offline faster-whisper. Measured on this PC: 8% / 24% / 21% word
-  # errors at ~1 s each. Audio goes to Groq (as it went to Google before).
+  # 2026-10-17: "auto" = offline Whisper on this PC first, then the cloud only when the
+  # offline read doubts itself. Measured over identical clips on this PC:
+  #     offline Whisper   2.9% word errors  1.2 s  free, no internet, nothing leaves the PC
+  #     Gemini Flash-Lite 1.3%              1.9 s  free daily quota, clip sent to Google
+  #     Google Web Speech 10.4%             1.3 s  free, clip sent to Google
+  # Offline leads because it is free, works with no internet and is already three times
+  # more accurate than Google, which drops whole words (it heard "ask Jev" as "asked").
+  # Groq was the most accurate (8%) but api.groq.com answers 404 to every request from
+  # this network, so it is tried only when GROQ_API_KEY is set AND it is reachable.
   backend: "auto"
+  # The accurate cloud read, used as the second opinion. Flash-Lite is as quick as Google
+  # and has a far larger free quota than full Flash (~20 requests a day).
+  gemini_stt_model: "gemini-flash-lite-latest"
+  offline_whisper_model: "base"   # the "auto" chain's own model: tiny/base/small.en/...
+                                  # base = 2.9% errors at ~4x realtime here; small.en is
+                                  # no better on clear speech and only 1.4x realtime.
+  # When the offline read scores below this, ask Gemini and prefer its answer. Only clips
+  # Whisper was unsure about leave this PC. Set to 0 to keep speech fully offline.
+  escalate_below_logprob: -0.55
+  whisper_min_logprob: -0.78      # below this, a Whisper transcript is treated as invented
   # previous default: backend: "google_free"          # "google_free" (needs internet) | "faster_whisper" (offline; pip install faster-whisper) | "vosk" (offline) | "none"
   mic_backend: "sounddevice"      # "sounddevice" | "pyaudio" (only if PyAudio is installed)
   mic_device_name: "Microphone Array"  # found by name, so Windows renumbering devices can't break it

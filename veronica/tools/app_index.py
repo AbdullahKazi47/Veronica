@@ -255,3 +255,44 @@ def shared_index(config=None) -> AppIndex:
     if _shared is None:
         _shared = AppIndex(config)
     return _shared
+
+
+# "open Chrome" / "close the browser" — verbs whose target is an installed program.
+_APP_VERB = re.compile(
+    r"\b(?:open|close|quit|exit|launch|start|run|switch to|go to|focus|"
+    r"minimi[sz]e|maximi[sz]e|kill)\s+(?:the\s+|my\s+)?([a-z0-9][a-z0-9 .+'-]{0,30})",
+    re.I)
+# Targets that are not programs, so a miss says nothing about the transcription.
+_NOT_AN_APP = re.compile(
+    r"\b(folder|file|files|directory|website|site|page|tab|tabs|window|windows|"
+    r"document|downloads|desktop|settings|volume|music|song|video|screen|"
+    r"notification|notifications|everything|all|it|this|that|them)\b", re.I)
+# "open Claude and Cursor" names two programs, not one called "Claude and Cursor".
+_TARGET_SPLIT = re.compile(r"\s*(?:,|&|\band\b|\bthen\b|\bplus\b)\s*", re.I)
+
+
+def names_an_unknown_app(index: AppIndex, text: str) -> bool:
+    """True when `text` tells her to open or close something she cannot find.
+
+    Used to decide whether a transcript is worth a second opinion. Mishearing an app name
+    is the error that actually breaks commands — "close Chrome" came back as "close Crow" —
+    and the fuzzy match already rescues the near ones ("NodePad" finds Notepad, "Excell"
+    finds Excel). What it cannot rescue is a name that resolves to nothing at all, and
+    that is exactly when asking a second recognizer earns its request. Silent about
+    anything that isn't a program: folders, websites and media have their own lookups.
+    """
+    for match in _APP_VERB.finditer(text or ""):
+        for part in _TARGET_SPLIT.split(match.group(1)):
+            target = part.strip(" .,'")
+            if not target or _NOT_AN_APP.search(target):
+                continue
+            try:
+                if index.find_app(target) or index.find_browser(target):
+                    continue
+                # "open the projects folder" says "folder", but "open projects" does not.
+                if index.find_folder(target):
+                    continue
+            except Exception:  # noqa: BLE001 - a broken index must not force a cloud call
+                return False
+            return True
+    return False

@@ -243,7 +243,7 @@ class ScreenCaptureProvider(PerceptionProvider):
                 cursor_pos = self._pyautogui.position()
                 if cursor_pos:
                     cursor_pos = {"x": cursor_pos.x, "y": cursor_pos.y}
-            except:
+            except Exception:  # noqa: BLE001 - no cursor is a fact, not a failure
                 pass
 
             # Create minimal ScreenState with just screen info

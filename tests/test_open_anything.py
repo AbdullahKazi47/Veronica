@@ -244,6 +244,35 @@ def test_unknown_play_service_searches_google_not_duckduckgo(index):
     assert startfile.call_args.args[0] == "https://www.google.com/search?q=songs+blorptune"
 
 
+# -- "did I mishear that app name?" — the speech escalation trigger ----------------
+@pytest.mark.parametrize("text, escalate", [
+    ("close Crow", True),                      # the real miss: Chrome heard as Crow
+    ("open Lozenge", True),
+    ("close Chrome", False),                   # a browser she has
+    ("open Notepad", False),
+    ("open Notepadd", False),                  # fuzzy match rescues it; no cloud needed
+    ("open WhatsApp and Calculator", False),   # two programs, not one odd name
+    ("open Brave, Notepad and Calculator", False),
+    ("open WhatsApp and Lozenge", True),       # one good name does not excuse the other
+    ("open the downloads folder", False),      # folders have their own lookup
+    ("open Music", False),                     # a real folder in the fake home
+    ("close that", False),
+    ("close all windows", False),
+    ("what's on my calendar tomorrow", False),
+    ("thanks", False),
+])
+def test_only_an_unfindable_program_asks_for_a_second_opinion(index, text, escalate):
+    from veronica.tools.app_index import names_an_unknown_app
+    assert names_an_unknown_app(index, text) is escalate
+
+
+def test_a_broken_app_index_never_forces_a_cloud_request(index):
+    """Escalation is an optimisation; a discovery failure must not send audio off the PC."""
+    from veronica.tools.app_index import names_an_unknown_app
+    index.find_app = lambda name: (_ for _ in ()).throw(OSError("registry unavailable"))
+    assert names_an_unknown_app(index, "open Lozenge") is False
+
+
 def test_weather_codes_cover_drizzle_and_showers():
     from veronica.tools.weather_tools import _WEATHER_CODES
     for code in (53, 55, 81, 82, 96, 99):
