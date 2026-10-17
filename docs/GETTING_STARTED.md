@@ -989,3 +989,17 @@ all pick it up automatically.
   `Orchestrator.handle()` as the CLI, so the two front-ends never diverge in behavior.
   The browser page is static HTML + CDN JS (Three.js, Tailwind); it needs internet on the
   machine where you open it to load those assets.
+
+## Her voice (Kokoro, on this PC)
+
+The default voice is Kokoro (`tts.backend: "kokoro"`, voice `bf_emma`). Its model is too
+big for GitHub, so after cloning run:
+
+```bash
+python scripts/get_voice_models.py
+```
+
+It downloads `kokoro-v1.0.onnx` (325 MB) and `voices-v1.0.bin` (28 MB) from the official
+kokoro-onnx release into `data/models/kokoro/` and checks their SHA-256. Until then she
+speaks with the free Microsoft backup voice. Change voices by saying "what voices do you
+have?" or "change your voice to Emily".
