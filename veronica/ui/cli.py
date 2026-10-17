@@ -226,6 +226,11 @@ class CLIApp:
         # Locating via Windows can take ~10 s the first time; do it now, not on the first question.
         threading.Thread(target=self._warm_location, name="locate", daemon=True).start()
         try:
+            from veronica.logging_setup import quiet_third_party
+            quiet_third_party()        # libraries that set up their own console logging on import
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from veronica.memory.mem0_memory import get_mem0
             mem = get_mem0(self.config)
             if mem is not None:
@@ -507,6 +512,11 @@ class CLIApp:
             result = self._listen(timeout_s=6)
             if not result.success and result.error and not result.error.startswith("No speech detected"):
                 logger.info("Conversation: nothing usable heard (%s).", result.error)
+                if self._just_my_name(result):
+                    # "Veronica" on its own: she's being called. Answer with the cue, keep listening.
+                    self._beep()
+                    self._status("[yes? listening]")
+                    continue
             text = self._accept(result, open_conversation=True) if result.success else None
             if not text:
                 continue                        # silence or background speech: keep it open
@@ -663,6 +673,10 @@ class CLIApp:
             # The same "is this really the user?" checks apply to ending phrases: Whisper
             # turns the echo of her own last word, or a short noise, into "Thank you." —
             # which used to end the conversation by itself.
+            # Speech aimed at her (a command she knows, or her name) gets a lower bar: a TV
+            # rarely says "open Doraemon". Seen live: the user at 2.5x the room was ignored.
+            if ratio and self._addressed(text, matches):
+                ratio = min(ratio, 2.0)
             if ratio and ambient and speech and speech < ambient * ratio:
                 logger.info("Ignored background speech %r (level %s vs room %s).", text, speech, ambient)
                 return None
@@ -687,6 +701,30 @@ class CLIApp:
         if ask_below and conf is not None and conf < ask_below:
             return self._check_what_was_said(text)
         return text
+
+    def _names(self) -> list[str]:
+        voice = getattr(self.config, "voice", None)
+        names = [self.config.assistant.name] + list(getattr(voice, "wake_words", None) or [])
+        return [n for n in dict.fromkeys(n.strip() for n in names) if n]
+
+    def _addressed(self, text: str, matches=None) -> bool:
+        """Is this said TO her: her name first, or a command she knows?"""
+        names = "|".join(re.escape(n) for n in self._names())
+        if names and re.match(rf"^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:{names})(?![\w'])", text or "", re.I):
+            return True
+        return bool(matches and matches(text))
+
+    def _just_my_name(self, result) -> bool:
+        """Only her name was heard, and it was really the user (loud against the room)."""
+        m = re.search(r"heard '([^']*)'", getattr(result, "error", "") or "")
+        if not m:
+            return False
+        said = re.sub(r"[^a-z]", "", m.group(1).lower())
+        if said not in {re.sub(r"[^a-z]", "", n.lower()) for n in self._names()}:
+            return False
+        stats = getattr(result, "stats", None) or {}
+        ambient, speech = stats.get("ambient_rms"), stats.get("speech_rms")
+        return bool(ambient and speech and speech >= ambient * 2.0)
 
     def _check_what_was_said(self, text: str) -> Optional[str]:
         """Low confidence: "Did you say ...?" — yes keeps it, no asks once more."""

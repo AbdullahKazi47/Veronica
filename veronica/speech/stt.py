@@ -310,9 +310,35 @@ class SpeechToText:
                     return better
                 return result
             if result.error.startswith("Not speech"):
-                return result              # a clear "not speech" is an answer, not an outage
+                rescued = self._rescue(name, result, pcm, stats)
+                return rescued if rescued is not None else result   # "not speech" is an answer, not an outage
             last = result
         return last
+
+    def _rescue(self, engine: str, result: STTResult, pcm: bytes, stats: dict) -> Optional[STTResult]:
+        """The offline read was thrown out as unsure, but the clip is plainly the user
+        talking (loud against the room, long enough): ask the cloud once instead of
+        dropping it. Seen live: "Open Doraemon" came out as "Open Door," at a low score
+        and was discarded, so the user had to repeat it. Noise and a TV across the room
+        are quieter than that and never get here; escalate_below_logprob: 0 turns this
+        off along with every other cloud read."""
+        if engine != "offline" or "low confidence" not in (result.error or ""):
+            return None
+        if not float(getattr(self.config, "escalate_below_logprob", 0.0) or 0.0) or not self._gemini_key():
+            return None
+        ambient, speech, voiced = stats.get("ambient_rms"), stats.get("speech_rms"), stats.get("voiced_s") or 0
+        if not ambient or not speech or speech < ambient * 2.0 or voiced < 0.5:
+            return None
+        try:
+            second = self._recognize_gemini(pcm)
+        except Exception as e:  # noqa: BLE001
+            logger.info("Second opinion failed: %s", e)
+            return None
+        if not second.success:
+            return None
+        logger.info("Offline read was unsure (%s); the cloud heard %r.", result.error, second.text)
+        second.stats = {**stats, **(second.stats or {}), "escalated_because": "offline read unsure"}
+        return second
 
     def _why_escalate(self, result: STTResult) -> str:
         """Why this offline read needs checking against the cloud ("" = it doesn't).

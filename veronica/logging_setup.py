@@ -49,7 +49,11 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None,
         file_handler.setFormatter(fmt)
         root.addHandler(file_handler)
 
+    global _FILE_HANDLER, _QUIET
+    _FILE_HANDLER = file_handler
     if console_level and console_level.upper() in ("ERROR", "CRITICAL"):
+        _QUIET = True
+        quiet_third_party()
         # Library warnings (deprecation notices etc.) go to the log file, not the conversation.
         logging.captureWarnings(True)
         warnings_logger = logging.getLogger("py.warnings")
@@ -57,6 +61,31 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None,
         warnings_logger.handlers = [file_handler] if file_handler else [logging.NullHandler()]
 
     _CONFIGURED = True
+
+
+_FILE_HANDLER: logging.Handler | None = None
+_QUIET = False
+
+
+def quiet_third_party() -> None:
+    """Keep other libraries' log lines out of the terminal (the conversation): their
+    console handlers are removed and their messages go to the log file only. Libraries
+    such as browser-use set up console logging on import, after setup_logging ran, so
+    this runs again once everything is loaded."""
+    if not _QUIET:
+        return
+    targets = [logging.getLogger()] + [lg for name, lg in logging.Logger.manager.loggerDict.items()
+                                       if isinstance(lg, logging.Logger) and not name.startswith("veronica")]
+    for lg in targets:
+        for h in list(lg.handlers):
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                lg.removeHandler(h)
+    root = logging.getLogger()
+    if _FILE_HANDLER is not None and _FILE_HANDLER not in root.handlers:
+        root.addHandler(_FILE_HANDLER)
+    if not root.handlers:
+        root.addHandler(logging.NullHandler())
+    root.setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

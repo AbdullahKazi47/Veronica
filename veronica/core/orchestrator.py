@@ -287,6 +287,7 @@ class Orchestrator:
         self._turn.tool_text = []
         self._turn.action = None
         self._turn.task = False
+        text = self._without_name(text)
         self._turn.request = text
         self._turn.said = text
         u = self.understanding()
@@ -301,6 +302,18 @@ class Orchestrator:
             logger.info("Understood %r as %r (%s).", text, prepared.text, prepared.note)
         self._turn.request = prepared.text
         return prepared.text
+
+    def _without_name(self, text: str) -> str:
+        """'Veronica, open Spotify' -> 'open Spotify'. Her name in front is how the user gets
+        her attention, not part of the request; left in, the compound splitter answered
+        'Veronica, open.' as two requests ("Right here." ; "Open what?")."""
+        voice = getattr(self.config, "voice", None)
+        names = [getattr(self.config.assistant, "name", "")] + list(getattr(voice, "wake_words", None) or [])
+        names = "|".join(re.escape(n) for n in names if n)
+        if not names:
+            return text
+        rest = re.sub(rf"^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:{names})(?![\w'])[\s,.!:;-]*", "", text, flags=re.I)
+        return rest if rest.strip() else text
 
     def _end_turn(self, response: OrchestratorResponse) -> OrchestratorResponse:
         grounding = getattr(self._turn, "grounding", None)
