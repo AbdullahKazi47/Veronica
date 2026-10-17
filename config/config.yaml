@@ -363,8 +363,10 @@ tts:
   # voices on this PC (no wait, no limit), and goes back to Alice when they return.
   backend: "elevenlabs"
   # When ElevenLabs can't speak (monthly credits used up): free Microsoft voice, then Windows'.
-  backup_backend: "kokoro"
-  backup_voice: "veronica"           # Kokoro blend (speech/kokoro_voice.py BLENDS); or bf_isabella, bf_emma
+  # Backup = Supertonic "F2" ("Female 2" on freetts.com's AI Local TTS), the voice the user
+  # picked, on this PC. Was the Kokoro blend "veronica": backup_backend kokoro, backup_voice veronica.
+  backup_backend: "supertonic"
+  backup_voice: "F2"
   backup_minutes: 180
   # Free plan: only ElevenLabs' built-in voices work over the API. Built-ins tested OK:
   #   Alice Xb7hH8MSUJpSbSDYk0k2 | Jessica cgSgspJ2msm6clMCkdW9 | Matilda XrExE9yKIg1WjnnlVkGX

@@ -23,6 +23,12 @@ class VoiceOption:
 
 # On this PC (Kokoro) first: instant and free. Then the free Microsoft cloud voices, then ElevenLabs.
 OPTIONS: tuple[VoiceOption, ...] = (
+    VoiceOption("Female 2", "supertonic", "F2", "bright and cheerful, FreeTTS's local voice, on this PC",
+                ("female two", "female too", "free tts", "freetts", "supertonic")),
+    VoiceOption("Female 1", "supertonic", "F1", "calm and steady, FreeTTS's local voice, on this PC", ("female one",)),
+    VoiceOption("Female 3", "supertonic", "F3", "FreeTTS's local voice, on this PC", ("female three",)),
+    VoiceOption("Female 4", "supertonic", "F4", "FreeTTS's local voice, on this PC", ("female four",)),
+    VoiceOption("Female 5", "supertonic", "F5", "FreeTTS's local voice, on this PC", ("female five",)),
     VoiceOption("Veronica", "kokoro", "veronica", "my own voice: a confident British blend, on this PC",
                 ("your own", "own voice", "blend")),
     VoiceOption("Emma", "kokoro", "bf_emma", "a calm British woman, on this PC", ("british",)),
@@ -120,6 +126,9 @@ class ChangeVoiceTool(Tool):
     def _usable(self, opt: VoiceOption) -> bool:
         if self._available is not None:
             return self._available(opt)
+        if opt.backend == "supertonic":
+            from veronica.speech import supertonic_voice
+            return supertonic_voice.installed(supertonic_voice.model_dir(self.config))
         if opt.backend == "kokoro":
             from veronica.speech import kokoro_voice
             return kokoro_voice.installed(kokoro_voice.model_dir(self.config))

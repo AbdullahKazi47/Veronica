@@ -100,6 +100,7 @@ class TTSConfig:
     elevenlabs_output_format: str = "mp3_44100_128"
     cache_dir: str = "data/tts_cache"
     kokoro_speed: float = 1.0           # backend "kokoro": 0.8 slower .. 1.3 faster
+    supertonic_speed: float = 1.05      # backend "supertonic" (FreeTTS's local voices)
 
 
 @dataclass

@@ -225,8 +225,18 @@ class TextToSpeech:
         """Get the voice ready in the background at start-up. The first request to
         Microsoft's voice service in a run takes 3-7 s (connection set-up) and later ones
         under 1 s; Kokoro needs ~2 s to load. Doing that now keeps it off the greeting."""
+        local = {self.config.backend, getattr(self.config, "backup_backend", "")}
+
         def go():
             try:
+                if "supertonic" in local:
+                    from veronica.speech import supertonic_voice
+                    if supertonic_voice.installed(self.supertonic_folder()):
+                        supertonic_voice._style(self.supertonic_folder(),
+                                                self.config.voice if self.config.backend == "supertonic"
+                                                else getattr(self.config, "backup_voice", "F2"))
+                    if self.config.backend == "supertonic":
+                        return
                 if self.config.backend == "kokoro" or getattr(self.config, "backup_backend", "") == "kokoro":
                     from veronica.speech import kokoro_voice
                     if kokoro_voice.installed(self.kokoro_folder()):
@@ -240,8 +250,7 @@ class TextToSpeech:
                 asyncio.run(ping())
             except Exception:  # noqa: BLE001
                 pass
-        uses_kokoro = self.config.backend == "kokoro" or getattr(self.config, "backup_backend", "") == "kokoro"
-        if self.config.backend in ("edge_tts", "kokoro") or uses_kokoro:
+        if self.config.backend in ("edge_tts", "kokoro", "supertonic") or local & {"kokoro", "supertonic"}:
             threading.Thread(target=go, name="tts-warm", daemon=True).start()
 
     # -- backup voice ------------------------------------------------------------------
@@ -258,6 +267,11 @@ class TextToSpeech:
     def _backup_file(self, text: str) -> Optional[Path]:
         """Synthesize with the free backup voice (edge-tts). None if that fails too."""
         voice = getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural"
+        if getattr(self.config, "backup_backend", "edge_tts") == "supertonic":
+            path = self._supertonic_file(text, voice)  # on this PC: no wait, no limit
+            if path is not None:
+                return path
+            voice = "en-GB-SoniaNeural"
         if getattr(self.config, "backup_backend", "edge_tts") == "kokoro":
             path = self._kokoro_file(text, voice)      # on this PC: no wait, no limit
             if path is not None:
@@ -288,6 +302,10 @@ class TextToSpeech:
             path = self._elevenlabs_file(text, previous=previous, following=following)
             if path is not None:
                 return path
+        if self.config.backend == "supertonic" and self.config.voice:
+            path = self._supertonic_file(text, self.config.voice)
+            if path is not None:
+                return path
         if self.config.backend == "kokoro" and self.config.voice:
             path = self._kokoro_file(text, self.config.voice)
             if path is not None:
@@ -297,6 +315,22 @@ class TextToSpeech:
             if path is not None:
                 return path
         return self._backup_file(text)
+
+    def supertonic_folder(self) -> Path:
+        return self.cache_dir.parent / "models" / "supertonic"
+
+    def _supertonic_file(self, text: str, voice: str) -> Optional[Path]:
+        """One clip from Supertonic (FreeTTS's local voices, speech/supertonic_voice.py)."""
+        from veronica.speech import supertonic_voice
+        folder = self.supertonic_folder()
+        if not supertonic_voice.installed(folder):
+            return None
+        speed = float(getattr(self.config, "supertonic_speed", 1.05) or 1.05)
+        digest = hashlib.sha256(f"supertonic:{voice}:{speed}:{text}".encode("utf-8")).hexdigest()[:24]
+        out = self.cache_dir / f"{digest}.wav"
+        if out.exists():
+            return out
+        return supertonic_voice.synthesize(folder, text, voice, out, speed=speed)
 
     def kokoro_folder(self) -> Path:
         return self.cache_dir.parent / "models" / "kokoro"
@@ -320,7 +354,7 @@ class TextToSpeech:
         if not text or self.config.backend == "none":
             return
 
-        if self.config.backend == "kokoro":
+        if self.config.backend in ("kokoro", "supertonic"):
             target = self._speak_pipelined
         elif self.config.backend == "edge_tts":
             target = self._speak_edge_tts
@@ -346,7 +380,7 @@ class TextToSpeech:
         Backends without a file-per-clip path speak whole (not interruptible)."""
         if not text or self.config.backend == "none":
             return True
-        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro"):
+        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro", "supertonic"):
             self.speak(text, block=True)
             return True
         pieces = split_for_speech(text)
@@ -359,7 +393,7 @@ class TextToSpeech:
         """Speak `pieces` (any iterable of sentences; it may still be filling up while the
         reply is being written). Each one is synthesized while the previous one plays.
         Returns True when all were spoken, False when `stop` cut it short."""
-        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro"):
+        if self.config.backend not in ("elevenlabs", "edge_tts", "kokoro", "supertonic"):
             for piece in pieces:
                 if stop.is_set():
                     return False

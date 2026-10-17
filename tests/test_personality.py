@@ -73,7 +73,9 @@ def test_alice_runs_out_then_the_blend_speaks(tmp_path):
 
 def test_voice_picker_has_her_own_voice():
     from veronica.tools.voice_tools import OPTIONS, find_option
-    assert OPTIONS[0].name == "Veronica" and OPTIONS[0].voice == "veronica"
+    assert any(o.name == "Veronica" and o.voice == "veronica" for o in OPTIONS)
+    assert find_option("use the female too voice").name == "Female 2"            # how speech hears "Female 2"
+    assert find_option("female 1").name == "Female 1"
     assert find_option("use your own voice").name == "Veronica"
     assert find_option("change your voice to Emma").name == "Emma"
 
@@ -93,3 +95,35 @@ def test_feature_check_writes_to_a_scratch_folder():
     assert cfg.resolve_path("data/reminders.json").parent.name.startswith("veronica-check-")
     assert cfg.resolve_path("data/models/kokoro") == real.parent / "models" / "kokoro"   # models stay real
     assert cfg.memory.persist_conversation is False and cfg.mem0.enabled is False
+
+
+def test_alice_runs_out_then_female_2_speaks(tmp_path):
+    """Supertonic F2 ("Female 2" on freetts.com) is the backup the user picked."""
+    from unittest.mock import patch
+    from veronica.config import TTSConfig
+    from veronica.speech.tts import TextToSpeech
+    tts = TextToSpeech(TTSConfig(backend="elevenlabs", backup_backend="supertonic", backup_voice="F2"),
+                       cache_dir=tmp_path / "c")
+    tts._mark_primary_out("quota")
+    with patch.object(tts, "_supertonic_file", return_value=tmp_path / "s.wav") as st, \
+            patch.object(tts, "_edge_file") as edge:
+        assert tts._voice_file("Hello.") == tmp_path / "s.wav"
+    st.assert_called_once_with("Hello.", "F2")
+    edge.assert_not_called()
+
+
+def test_supertonic_missing_falls_back_to_the_online_voice(tmp_path):
+    from unittest.mock import patch
+    from veronica.config import TTSConfig
+    from veronica.speech.tts import TextToSpeech
+    tts = TextToSpeech(TTSConfig(backend="supertonic", voice="F2", backup_backend="edge_tts"),
+                       cache_dir=tmp_path / "c")                     # no model under tmp_path
+    with patch.object(tts, "_edge_file", return_value=tmp_path / "e.mp3") as edge:
+        assert tts._voice_file("Hello.") == tmp_path / "e.mp3"
+    edge.assert_called_once()
+
+
+def test_config_backup_is_female_2():
+    from veronica.config import load_config
+    c = load_config()
+    assert (c.tts.backend, c.tts.backup_backend, c.tts.backup_voice) == ("elevenlabs", "supertonic", "F2")

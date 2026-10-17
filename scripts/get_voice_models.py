@@ -56,10 +56,30 @@ def fetch(name: str, size: int, digest: str) -> bool:
     return True
 
 
+def supertonic() -> bool:
+    """Supertonic ("Female 2", her backup voice): the official package fetches its model
+    from Hugging Face (Supertone/supertonic-3, ~385 MB) into data/models/supertonic."""
+    folder = TARGET.parent / "supertonic"
+    try:
+        from supertonic import loader
+    except ImportError:
+        print("supertonic: not installed (pip install supertonic); skipped")
+        return True
+    if loader.has_all_onnx_modules(folder):
+        print("supertonic: already here")
+        return True
+    print("supertonic: downloading ~385 MB ...")
+    loader.download_model(folder, "supertonic-3")
+    ok = loader.has_all_onnx_modules(folder)
+    print("supertonic: ok" if ok else "supertonic: download incomplete")
+    return ok
+
+
 def main() -> int:
     TARGET.mkdir(parents=True, exist_ok=True)
     ok = all(fetch(name, size, digest) for name, (size, digest) in FILES.items())
-    print("Kokoro voice ready." if ok else "Some files failed; run this again.")
+    ok = supertonic() and ok
+    print("Voices ready." if ok else "Some files failed; run this again.")
     return 0 if ok else 1
 
 
