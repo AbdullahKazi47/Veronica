@@ -66,15 +66,38 @@ def voices(folder: Path) -> list[str]:
         return []
 
 
+# Blends of Kokoro's voices (style vectors mixed by weight): a voice of her own. "veronica"
+# leans British and bright with some of af_heart's warmth, the nearest Kokoro gets to
+# ElevenLabs' Alice (confident, British, clear).
+BLENDS: dict[str, dict[str, float]] = {
+    "veronica": {"bf_isabella": 0.45, "bf_emma": 0.35, "af_heart": 0.20},
+}
+
+
 def lang_for(voice: str) -> str:
+    if voice in BLENDS:
+        lead = max(BLENDS[voice].items(), key=lambda kv: kv[1])[0]
+        return lang_for(lead)
     return "en-gb" if voice.startswith("b") else "en-us"
+
+
+def _style(engine, voice: str):
+    """A voice name, or the mixed style vector for a blend."""
+    if voice not in BLENDS:
+        return voice
+    mix = None
+    for name, weight in BLENDS[voice].items():
+        part = engine.get_voice_style(name) * weight
+        mix = part if mix is None else mix + part
+    return mix
 
 
 def synthesize(folder: Path, text: str, voice: str, out: Path, speed: float = 1.0) -> Optional[Path]:
     """Write one WAV clip. None on failure."""
     try:
         import numpy as np
-        samples, rate = _engine(folder).create(text, voice=voice, speed=speed, lang=lang_for(voice))
+        engine = _engine(folder)
+        samples, rate = engine.create(text, voice=_style(engine, voice), speed=speed, lang=lang_for(voice))
         pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
         tmp = out.with_suffix(".part")
         with wave.open(str(tmp), "wb") as w:

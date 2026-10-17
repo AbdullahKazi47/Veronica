@@ -266,7 +266,8 @@ class CLIApp:
                     # Voice: "bye" / "go to sleep" / "thanks" end the conversation; she
                     # goes back to waiting for her name. She is never quit by voice, and
                     # nothing here touches the PC itself.
-                    self._say("Okay.")
+                    from veronica.core.flair import goodbye
+                    self._say(goodbye())
                     self._follow_up_until = 0.0
                     continue
                 if not self.voice_mode and text.strip().lower().strip(".!") in _EXIT_WORDS:

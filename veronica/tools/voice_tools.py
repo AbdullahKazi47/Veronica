@@ -23,6 +23,8 @@ class VoiceOption:
 
 # On this PC (Kokoro) first: instant and free. Then the free Microsoft cloud voices, then ElevenLabs.
 OPTIONS: tuple[VoiceOption, ...] = (
+    VoiceOption("Veronica", "kokoro", "veronica", "my own voice: a confident British blend, on this PC",
+                ("your own", "own voice", "blend")),
     VoiceOption("Emma", "kokoro", "bf_emma", "a calm British woman, on this PC", ("british",)),
     VoiceOption("Isabella", "kokoro", "bf_isabella", "a brighter British woman, on this PC"),
     VoiceOption("Lily", "kokoro", "bf_lily", "a soft, young British woman, on this PC"),

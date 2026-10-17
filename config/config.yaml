@@ -358,9 +358,13 @@ tts:
   # 2026-10-17 later: Kokoro (backend "kokoro") runs on this PC: no internet wait, no
   # limits, British "bf_emma" closest to ElevenLabs' Alice. Change by voice: "what voices
   # do you have?", "change your voice to Emily" (the Irish one), "try the next voice".
-  backend: "kokoro"
+  # 2026-10-17 evening: back to ElevenLabs' Alice, the voice the user liked best. When its
+  # free monthly credits run out she switches by herself to "veronica", a blend of Kokoro
+  # voices on this PC (no wait, no limit), and goes back to Alice when they return.
+  backend: "elevenlabs"
   # When ElevenLabs can't speak (monthly credits used up): free Microsoft voice, then Windows'.
-  backup_voice: "en-GB-SoniaNeural"   # others: en-IN-NeerjaNeural, en-US-AvaNeural, en-GB-LibbyNeural
+  backup_backend: "kokoro"
+  backup_voice: "veronica"           # Kokoro blend (speech/kokoro_voice.py BLENDS); or bf_isabella, bf_emma
   backup_minutes: 180
   # Free plan: only ElevenLabs' built-in voices work over the API. Built-ins tested OK:
   #   Alice Xb7hH8MSUJpSbSDYk0k2 | Jessica cgSgspJ2msm6clMCkdW9 | Matilda XrExE9yKIg1WjnnlVkGX
@@ -368,7 +372,7 @@ tts:
   elevenlabs_voice_id: "Xb7hH8MSUJpSbSDYk0k2"
   elevenlabs_model: "eleven_flash_v2_5"
   # previous: backend "fish_audio"  # FRIDAY voice (Phase 11B) — Fish Audio reference
-  voice: "bf_emma"                 # kokoro: bf_emma bf_isabella bf_lily af_heart af_bella | edge_tts: en-IE-EmilyNeural
+  voice: "veronica"                # kokoro: veronica (blend) bf_emma bf_isabella af_heart | edge_tts: en-IE-EmilyNeural
   rate: "+5%"
   piper_model: "en_US-lessac-medium"
   fish_audio_reference_id: "8ec7352282684afc90cdfef961cbdae7"

@@ -70,11 +70,9 @@ class CurrentTimeTool(Tool):
         return bool(_TIME_PATTERN.search(text))
 
     def run(self, **kwargs: Any) -> ToolResult:
+        from veronica.core.flair import spoken_time
         now = dt.datetime.now()
-        return ToolResult.ok(
-            f"It's {now.strftime('%H:%M')} on {now.strftime('%A, %d %B %Y')}.",
-            iso=now.isoformat(),
-        )
+        return ToolResult.ok(spoken_time(now), iso=now.isoformat())
 
 
 def _number(value) -> str:

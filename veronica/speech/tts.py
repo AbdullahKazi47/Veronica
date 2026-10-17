@@ -227,7 +227,7 @@ class TextToSpeech:
         under 1 s; Kokoro needs ~2 s to load. Doing that now keeps it off the greeting."""
         def go():
             try:
-                if self.config.backend == "kokoro":
+                if self.config.backend == "kokoro" or getattr(self.config, "backup_backend", "") == "kokoro":
                     from veronica.speech import kokoro_voice
                     if kokoro_voice.installed(self.kokoro_folder()):
                         kokoro_voice._engine(self.kokoro_folder())   # load the model now
@@ -240,7 +240,8 @@ class TextToSpeech:
                 asyncio.run(ping())
             except Exception:  # noqa: BLE001
                 pass
-        if self.config.backend in ("edge_tts", "kokoro"):
+        uses_kokoro = self.config.backend == "kokoro" or getattr(self.config, "backup_backend", "") == "kokoro"
+        if self.config.backend in ("edge_tts", "kokoro") or uses_kokoro:
             threading.Thread(target=go, name="tts-warm", daemon=True).start()
 
     # -- backup voice ------------------------------------------------------------------
@@ -256,7 +257,13 @@ class TextToSpeech:
 
     def _backup_file(self, text: str) -> Optional[Path]:
         """Synthesize with the free backup voice (edge-tts). None if that fails too."""
-        return self._edge_file(text, getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural")
+        voice = getattr(self.config, "backup_voice", "") or "en-GB-SoniaNeural"
+        if getattr(self.config, "backup_backend", "edge_tts") == "kokoro":
+            path = self._kokoro_file(text, voice)      # on this PC: no wait, no limit
+            if path is not None:
+                return path
+            voice = "en-GB-SoniaNeural"                # Kokoro not installed: the free online voice
+        return self._edge_file(text, voice)
 
     def _edge_file(self, text: str, voice: str) -> Optional[Path]:
         """One clip from a free Microsoft neural voice (edge-tts), cached. None on failure."""

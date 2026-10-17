@@ -424,7 +424,8 @@ class Orchestrator:
             result = self.tools.dispatch(tool.name, **args)
             self._turn.action = (tool.name, dict(args or {}))
             session.last_tool_used = tool.name
-            reply = result.message
+            from veronica.core.flair import dress
+            reply = dress(result.message, ok=result.success)
             session.short_term.add("assistant", reply)
             return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
 
@@ -719,7 +720,8 @@ class Orchestrator:
             result = self.tools.dispatch(tool.name, **args)
             self._turn.action = (tool.name, dict(args or {}))
             session.last_tool_used = tool.name
-            reply = result.message
+            from veronica.core.flair import dress
+            reply = dress(result.message, ok=result.success)
             session.short_term.add("assistant", reply)
             return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
 
@@ -813,7 +815,7 @@ class Orchestrator:
                 attest_meta = None
 
             if not response.tool_calls:
-                reply = response.content or "I'm not sure how to respond to that."
+                reply = response.content or "Sorry, boss, I lost the thread there. Say that once more?"
                 failed = not getattr(response, "ok", True)
                 if failed and collected_results:
                     # Tools already ran this turn (e.g. something was opened): say so, so

@@ -62,8 +62,32 @@ def check(area, feature, fn):
                time.monotonic() - t)
 
 
+_SCRATCH_FILES = ("conversation.json", "conversation_state.json", "learned_fixes.json", "aliases.json",
+                  "reminders.json", "notes.json", "todos.json", "calendar.json", "background_tasks.json",
+                  "routines.json", "proactive_state.json", "voice.json", "gps.json")
+
+
+def _scratch_data(cfg) -> None:
+    """Point the files this check writes (conversation, reminders, notes, ...) at a temp
+    folder. It ran hourly against the real ones: "what time is it" / "what is 2 plus 2"
+    filled her conversation memory, and a test event's reminder went off the next day."""
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="veronica-check-"))
+    real = cfg.resolve_path
+
+    def resolve(rel):
+        name = str(rel).replace("\\", "/")
+        if name.startswith("data/") and name.split("/")[-1] in _SCRATCH_FILES:
+            return scratch / name.split("/")[-1]
+        return real(rel)
+    cfg.resolve_path = resolve
+    cfg.memory.persist_conversation = False
+    cfg.mem0.enabled = False                 # don't teach her facts from test questions
+
+
 def main() -> int:
     cfg = load_config()
+    _scratch_data(cfg)
     from veronica.main import build_app
     t0 = time.monotonic()
     app = build_app(cfg, interactive=False)       # permission questions -> "no"
@@ -168,7 +192,7 @@ def main() -> int:
     check("brain", "Gemini down -> Groq takes over", failover)
 
     # ---------------------------------------------------------------- everyday info
-    check("info", "time", run("what time is it", lambda m: ":" in m, "get_current_time"))
+    check("info", "time", run("what time is it", lambda m: m.startswith("It's ") and any(w in m for w in (":", "o'clock", "noon", "midnight")), "get_current_time"))
     check("info", "calculator", run("what is 12 times 7", lambda m: "84" in m, "calculate"))
     check("info", "weather (your city)", run("what's the weather", lambda m: "°" in m or "degree" in m.lower(), "get_weather"))
     check("info", "news: India first, then world", run("what's the news", lambda m: len(m) > 60, "get_news"))

@@ -190,7 +190,7 @@ class BackgroundTasks:
         running = [t for t in tasks if t.status in ("queued", "running")]
         recent = [t for t in tasks if t.status in ("done", "failed")][-3:]
         if not running and not recent:
-            return "I'm not working on anything in the background."
+            return "Nothing running in the background, boss. I'm all yours."
         parts = []
         if running:
             parts.append("I'm still working on " + "; ".join(t.request for t in running) + ".")
