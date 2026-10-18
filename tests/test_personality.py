@@ -135,3 +135,12 @@ def test_she_calls_the_user_sir_and_boss(monkeypatch):
     monkeypatch.setattr(flair._rng, "random", lambda: 0.0)
     said = {flair.dress("Opening Spotify.") for _ in range(60)}
     assert said == {"Opening Spotify, boss.", "Opening Spotify, sir."}
+
+
+def test_screen_questions_are_not_refused_for_vision():
+    """Seen live: 'I have seen my screen...' -> 'I can't fully handle this request: vision.'"""
+    from veronica.config import load_config
+    from veronica.llm.routing.builder import build_routing
+    asm = build_routing(load_config())
+    t = asm.analyzer.analyze("I have seen my screen, that's how my name is spelled.", context={"tools_available": True})
+    assert asm.router.route(t, context={"tools_available": True}).satisfied

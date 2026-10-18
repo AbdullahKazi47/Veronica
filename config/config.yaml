@@ -130,6 +130,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 30
     - model_id: "gemini-3.5-flash"
@@ -144,6 +146,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 15                 # normal replies take 4-6 s; give up sooner when Google is overloaded
     # Backups on another service (Groq), used only when Gemini fails — e.g. its "503
@@ -195,6 +199,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 20
     - model_id: "gemini-3.8-flash"
@@ -209,6 +215,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 45                 # it is genuinely this slow; a short timeout wastes the rung
     - model_id: "gemini-3.1-flash-lite"
@@ -222,6 +230,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 20
     - model_id: "gemini-3.7-flash"
@@ -236,6 +246,8 @@ routing:
       supports_streaming: true
       context_window: 1048576
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      supports_vision: true         # Gemini reads images; without this, "...my screen" was refused with
+                                    # "No configured model supports the required capability: vision"
       api_key_env: "GEMINI_API_KEY"
       timeout_s: 20
     # Optional backups on other services; each switches on once its key is in config/.env
