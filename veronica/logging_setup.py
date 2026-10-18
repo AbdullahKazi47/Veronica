@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import warnings
 from pathlib import Path
 
 _CONFIGURED = False
@@ -59,6 +60,9 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None,
         warnings_logger = logging.getLogger("py.warnings")
         warnings_logger.propagate = False
         warnings_logger.handlers = [file_handler] if file_handler else [logging.NullHandler()]
+        # Third-party deprecation notices we can't fix, repeated on every mic open / import.
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"sounddevice")
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"google\.genai")
 
     _CONFIGURED = True
 
