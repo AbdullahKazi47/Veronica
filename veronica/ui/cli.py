@@ -107,9 +107,21 @@ class CLIApp:
             apply_saved_voice(config)            # the voice chosen by voice last time
         except Exception:  # noqa: BLE001
             logger.exception("Couldn't load the saved voice.")
+        self._earphones_note = None
+        if voice_mode:
+            try:
+                from veronica.voice.earphones import apply as apply_earphones
+                self._earphones_note = apply_earphones(config)   # quiet "Veronica" in public
+            except Exception:  # noqa: BLE001
+                logger.exception("Couldn't check for earphones.")
         self.tts = TextToSpeech(config.tts, cache_dir=config.resolve_path(config.tts.cache_dir))
         if voice_mode:
             self.tts.warm()
+        self.quick_ack = None
+        if voice_mode and getattr(config.voice, "quick_ack", False):
+            from veronica.voice.quick_ack import QuickAck
+            self.quick_ack = QuickAck(self.tts, getattr(config.voice, "quick_ack_phrases", None) or ())
+            self.quick_ack.prepare()
         self.speaker = SynchronousSpeaker(self.tts)
         self.stt = SpeechToText(config.stt, corrections=self._make_corrections()) if voice_mode else None
         if self.stt is not None:
@@ -211,6 +223,8 @@ class CLIApp:
     def _report_output(self) -> None:
         """Say where the voice will come out — a muted or headphone output looks
         exactly like 'VERONICA has no voice'."""
+        if getattr(self, "_earphones_note", None):
+            self._notice(self._earphones_note)
         from veronica.tools.system_tools import output_status
         out = output_status()
         if out is None:
@@ -278,6 +292,7 @@ class CLIApp:
                 try:
                     reply = self._background_reply(text)
                     if reply is None:
+                        self._acknowledge(text)
                         reply, live = self._answer(text)
                 except Exception:  # noqa: BLE001 - one failed request must never take VERONICA down
                     logger.exception("Request failed: %r", text)
@@ -725,7 +740,8 @@ class CLIApp:
             return False
         stats = getattr(result, "stats", None) or {}
         ambient, speech = stats.get("ambient_rms"), stats.get("speech_rms")
-        return bool(ambient and speech and speech >= ambient * 2.0)
+        ratio = min(2.0, float(getattr(self.config.stt, "speech_over_ambient", 2.0) or 2.0))
+        return bool(ambient and speech and speech >= ambient * ratio)
 
     def _check_what_was_said(self, text: str) -> Optional[str]:
         """Low confidence: "Did you say ...?" — yes keeps it, no asks once more."""
@@ -753,6 +769,38 @@ class CLIApp:
             winsound.Beep(880, 120)
         except Exception:
             pass
+
+    def _acknowledge(self, text: str) -> Optional[threading.Thread]:
+        """Say "Mm-hm." at once while the model thinks (voice/quick_ack.py). Not for
+        commands she runs herself: those answer quickly anyway. Holds the speaking lock,
+        so her reply starts right after the clip and never on top of it."""
+        ack = getattr(self, "quick_ack", None)
+        tools = getattr(getattr(self, "orchestrator", None), "tools", None)
+        if ack is None or (tools is not None and tools.find_fast_match(text) is not None):
+            return None
+        clip = ack.pick()
+        if clip is None:
+            return None
+        started = threading.Event()
+
+        def play() -> None:
+            with self._speak_lock:
+                started.set()
+                hub = getattr(self, "hub", None)
+                if hub is not None:
+                    hub.self_speaking = True   # her voice is not the room's noise level
+                try:
+                    from veronica.voice.quick_ack import play as play_ack
+                    play_ack(clip)
+                except Exception:  # noqa: BLE001 - a missing "Mm-hm." must never stop the reply
+                    logger.debug("Quick acknowledgement failed.", exc_info=True)
+                finally:
+                    if hub is not None:
+                        hub.self_speaking = False
+        t = threading.Thread(target=play, name="quick-ack-play", daemon=True)
+        t.start()
+        started.wait(0.2)          # it holds the lock before the reply can take it
+        return t
 
     def _live_speech_on(self) -> bool:
         cfg = getattr(self.config, "streaming", None)

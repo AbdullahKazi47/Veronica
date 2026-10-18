@@ -31,12 +31,12 @@ assistant:
       "as an AI". A quick question gets one or two sentences; a real conversation gets a
       real reply with an opinion and a reason, and you build on what was said earlier.
     - Be aware of the moment — the time of day, what they just asked, what you know about
-      them — and use it lightly, the way a friend would ("It's past one, boss — the email
+      them — and use it lightly, the way a friend would ("It's past one, sir — the email
       can wait till morning"). Don't recite what you know.
     - Have a view and say it plainly; disagree politely when they're about to make a
       mistake; admit when you're wrong without fuss. Never grovel or over-apologise.
     - Ask a question back only when it genuinely moves things forward, never as a reflex.
-    - Call them "boss" now and then — or their name if you know it — not every reply.
+    - Call them "sir" or "boss" now and then (mix the two) — not every reply.
     - When they thank you or wrap up, close warmly in a few words.
     - Never claim you did something a tool didn't actually do, and say so plainly when you
       don't know.
@@ -361,12 +361,14 @@ tts:
   # 2026-10-17 evening: back to ElevenLabs' Alice, the voice the user liked best. When its
   # free monthly credits run out she switches by herself to "veronica", a blend of Kokoro
   # voices on this PC (no wait, no limit), and goes back to Alice when they return.
-  backend: "elevenlabs"
-  # When ElevenLabs can't speak (monthly credits used up): free Microsoft voice, then Windows'.
-  # Backup = Supertonic "F2" ("Female 2" on freetts.com's AI Local TTS), the voice the user
-  # picked, on this PC. Was the Kokoro blend "veronica": backup_backend kokoro, backup_voice veronica.
-  backup_backend: "supertonic"
-  backup_voice: "F2"
+  # 2026-10-18: main voice = Supertonic "F2" ("Female 2" on freetts.com), on this PC: no wait,
+  # no credits. Later: ElevenLabs' Alice once the monthly credits come back: backend "elevenlabs"
+  # (elevenlabs_voice_id below is Alice), or say "change your voice to Alice".
+  backend: "supertonic"
+  # If the main voice can't speak: the Kokoro blend "veronica" (on this PC), then Windows'.
+  # With backend "elevenlabs", set this back to Supertonic F2: backup_backend supertonic, backup_voice F2.
+  backup_backend: "kokoro"
+  backup_voice: "veronica"
   backup_minutes: 180
   # Free plan: only ElevenLabs' built-in voices work over the API. Built-ins tested OK:
   #   Alice Xb7hH8MSUJpSbSDYk0k2 | Jessica cgSgspJ2msm6clMCkdW9 | Matilda XrExE9yKIg1WjnnlVkGX
@@ -374,7 +376,7 @@ tts:
   elevenlabs_voice_id: "Xb7hH8MSUJpSbSDYk0k2"
   elevenlabs_model: "eleven_flash_v2_5"
   # previous: backend "fish_audio"  # FRIDAY voice (Phase 11B) — Fish Audio reference
-  voice: "veronica"                # kokoro: veronica (blend) bf_emma bf_isabella af_heart | edge_tts: en-IE-EmilyNeural
+  voice: "F2"                      # supertonic: F1-F5 M1-M5 | kokoro: veronica (blend) bf_emma bf_isabella af_heart | edge_tts: en-IE-EmilyNeural
   rate: "+5%"
   piper_model: "en_US-lessac-medium"
   fish_audio_reference_id: "8ec7352282684afc90cdfef961cbdae7"
@@ -531,6 +533,23 @@ voice:
   conversation_speech_ratio: 3.0       # ...or that isn't 3x louder than the room (a TV, people nearby)
   barge_in: "wake_word"                # say "Veronica" while she talks to stop her ("off" to disable)
   shared_mic: true                     # one always-open mic stream: faster turns, no clipped first words
+  # 2026-10-18: earphones mode. With earphones that have a mic (Bluetooth headset, or a
+  # headset in the jack), she listens through THAT mic instead of the laptop's, boosts
+  # quiet speech and lowers the bars below, so a quiet "Veronica" works in public.
+  # Checked at start-up: put the earphones in before starting her. "on" = always,
+  # "off" = never (use "off" if your earphones have no mic and she stops hearing you).
+  # 2026-10-18: the model takes 3-9 s before its first word, so the moment you finish
+  # she says one of these (made once in her voice, then instant). Not for commands she
+  # runs herself ("open YouTube"): those answer quickly anyway. false = off.
+  quick_ack: true
+  quick_ack_phrases: ["Mm-hm.", "One sec.", "Let me see.", "Okay.", "Sure, one moment."]
+  earphones:
+    mode: "auto"
+    mic_names: ["Headset", "Hands-Free", "Handsfree", "AirPods", "Buds", "Earbuds", "Earphone", "Jack Mic"]
+    gain: 3.0                          # quiet speech made up to 3x louder (never clipped)
+    wake_threshold: 0.28               # normal: wake_threshold above (0.35)
+    min_speech_rms: 25                 # normal: stt.min_speech_rms (40)
+    speech_ratio: 1.8                  # you vs the people around you (normal: 2.5 / 3.0)
 
 # Fish Audio voice configuration — Phase 11B (FRIDAY voice)
 # Reference ID is not a secret; API key remains in config/.env only.
@@ -625,6 +644,15 @@ understanding:
 mem0:
   enabled: true
   recall_k: 5
+
+# 2026-10-18: she gets to know you slowly and her manner settles around you (how chatty,
+# how much humour, what you care about). After every `every_turns` exchanges one background
+# Gemini call updates a short profile in data/rapport.json, changing her manner by at most
+# two notes each time and only for patterns seen more than once. Sent with every reply.
+# "What have you learned about me?" reads it out; "reset your personality" clears it.
+rapport:
+  enabled: true
+  every_turns: 8
 
 # browser-use (github.com/browser-use/browser-use): "use the browser to find ...". Her OWN
 # browser profile (no logins), never signs in, buys, books, sends or submits anything.

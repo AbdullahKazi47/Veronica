@@ -23,10 +23,11 @@ def test_time_said_like_a_person(when, said):
 
 def test_dress_only_touches_short_successful_answers(monkeypatch):
     monkeypatch.setattr(flair._rng, "random", lambda: 0.0)          # always add the touch
-    assert flair.dress("Opening Spotify.") == "Opening Spotify, boss."
+    assert flair.dress("Opening Spotify.") in ("Opening Spotify, boss.", "Opening Spotify, sir.")
     assert flair.dress("Couldn't find Spotify.", ok=False) == "Couldn't find Spotify."
     assert flair.dress("Which one, the first or the second?") == "Which one, the first or the second?"
     assert flair.dress("Right away, boss.") == "Right away, boss."
+    assert flair.dress("Right away, sir.") == "Right away, sir."
     long = "Here is a long answer that goes on and on about the weather in Bhatkal and the sea breeze tonight."
     assert flair.dress(long) == long
     monkeypatch.setattr(flair._rng, "random", lambda: 0.99)         # most of the time: unchanged
@@ -123,7 +124,14 @@ def test_supertonic_missing_falls_back_to_the_online_voice(tmp_path):
     edge.assert_called_once()
 
 
-def test_config_backup_is_female_2():
+def test_config_main_voice_is_female_2():
     from veronica.config import load_config
     c = load_config()
-    assert (c.tts.backend, c.tts.backup_backend, c.tts.backup_voice) == ("elevenlabs", "supertonic", "F2")
+    assert (c.tts.backend, c.tts.voice) == ("supertonic", "F2")
+    assert (c.tts.backup_backend, c.tts.backup_voice) == ("kokoro", "veronica")
+
+
+def test_she_calls_the_user_sir_and_boss(monkeypatch):
+    monkeypatch.setattr(flair._rng, "random", lambda: 0.0)
+    said = {flair.dress("Opening Spotify.") for _ in range(60)}
+    assert said == {"Opening Spotify, boss.", "Opening Spotify, sir."}

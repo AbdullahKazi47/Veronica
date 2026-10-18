@@ -5,6 +5,28 @@ from __future__ import annotations
 # entries for the same mic often reject that format.
 _HOSTAPI_PREFERENCE = ("MME", "Windows DirectSound", "Windows WASAPI", "Windows WDM-KS")
 
+# Earphones mode (voice/earphones.py) boosts quiet speech for everything that listens.
+_gain = 1.0
+_BOOST_PEAK = 24000          # never boost a block past this: clipped audio is misheard
+
+
+def set_input_gain(gain: float) -> None:
+    global _gain
+    _gain = max(1.0, float(gain or 1.0))
+
+
+def boost(data: bytes) -> bytes:
+    """Raw int16 audio, louder by the input gain, limited so it never clips."""
+    if _gain <= 1.0 or not data:
+        return data
+    import numpy as np
+    a = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+    peak = float(np.abs(a).max()) if a.size else 0.0
+    g = min(_gain, _BOOST_PEAK / peak) if peak else _gain
+    if g <= 1.0:
+        return data
+    return (a * g).astype(np.int16).tobytes()
+
 
 def resolve_input_device(name: str | None = None, index: int | None = None,
                          devices=None, hostapis=None) -> int | None:
@@ -102,10 +124,10 @@ class MicrophoneInput:
                 # Read float32/int16 frames; return raw bytes
                 frame, overflow = self._stream.read(self.chunk_size)
                 if isinstance(frame, np.ndarray):
-                    return frame.tobytes()
+                    return boost(frame.tobytes())
                 return b""
             else:
-                return self._stream.read(self.chunk_size, exception_on_overflow=False)
+                return boost(self._stream.read(self.chunk_size, exception_on_overflow=False))
         except Exception:
             return b""
 

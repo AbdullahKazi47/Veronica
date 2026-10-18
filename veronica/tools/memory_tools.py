@@ -211,5 +211,68 @@ class ForgetAllMemoriesTool(_MemoryToolBase):
             self.memory.forget(f.key)
         mem = self.mem0()
         n = len(facts) + (mem.forget_all() if mem else 0)
+        rapport = _rapport(self.config)
+        n += rapport.reset() if rapport is not None else 0
         return ToolResult.ok(f"Done. I've forgotten all {n} thing{'s' if n != 1 else ''} I knew about you.",
                              count=n)
+
+
+def _rapport(config):
+    if config is None:
+        return None
+    try:
+        from veronica.memory.rapport import get_rapport
+        return get_rapport(config)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_ABOUT_ME = re.compile(r"\bwhat\s+(?:have\s+you|did\s+you)\s+(?:learn(?:ed|t)?|picked\s+up|figured\s+out)\s+about\s+me\b|"
+                       r"\bhow\s+well\s+do\s+you\s+know\s+me\b|\bdescribe\s+me\b|"
+                       r"\bwhat\s+do\s+you\s+think\s+of\s+me\b|\bhow\s+have\s+you\s+changed\b", re.I)
+_RESET_PERSONALITY = re.compile(r"\breset\s+(?:your\s+)?personality\b|"
+                                r"\bforget\s+what\s+you(?:'ve|\s+have)?\s+learn(?:ed|t)\s+about\s+me\b|"
+                                r"\bgo\s+back\s+to\s+(?:your\s+)?(?:default|original)\s+personality\b", re.I)
+
+
+class AboutMeTool(Tool):
+    name = "what_you_learned_about_me"
+    description = ("Say what VERONICA has learned about the user over time and how she has adjusted her "
+                   "manner to them (memory/rapport.py).")
+    permission = PermissionLevel.SAFE
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(self, config=None, rapport=None) -> None:
+        self.config = config
+        self._rapport = rapport
+
+    def matches(self, text: str) -> bool:
+        return bool(_ABOUT_ME.search(text))
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        rapport = self._rapport or _rapport(self.config)
+        if rapport is None:
+            return ToolResult.ok("Learning about you is switched off (rapport.enabled in config.yaml).")
+        return ToolResult.ok(rapport.summary())
+
+
+class ResetPersonalityTool(Tool):
+    name = "reset_personality"
+    description = "Forget what VERONICA learned about the user's manner and go back to her default personality."
+    permission = PermissionLevel.SENSITIVE  # destructive: always confirmed
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(self, config=None, rapport=None) -> None:
+        self.config = config
+        self._rapport = rapport
+
+    def matches(self, text: str) -> bool:
+        return bool(_RESET_PERSONALITY.search(text))
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        rapport = self._rapport or _rapport(self.config)
+        if rapport is None:
+            return ToolResult.ok("There's nothing to reset; learning about you is switched off.")
+        n = rapport.reset()
+        return ToolResult.ok(f"Done. I've let go of {n} note{'s' if n != 1 else ''} about you and I'm back to my "
+                             "usual self. I'll start getting to know you again from here.", count=n)

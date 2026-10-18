@@ -7,8 +7,8 @@ made her sound like a machine between the real conversations. This adds the smal
 touches the persona asks for, without a model call or any delay:
 
   * the time said the way a person says it ("It's 6:42 in the evening.");
-  * "boss" now and then on a short, successful answer, never every time and never on
-    an error, a question or a long answer;
+  * "sir" or "boss" now and then on a short, successful answer, never every time and
+    never on an error, a question or a long answer;
   * varied, warm sign-offs and acknowledgements instead of the same "Okay." each time.
 
 It never changes facts, numbers or names in a reply.
@@ -21,11 +21,18 @@ import re
 from typing import Optional
 
 _rng = random.Random()
-ADDRESS = "boss"
+ADDRESSES = ("sir", "boss")       # what she calls the user (2026-10-18: the user asked for both)
+ADDRESS = ADDRESSES[-1]
+_ADDRESSED = re.compile(r"\b(?:" + "|".join(ADDRESSES) + r")\b", re.I)
 
 _GOODBYES = ("Anytime, boss.", "I'll be right here.", "Talk soon.", "Off you go, boss.", "Call me if you need me.",
-             "Right you are.", "Okay, boss.")
-_ACKS = ("Done.", "Done, boss.", "All set.", "Taken care of.", "There you go.")
+             "Right you are.", "Okay, boss.", "Anytime, sir.", "Very good, sir.")
+_ACKS = ("Done.", "Done, boss.", "Done, sir.", "All set.", "Taken care of.", "There you go.")
+
+
+def address() -> str:
+    """'sir' or 'boss', picked at random."""
+    return _rng.choice(ADDRESSES)
 
 
 def part_of_day(hour: int) -> str:
@@ -64,11 +71,11 @@ def acknowledge() -> str:
 def dress(reply: str, ok: bool = True, chance: float = 0.3) -> str:
     """A short, successful tool reply, now and then addressed to the user."""
     text = (reply or "").strip()
-    if not ok or not text or len(text) > 90 or text.endswith("?") or re.search(rf"\b{ADDRESS}\b", text, re.I):
+    if not ok or not text or len(text) > 90 or text.endswith("?") or _ADDRESSED.search(text):
         return reply
     if text in ("Done.", "Done"):
         return acknowledge()
     if _rng.random() >= chance or not text.endswith("."):
         return reply
-    # "Opening Spotify." -> "Opening Spotify, boss."
-    return text[:-1] + f", {ADDRESS}."
+    # "Opening Spotify." -> "Opening Spotify, boss." / "Opening Spotify, sir."
+    return text[:-1] + f", {address()}."

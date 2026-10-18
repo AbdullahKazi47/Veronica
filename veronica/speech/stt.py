@@ -46,6 +46,33 @@ class STTResult:
     stats: dict = field(default_factory=dict)   # capture levels: ambient, speech, voiced seconds
 
 
+def noise_list(text: str) -> bool:
+    """Whisper's reading of noise: a list of fragments, not a sentence. Seen in the log
+    on 2026-10-18: "Microsoft Teams, Microsoft Teams,", "Server, Server.", "Go, Go, Go, Go",
+    "Web, Web, Web.", "JavaScript, Word, Knowledge, Blockchain, F frustrated,". A request
+    with a list in it ("open Chrome, Spotify and Word") starts with a verb, so it has a
+    long first fragment and isn't caught."""
+    parts = [" ".join(re.findall(r"[a-z']+", p.lower())) for p in re.split(r"[,.;!?]+", text or "")]
+    parts = [p for p in parts if p]
+    if len(parts) >= 2 and len(set(parts)) < len(parts):
+        return True                              # the same fragment again
+    if len(parts) >= 3 and all(len(p.split()) <= 2 for p in parts):
+        return True                              # three or more one- or two-word scraps
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    return len(words) >= 3 and len(set(words)) == 1
+
+
+def _sounds_alike(offline: str, cloud: str) -> bool:
+    """At least one word of the cloud read sounds like a word of the offline one. Both
+    heard the same sounds if they agree on anything: "Open Door" -> "Open Doraemon" does;
+    noise read as "Microsoft Teams" offline and "sabhi ka naya desh" by the cloud doesn't."""
+    from difflib import SequenceMatcher
+    a = set(re.findall(r"[a-z']{2,}", (offline or "").lower()))
+    b = set(re.findall(r"[a-z']{2,}", (cloud or "").lower()))
+    return any(x == y or (len(x) >= 4 and len(y) >= 4 and SequenceMatcher(None, x, y).ratio() >= 0.75)
+               for x in a for y in b)
+
+
 def whisper_junk(text: str, hint: str, logprob: Optional[float], min_logprob: float = -0.78) -> str:
     """Why a Whisper transcript looks invented ('' when it looks like real speech)."""
     t = (text or "").strip()
@@ -120,6 +147,9 @@ class SpeechToText:
         self.unknown_target: Optional[Callable[[str], bool]] = None
 
     # -- shared microphone capture (Phase 11F) ---------------------------------------
+    def _over_ambient(self) -> float:
+        return float(getattr(self.config, "speech_over_ambient", 0) or SPEECH_OVER_AMBIENT)
+
     def _capture_utterance(self, timeout_s: float) -> tuple[Optional[bytes], str]:
         """Record one utterance via VERONICA's own MicrophoneInput (sounddevice-first),
         so no backend needs PyAudio. Simple energy endpointing: calibrate on ambient
@@ -171,7 +201,7 @@ class SpeechToText:
                 calib = [mic.read() for _ in range(max(1, int(CALIBRATE_S / chunk_s)))]
                 levels = sorted(rms(c) for c in calib)
                 ambient = levels[len(levels) // 2] if levels else 0.0
-            threshold = max(ambient * SPEECH_OVER_AMBIENT, float(self.config.min_speech_rms))
+            threshold = max(ambient * self._over_ambient(), float(self.config.min_speech_rms))
             stats = {"ambient_rms": round(ambient, 1), "threshold": round(threshold, 1),
                      "device": mic.device_index, "backend": mic._backend, "peak_rms": 0.0}
             self.last_capture_stats = stats
@@ -191,7 +221,7 @@ class SpeechToText:
                     live = self.hub.ambient_rms()
                     if live is not None:
                         ambient = live
-                        threshold = max(ambient * SPEECH_OVER_AMBIENT, float(self.config.min_speech_rms))
+                        threshold = max(ambient * self._over_ambient(), float(self.config.min_speech_rms))
                         stats["ambient_rms"], stats["threshold"] = round(ambient, 1), round(threshold, 1)
                 level = rms(buf)
                 stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
@@ -333,12 +363,23 @@ class SpeechToText:
         ambient, speech, voiced = stats.get("ambient_rms"), stats.get("speech_rms"), stats.get("voiced_s") or 0
         if not ambient or not speech or speech < ambient * 2.0 or voiced < 0.5:
             return None
+        m = re.search(r"heard (['\"])(.*)\1\)\.?$", result.error or "")
+        offline = m.group(2) if m else ""
+        if noise_list(offline):
+            # Noise, not a person: asking the cloud only got guesses back that she then
+            # answered ("sabhi ka naya desh", "conveniencia", "Sir").
+            logger.info("Not asking the cloud: the offline read %r is noise.", offline)
+            return None
         try:
             second = self._recognize_gemini(pcm)
         except Exception as e:  # noqa: BLE001
             logger.info("Second opinion failed: %s", e)
             return None
         if not second.success:
+            return None
+        if offline and not _sounds_alike(offline, second.text):
+            logger.info("Offline read %r and the cloud's %r share nothing; treating it as noise.",
+                        offline, second.text)
             return None
         logger.info("Offline read was unsure (%s); the cloud heard %r.", result.error, second.text)
         second.stats = {**stats, **(second.stats or {}), "escalated_because": "offline read unsure"}

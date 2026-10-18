@@ -269,6 +269,27 @@ class Orchestrator:
         mem = self._mem0()
         if mem is not None:
             mem.observe(text, getattr(response, "text", "") or "")
+        rapport = self._rapport()
+        if rapport is not None:
+            try:
+                rapport.observe(text, getattr(response, "text", "") or "")
+            except Exception:  # noqa: BLE001 — learning must never break a turn
+                logger.exception("Couldn't note this exchange for the profile.")
+
+    def _rapport(self):
+        try:
+            from veronica.memory.rapport import get_rapport
+            return get_rapport(self.config)
+        except Exception:  # noqa: BLE001 — memory must never break a turn
+            return None
+
+    def _rapport_block(self) -> str:
+        """Who the user is and how to be with them, learned slowly (memory/rapport.py)."""
+        rapport = self._rapport()
+        try:
+            return rapport.prompt_block() if rapport is not None else ""
+        except Exception:  # noqa: BLE001
+            return ""
 
     # -- understanding the request (core/understanding.py, core/grounding.py) -------------
     def understanding(self):
@@ -1197,6 +1218,9 @@ class Orchestrator:
         noticed = self._mem0_block(text)
         if noticed:
             sections.append(noticed)
+        rapport = self._rapport_block()
+        if rapport:
+            sections.append(rapport)
         sections.extend(self._turn_blocks(text))
         learned = self._knowledge_block(text)
         if learned:
@@ -1252,6 +1276,9 @@ class Orchestrator:
         noticed = self._mem0_block(text)
         if noticed:
             system_prompt = f"{system_prompt}\n\n{noticed}"
+        rapport = self._rapport_block()       # simple voice turns too: it's her manner
+        if rapport:
+            system_prompt = f"{system_prompt}\n\n{rapport}"
         for block in self._turn_blocks(text):
             system_prompt = f"{system_prompt}\n\n{block}"
         learned = self._knowledge_block(text)

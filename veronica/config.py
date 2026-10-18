@@ -72,6 +72,7 @@ class STTConfig:
     mic_device_index: Optional[int] = None  # fallback if mic_device_name isn't found
     mic_device_name: Optional[str] = None   # e.g. "Microphone Array"; wins over the index
     min_speech_rms: float = 120.0       # int16 RMS floor for "speech started"; lower it for a quiet mic
+    speech_over_ambient: float = 2.5    # speech must be this many times louder than the room
     max_utterance_s: float = 8.0
     # -- accuracy & noise (2026-10-16) --
     highpass_hz: float = 100.0          # cut fan/AC hum below this before recognition (0 = off)
@@ -101,6 +102,21 @@ class TTSConfig:
     cache_dir: str = "data/tts_cache"
     kokoro_speed: float = 1.0           # backend "kokoro": 0.8 slower .. 1.3 faster
     supertonic_speed: float = 1.05      # backend "supertonic" (FreeTTS's local voices)
+
+
+@dataclass
+class EarphonesConfig:
+    """Earphones mode (voice/earphones.py): with an earphone mic close to your mouth, a
+    quiet "Veronica" is enough, even in a noisy place."""
+    mode: str = "auto"                  # "auto" (when earphones with a mic are in) | "on" | "off"
+    # Input names that are an earphone mic. "Jack Mic" counts only when Windows picked it
+    # as the default input (= a headset with a mic is plugged into the jack).
+    mic_names: list[str] = field(default_factory=lambda: [
+        "Headset", "Hands-Free", "Handsfree", "AirPods", "Buds", "Earbuds", "Earphone", "Jack Mic"])
+    gain: float = 3.0                   # boost quiet speech (never past clipping)
+    wake_threshold: float = 0.28        # wake word score needed (normal: voice.wake_threshold)
+    min_speech_rms: float = 25.0        # speech-start floor (normal: stt.min_speech_rms)
+    speech_ratio: float = 1.8           # speech vs room level (normal: 2.5 / 3.0)
 
 
 @dataclass
@@ -137,6 +153,11 @@ class VoiceConfig:
     conversation_speech_ratio: float = 3.0
     barge_in: str = "wake_word"             # interrupt her while she talks: "wake_word" | "off"
     shared_mic: bool = True                 # one always-open mic stream (faster, no clipped first words)
+    earphones: EarphonesConfig = field(default_factory=EarphonesConfig)
+    # A short "Mm-hm." the moment you finish, while the model thinks (voice/quick_ack.py).
+    quick_ack: bool = True
+    quick_ack_phrases: list[str] = field(default_factory=lambda: [
+        "Mm-hm.", "One sec.", "Let me see.", "Okay.", "Sure, one moment."])
 
 
 @dataclass
@@ -156,6 +177,14 @@ class MemoryConfig:
     resume_hours: float = 12.0
     include_facts_in_prompt: bool = False  # send remembered facts + home city with each question
     max_prompt_facts: int = 40             # at most this many (newest kept)
+
+
+@dataclass
+class RapportConfig:
+    """Getting to know the user slowly (memory/rapport.py)."""
+    enabled: bool = False
+    path: str = "data/rapport.json"
+    every_turns: int = 8                 # update the profile after this many exchanges
 
 
 @dataclass
@@ -493,6 +522,7 @@ class Config:
     gps: GpsConfig = field(default_factory=GpsConfig)
     browser_agent: BrowserAgentConfig = field(default_factory=BrowserAgentConfig)
     mem0: Mem0Config = field(default_factory=Mem0Config)
+    rapport: RapportConfig = field(default_factory=RapportConfig)
     understanding: UnderstandingConfig = field(default_factory=UnderstandingConfig)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)

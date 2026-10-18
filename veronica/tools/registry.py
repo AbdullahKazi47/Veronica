@@ -165,10 +165,12 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     )
     from veronica.tools.briefing_tools import DailyBriefingTool
     from veronica.tools.memory_tools import (
+        AboutMeTool,
         ForgetAllMemoriesTool,
         ForgetFactTool,
         RecallMemoryTool,
         RememberFactTool,
+        ResetPersonalityTool,
     )
     from veronica.tools.media_tools import MediaControlTool, WikipediaTool
     from veronica.tools.camera_tools import LookThroughCameraTool
@@ -280,6 +282,8 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         ReviewFixesTool(config=config),         # 'what did you get wrong this week?'
         LookUpTool(config=config),              # 'look up the Treaty of Versailles'
         SpeechCorrectionTool(config=config),    # 'when I say X I mean Y' (before forget tools)
+        ResetPersonalityTool(config=config),    # before ForgetTopic: 'forget what you learned about me'
+        AboutMeTool(config=config),             # 'what have you learned about me?'
         ForgetTopicTool(config=config),         # before ForgetFact: 'forget what you learned about X'
         ForgetAllMemoriesTool(config=config),   # before ForgetFact: 'forget everything'
         ForgetFactTool(config=config),

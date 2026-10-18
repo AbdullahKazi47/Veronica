@@ -165,3 +165,25 @@ def test_ctrl_c_mid_sentence_is_a_goodbye_not_a_traceback(monkeypatch, capsys):
     m.main()
     out = capsys.readouterr().out
     assert "Goodbye" in out and "Traceback" not in out
+
+
+# 2026-10-18: noise read as lists by Whisper, then guessed at by the cloud and answered.
+def test_noise_lists_from_the_log_are_never_sent_to_the_cloud():
+    from veronica.speech.stt import noise_list
+    for junk in ("Microsoft Teams, Microsoft Teams,", "Server, Server.", "Go, Go, Go, Go", "Web, Web, Web.",
+                 "JavaScript, Word, Knowledge, Blockchain, F frustrated,", "Microsoft, Cllular, Crop, Mamos, Crab."):
+        assert noise_list(junk), junk
+    for real in ("Open Door,", "open Chrome, Spotify and Word", "What say you?", "Yes, please.",
+                 "I can't get on a server like this."):
+        assert not noise_list(real), real
+    unsure = STTResult(success=False, error="Not speech (low confidence; heard 'Microsoft Teams, Microsoft Teams,').")
+    loud = {"ambient_rms": 380.0, "speech_rms": 1000.0, "voiced_s": 0.9}
+    assert _stt(gemini_text="sabhi ka naya desh")._rescue("offline", unsure, b"pcm", loud) is None
+
+
+def test_a_cloud_read_that_shares_nothing_with_the_offline_one_is_dropped():
+    loud = {"ambient_rms": 380.0, "speech_rms": 1000.0, "voiced_s": 0.9}
+    unsure = STTResult(success=False, error="Not speech (low confidence; heard 'Go to the cup').")
+    assert _stt(gemini_text="conveniencia")._rescue("offline", unsure, b"pcm", loud) is None
+    unsure = STTResult(success=False, error='Not speech (low confidence; heard "What say you? How do you comfort?").')
+    assert _stt(gemini_text="What say you?")._rescue("offline", unsure, b"pcm", loud).text == "What say you?"

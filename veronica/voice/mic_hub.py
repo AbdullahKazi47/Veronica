@@ -139,6 +139,8 @@ class MicHub:
                 pass
 
     def _on_audio(self, data: bytes) -> None:
+        from veronica.voice.microphone import boost
+        data = boost(data)                   # earphones mode: quiet speech made louder
         self._ring.append(data)
         if not (self.self_speaking or self.user_speaking):
             self._levels.append(rms(data))
