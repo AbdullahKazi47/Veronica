@@ -271,7 +271,8 @@ class ModelSelection:
             return {"response": None, "meta": {"failed": "empty_response"}, "failure_content": None}
 
         if not response.ok:
-            h.record_failure(getattr(response, "content", "") or "ok=False")
+            raw_error = (response.raw or {}).get("error", "") if isinstance(response.raw, dict) else ""
+            h.record_failure(f"{getattr(response, 'content', '') or 'ok=False'} {raw_error}".strip())
             return {"response": None,
                     "meta": {"failed": "ok_false", "latency_s": round(latency, 3)},
                     "failure_content": getattr(response, "content", None) or None}

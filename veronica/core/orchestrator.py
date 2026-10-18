@@ -816,9 +816,12 @@ class Orchestrator:
                     # (chars=0), and she answered "I lost the thread" to a real request.
                     logger.info("Stream completed empty; using the normal path.")
                     stream_provider = None
+                if stream_meta.get("terminal") == "failed":
+                    self._note_stream_failure(routing_selection, stream_meta.get("error"))
                 if stream_meta.get("terminal") == "failed" and stream_meta.get("char_count", 0) == 0:
-                    # Nothing was said yet (e.g. Gemini "503 overloaded" before the first
-                    # word): answer through the normal path, which has the backup models.
+                    # Nothing was said yet (e.g. Gemini "429 Too Many Requests": the model's
+                    # free daily quota is used up): answer through the normal path, which
+                    # walks the other models. Streaming only ever tries one.
                     logger.info("Stream failed before any text (%s); using the normal path.",
                                 stream_meta.get("error"))
                     stream_provider = None
@@ -929,6 +932,18 @@ class Orchestrator:
             return TaskAnalyzer().analyze(text, context={}).requires_streaming
         except Exception:  # noqa: BLE001
             return False
+
+    @staticmethod
+    def _note_stream_failure(routing_selection, error) -> None:
+        """Record a streaming failure on the model's health, as a failed normal call is, so
+        routing stops putting a model that is out of quota (429) first on the next turn."""
+        try:
+            registry = getattr(routing_selection, "_registry", None)
+            entry = registry.get(routing_selection.model_id) if registry is not None else None
+            if entry is not None:
+                entry.health.record_failure(str(error or "stream failed"))
+        except Exception:  # noqa: BLE001 — bookkeeping must never break the turn
+            pass
 
     def _resolve_stream_provider(self, routing_selection, text: str, tool_schemas) -> tuple:
         """Pick the SINGLE provider that will stream, BEFORE any text flows. Streams

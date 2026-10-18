@@ -255,3 +255,69 @@ def test_mic_meter_dots_when_quiet_bars_when_speaking():
     cells = line.split("listening")[1].split()
     assert cells[0] == cells[1] == cells[4] == "\u00b7" and cells[2] not in ("\u00b7",) and cells[2] > cells[3]
     assert "*" in render([2400], 380, fancy=False)
+
+
+def test_a_429_mid_stream_falls_back_and_is_never_read_out(tmp_path):
+    """Seen live 18 Oct 20:28: gemini-3.6-flash answered 429 (daily quota spent); the error
+    chunk's text counted as reply text, so she never tried another model."""
+    from veronica.config import Config
+    from veronica.core.orchestrator import Orchestrator
+    from veronica.llm.base import LLMProvider, LLMResponse, StreamChunk
+    from veronica.llm.streaming import StreamController
+    from veronica.memory.long_term import LongTermMemory
+    from veronica.safety.permissions import PermissionGate, PermissionLevel
+    from veronica.tools.registry import ToolRegistry
+
+    class QuotaSpent(LLMProvider):
+        name = "q"
+        supports_streaming = True
+
+        def chat(self, messages, tools=None, temperature=0.4, voice_mode=False):
+            return LLMResponse(content="Here's that code, boss.")
+
+        def chat_stream(self, messages, tools=None, temperature=0.4, voice_mode=False):
+            yield StreamChunk(text="The cloud model stream failed: 429 Client Error: Too Many Requests",
+                              finish_reason="error", done=True)
+    deltas = []
+    cfg = Config()
+    cfg.routing.enabled = False
+    cfg.streaming.enabled = cfg.streaming.preferred = True
+    orch = Orchestrator(config=cfg, llm=QuotaSpent(),
+                        tools=ToolRegistry(PermissionGate(threshold=PermissionLevel.SENSITIVE)),
+                        long_term_memory=LongTermMemory(tmp_path / "m.json"),
+                        stream_controller=StreamController(coalesce_ms=0))
+    orch.stream_event_callback = lambda name, payload: deltas.append(payload.get("delta", "")) \
+        if name == "response_delta" else None
+    assert orch.handle_stream("write me a python loop", orch.new_session()).text == "Here's that code, boss."
+    assert not any("429" in d for d in deltas)
+
+
+def test_a_spent_model_is_set_aside_not_retried():
+    """137 s for one request: every step re-tried models whose daily quota was spent."""
+    from veronica.llm.routing.health import HealthState, ModelHealth
+    h = ModelHealth("gemini-3.6-flash")
+    h.record_failure("busy 429 Client Error: Too Many Requests ... RESOURCE_EXHAUSTED quota GenerateRequestsPerDay")
+    assert h.state is HealthState.UNAVAILABLE and h.cooldown_s == 3600 and not h.retry_due()
+    g = ModelHealth("openai/gpt-oss-20b")
+    g.record_failure("413 Client Error: Payload Too Large")
+    assert g.state is HealthState.UNAVAILABLE and g.cooldown_s == 3600
+    s = ModelHealth("x")
+    s.record_failure("Read timed out")
+    assert s.state is HealthState.DEGRADED and s.cooldown_s == 45
+    h.record_success()
+    assert h.cooldown_s == 45
+
+
+def test_quota_429_is_not_waited_on():
+    from types import SimpleNamespace as NS
+    from veronica.llm.openai_compatible_provider import _post_with_retry
+    calls, slept = [], []
+
+    class Req:
+        ConnectionError = ConnectionError
+
+        def post(self, url, **kw):
+            calls.append(url)
+            return NS(status_code=429, text='{"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}}')
+    _post_with_retry(Req(), "u", sleep=slept.append)
+    assert len(calls) == 1 and slept == []

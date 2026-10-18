@@ -26,6 +26,12 @@ OFFLINE_MESSAGE = ("I can't reach Google's AI service right now. Check the inter
                    "quick commands like opening apps still work.")
 
 
+def _is_quota(body: str) -> bool:
+    """A 429 that means "this model's free allowance is used up", not "slow down a second"."""
+    b = (body or "").lower()
+    return "quota" in b or "resource_exhausted" in b or "perday" in b or "per day" in b
+
+
 def _post_with_retry(requests, url, *, sleep=None, **kw):
     """POST, retrying the brief overload errors. Returns the final response (raises on
     connection failure after the retries)."""
@@ -43,6 +49,8 @@ def _post_with_retry(requests, url, *, sleep=None, **kw):
             continue
         if resp.status_code not in _RETRY_STATUS:
             return resp
+        if resp.status_code == 429 and _is_quota(getattr(resp, "text", "")):
+            return resp          # the model's daily allowance is spent: waiting can't bring it back
         logger.info("Cloud model busy (%s); retrying.", resp.status_code)
     return resp
 
@@ -155,10 +163,13 @@ class OpenAICompatibleProvider(LLMProvider):
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            # Technical detail goes to the log; the person hears a plain sentence.
+            # Technical detail goes to the log; the person hears a plain sentence. The raw
+            # error (status + body) goes to routing, which sets a spent model aside.
             logger.warning("Cloud LLM request failed: %s", e)
             offline = isinstance(e, requests.ConnectionError) and not isinstance(e, requests.Timeout)
-            return LLMResponse(content=OFFLINE_MESSAGE if offline else BUSY_MESSAGE, ok=False)
+            body = getattr(getattr(e, "response", None), "text", "") or ""
+            return LLMResponse(content=OFFLINE_MESSAGE if offline else BUSY_MESSAGE, ok=False,
+                               raw={"error": f"{e} {body[:400]}"})
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message", {})

@@ -457,6 +457,13 @@ class StreamController:
         RESPONSE_DELTA events. The accumulator concatenates EVERY chunk exactly; the
         events only batch the display cadence."""
         text = chunk.text if chunk and isinstance(chunk.text, str) else ""
+        if chunk is not None and chunk.finish_reason == "error":
+            # A provider's error chunk carries its error message as text ("The cloud model
+            # stream failed: 429 ..."). That is not reply text: counted as text it blocked the
+            # fall back to the other models, and as a delta it could be read out loud.
+            if text and not (isinstance(chunk.metadata, dict) and chunk.metadata.get("error")):
+                chunk.metadata = {**(chunk.metadata or {}), "error": text}
+            text = ""
         seq = state.seq
         state.seq += 1
         state.chunks_received += 1

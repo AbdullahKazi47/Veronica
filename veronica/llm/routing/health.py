@@ -21,6 +21,20 @@ from enum import Enum
 from typing import Optional
 
 
+_DEFAULT_COOLDOWN_S = 45.0
+
+
+def _set_aside_for(error: str) -> float:
+    """Seconds to leave a model alone after this error (0 = an ordinary failure)."""
+    e = (error or "").lower()
+    if "429" in e or "too many requests" in e or "resource_exhausted" in e:
+        daily = "quota" in e and ("day" in e or "perday" in e)
+        return 3600.0 if daily else 600.0
+    if "413" in e or "payload too large" in e or "request too large" in e:
+        return 3600.0
+    return 0.0
+
+
 class HealthState(str, Enum):
     AVAILABLE = "AVAILABLE"
     UNAVAILABLE = "UNAVAILABLE"
@@ -54,6 +68,7 @@ class ModelHealth:
         return self.checked_at is not None and ((now or time.time()) - self.checked_at) >= self.cooldown_s
 
     def record_success(self, latency_s: Optional[float] = None) -> None:
+        self.cooldown_s = _DEFAULT_COOLDOWN_S
         self.total_calls += 1
         self.successful_calls += 1
         self.consecutive_failures = 0
@@ -69,7 +84,14 @@ class ModelHealth:
         self.checked_at = time.time()
         self.method = "observed"
         self.last_error = _short(error)
-        if self.consecutive_failures >= self.unavailable_threshold:
+        set_aside = _set_aside_for(error)
+        if set_aside:
+            # Not a blip: a spent daily allowance (429 "quota") or a request this model can't
+            # take (413). Seen live: every step of one request re-tried the same spent
+            # models and it took 137 s. Off the list for a while, then tried again.
+            self.cooldown_s = set_aside
+            self.state = HealthState.UNAVAILABLE
+        elif self.consecutive_failures >= self.unavailable_threshold:
             self.state = HealthState.UNAVAILABLE
         else:
             self.state = HealthState.DEGRADED
