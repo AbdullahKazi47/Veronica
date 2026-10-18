@@ -187,3 +187,71 @@ def test_a_cloud_read_that_shares_nothing_with_the_offline_one_is_dropped():
     assert _stt(gemini_text="conveniencia")._rescue("offline", unsure, b"pcm", loud) is None
     unsure = STTResult(success=False, error='Not speech (low confidence; heard "What say you? How do you comfort?").')
     assert _stt(gemini_text="What say you?")._rescue("offline", unsure, b"pcm", loud).text == "What say you?"
+
+
+
+# ---------------------------------------------------------------- 2026-10-18 evening: "she's listening but not responding"
+
+def test_after_her_name_an_unclear_read_gets_the_cloud():
+    """'Cicc', 'Sf3', 'Bionic, C' right after the wake word were binned in silence."""
+    unsure = STTResult(success=False, error="Not speech (low confidence; heard 'Cicc.').")
+    quiet = {"ambient_rms": 380.0, "speech_rms": 500.0, "voiced_s": 0.8}      # under 2x the room
+    stt = _stt(gemini_text="Open YouTube.")
+    assert stt._rescue("offline", unsure, b"", quiet) is None                # not addressed: binned
+    stt.addressed = True
+    got = stt._rescue("offline", unsure, b"", quiet)
+    assert got is not None and got.text == "Open YouTube."
+
+
+def test_she_says_when_she_did_not_catch_it():
+    import threading
+    from veronica.ui.cli import CLIApp
+    app = _app()
+    app.voice_mode, app.wake_mode, app.stt = True, True, SimpleNamespace(addressed=False, known_ambient_rms=None)
+    app.wake_gate = SimpleNamespace(wait=lambda on_near_miss=None: True, ambient_rms=None, reason="")
+    app.config.voice.wake_threshold = 0.5
+    app._beep = app._status = lambda *a: None
+    app._barged, app._follow_up_until = False, 0.0
+    said, heard = [], [STTResult(success=False, error="Not speech (low confidence; heard 'Cicc.')."),
+                       STTResult(success=True, text="open YouTube", stats={})]
+    app._say = said.append
+    app._listen = lambda timeout_s=6: heard.pop(0)
+    app._conversation_open = lambda: False
+    got = CLIApp._get_input(app)
+    assert said == ["Sorry, I didn't catch that. Say it again?"] and got == "open YouTube"
+
+
+def test_supertonic_text_is_made_speakable():
+    from veronica.speech.supertonic_voice import speakable
+    assert speakable("Yes \u2014 it\u2019s done\u2026") == "Yes ,  it's done..."
+    garbled = speakable("Yes \xe2\x80\x94 ok")                     # the mojibake that crashed her voice
+    assert "\x80" not in garbled and "\x94" not in garbled and garbled.startswith("Yes")
+
+
+def test_streamed_replies_are_decoded_as_utf8(monkeypatch):
+    """requests guessed ISO-8859-1 for text/event-stream: 'Yes \u2014' arrived as mojibake."""
+    import json
+    import requests
+    from veronica.llm.openai_compatible_provider import OpenAICompatibleProvider
+    body = ("data: " + json.dumps({"choices": [{"delta": {"content": "Yes \u2014 caf\u00e9"}, "index": 0}]},
+                                  ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode("utf-8")
+
+    class Resp:
+        encoding = "ISO-8859-1"
+        def raise_for_status(self):
+            pass
+        def iter_lines(self, decode_unicode=False):
+            for line in body.split(b"\n"):
+                yield line.decode(self.encoding) if decode_unicode else line
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp())
+    p = OpenAICompatibleProvider(base_url="https://x/v1", api_key="k", model="m")
+    text = "".join(c.text for c in p.chat_stream([]))
+    assert "Yes \u2014 caf\u00e9" in text
+
+
+def test_mic_meter_dots_when_quiet_bars_when_speaking():
+    from veronica.voice.meter import render
+    line = render([50, 60, 2400, 900, 55], 380, fancy=True)
+    cells = line.split("listening")[1].split()
+    assert cells[0] == cells[1] == cells[4] == "\u00b7" and cells[2] not in ("\u00b7",) and cells[2] > cells[3]
+    assert "*" in render([2400], 380, fancy=False)

@@ -361,7 +361,12 @@ class SpeechToText:
         if not float(getattr(self.config, "escalate_below_logprob", 0.0) or 0.0) or not self._gemini_key():
             return None
         ambient, speech, voiced = stats.get("ambient_rms"), stats.get("speech_rms"), stats.get("voiced_s") or 0
-        if not ambient or not speech or speech < ambient * 2.0 or voiced < 0.5:
+        # Just after "Veronica" the user is certainly talking to her: no loudness bar, only
+        # enough real voice. Seen live: "Cicc", "Sf3", "Bionic, C" after the wake word were
+        # thrown away and she went silent.
+        addressed = bool(getattr(self, "addressed", False))
+        loud = bool(ambient and speech and speech >= ambient * 2.0)
+        if voiced < (0.4 if addressed else 0.5) or not (loud or addressed):
             return None
         m = re.search(r"heard (['\"])(.*)\1\)\.?$", result.error or "")
         offline = m.group(2) if m else ""
@@ -377,7 +382,9 @@ class SpeechToText:
             return None
         if not second.success:
             return None
-        if offline and not _sounds_alike(offline, second.text):
+        # Right after her name the offline read is the garbled one ("Cicc" for "open
+        # YouTube"), so sharing no word with it is expected, not a sign of noise.
+        if offline and not addressed and not _sounds_alike(offline, second.text):
             logger.info("Offline read %r and the cloud's %r share nothing; treating it as noise.",
                         offline, second.text)
             return None

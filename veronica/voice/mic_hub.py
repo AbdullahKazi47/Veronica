@@ -102,6 +102,7 @@ class MicHub:
         self._levels: deque[float] = deque(maxlen=int(_AMBIENT_WINDOW_S * RATE / BLOCK))
         self.self_speaking = False    # set while VERONICA talks: keep her voice out of the room level
         self.user_speaking = False    # set while an utterance is being recorded: same for the user
+        self.last_level = 0.0
         self.failed = ""
 
     # -- stream ---------------------------------------------------------------------------
@@ -142,6 +143,7 @@ class MicHub:
         from veronica.voice.microphone import boost
         data = boost(data)                   # earphones mode: quiet speech made louder
         self._ring.append(data)
+        self.last_level = rms(data)          # the live level, for the on-screen mic meter
         if not (self.self_speaking or self.user_speaking):
             self._levels.append(rms(data))
         for tap in list(self._taps):

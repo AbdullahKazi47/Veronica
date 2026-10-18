@@ -130,6 +130,7 @@ class VoiceConfig:
     return_to_listen: bool = True
     suppress_playback_during_capture: bool = True
     barge_in_enabled: bool = False
+    show_mic_meter: bool = True             # live mic level line while she listens
     barge_in_threshold: float = 0.02
     barge_in_min_speech_ms: int = 300
     barge_in_guard_ms: int = 300

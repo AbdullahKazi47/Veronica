@@ -53,11 +53,26 @@ def _style(folder: Path, voice: str):
     return _STYLES[key]
 
 
+_PLAIN = str.maketrans({"—": ", ", "–": ", ", "‘": "'", "’": "'", "“": '"', "”": '"',
+                        "…": "...", " ": " ", "•": ", "})
+
+
+def speakable(text: str) -> str:
+    """Dashes, curly quotes and ellipses as plain punctuation; anything else the model
+    can't read (emoji, stray control bytes) dropped, so one odd character never costs
+    the whole sentence."""
+    t = (text or "").translate(_PLAIN)
+    return "".join(ch for ch in t if ch.isprintable() and (ord(ch) < 0x2000 or ch.isalpha())).strip()
+
+
 def synthesize(folder: Path, text: str, voice: str, out: Path, speed: float = 1.05,
                steps: int = 6) -> Optional[Path]:
     """Write one WAV clip. None on failure. `steps` trades quality for speed (5-8)."""
     try:
         engine = _engine(folder)
+        text = speakable(text)
+        if not text:
+            return None
         wav, _dur = engine.synthesize(text, voice_style=_style(folder, voice), total_steps=steps,
                                       speed=speed, lang="en")
         tmp = out.with_name(out.stem + ".part.wav")

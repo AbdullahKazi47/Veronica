@@ -119,6 +119,10 @@ class OllamaProvider(LLMProvider):
                 timeout=self.timeout_s, stream=True,
             )
             resp.raise_for_status()
+            # Server-sent events carry no charset, so requests guesses ISO-8859-1 and every
+            # dash or accent came out garbled ("Yes \xe2\x80\x94" for "Yes —"), which also
+            # crashed the Supertonic voice. The stream is UTF-8.
+            resp.encoding = "utf-8"
             for raw in resp.iter_lines(decode_unicode=True):
                 if not raw:
                     continue

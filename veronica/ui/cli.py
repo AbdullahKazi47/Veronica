@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import datetime as dt
 import re
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -445,10 +446,54 @@ class CLIApp:
             with lock:              # never open the mic while she (or an announcement) is talking
                 pass
         self._capturing.set()
+        meter = self._start_meter()
         try:
             return self.stt.listen_once(timeout_s=timeout_s)
         finally:
             self._capturing.clear()
+            if meter is not None:
+                meter.join(timeout=1.0)
+
+    def _listen_addressed(self, timeout_s: int = 6):
+        """Listen right after her name: an unclear read gets a cloud re-read, not the bin."""
+        self.stt.addressed = True
+        try:
+            return self._listen(timeout_s=timeout_s)
+        finally:
+            self.stt.addressed = False
+
+    def _start_meter(self):
+        """A one-line live mic level while she listens, like a voice-mode waveform:
+        dots when it's quiet, bars as you speak. Erased when she stops listening, so the
+        conversation lines stay clean. Off when the terminal can't show it."""
+        hub = getattr(self, "hub", None)
+        if not self.voice_mode or hub is None or not getattr(getattr(self.config, "voice", None), "show_mic_meter", True):
+            return None
+        try:
+            if not sys.stdout.isatty():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        from veronica.voice.meter import render
+
+        def run():
+            history: list[float] = []
+            width = 0
+            try:
+                while self._capturing.is_set() and not self._stop.is_set():
+                    history = (history + [float(getattr(hub, "last_level", 0.0) or 0.0)])[-24:]
+                    line = render(history, hub.ambient_rms())
+                    width = max(width, len(line))
+                    print("\r" + line.ljust(width), end="", flush=True)
+                    time.sleep(0.06)
+            except Exception:  # noqa: BLE001 - the meter must never break listening
+                pass
+            finally:
+                if width:
+                    print("\r" + " " * width + "\r", end="", flush=True)
+        t = threading.Thread(target=run, name="mic-meter", daemon=True)
+        t.start()
+        return t
 
     def _confirm_by_voice(self, description: str, level: PermissionLevel) -> bool:
         critical = level >= PermissionLevel.CRITICAL
@@ -583,8 +628,16 @@ class CLIApp:
                 self._beep()
             # Stage 1: LISTEN — microphone is active
             self._status("[listening...]")
-            result = self._listen()
-            if not result.success:
+            result = self._listen_addressed()
+            if not result.success and not (result.error or "").startswith("No speech detected"):
+                # She heard her name, so silence back would look like she's ignoring you.
+                self._status(f"[STT] {result.error}")
+                self._say("Sorry, I didn't catch that. Say it again?")
+                result = self._listen_addressed()
+                if not result.success:
+                    self._status(f"[STT] {result.error}")
+                    return ""
+            elif not result.success:
                 self._status(f"[STT] {result.error}")
                 return ""
             return self._accept(result, open_conversation=False) or ""
