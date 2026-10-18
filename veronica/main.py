@@ -406,7 +406,12 @@ def main() -> None:
     app = build_app(config, interactive=True)
     cli = CLIApp(config=config, orchestrator=app.orchestrator,
                  voice_mode=args.voice or args.wake, wake_mode=args.wake)
-    cli.run()
+    try:
+        cli.run()
+    except KeyboardInterrupt:
+        # Ctrl+C is how she is stopped; it can land anywhere (mid-sentence, mid-request).
+        # A goodbye, not a traceback.
+        print(f"\n{config.assistant.name}: Shutting down. Goodbye, boss.")
 
 
 if __name__ == "__main__":

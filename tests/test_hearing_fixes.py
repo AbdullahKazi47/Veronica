@@ -146,3 +146,22 @@ def test_an_empty_stream_falls_back_to_the_normal_path(tmp_path):
     orch = Orchestrator(config=cfg, llm=Quiet(), tools=ToolRegistry(PermissionGate(threshold=PermissionLevel.SENSITIVE)),
                         long_term_memory=LongTermMemory(tmp_path / "m.json"), stream_controller=StreamController(coalesce_ms=0))
     assert orch.handle_stream("mute the batch one group in WhatsApp", orch.new_session()).text == "Muted the group, boss."
+
+
+def test_ctrl_c_mid_sentence_is_a_goodbye_not_a_traceback(monkeypatch, capsys):
+    """Seen live: Ctrl+C while she was speaking printed a KeyboardInterrupt traceback."""
+    import sys
+    import veronica.main as m
+
+    class CLI:
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            raise KeyboardInterrupt
+    monkeypatch.setattr(sys, "argv", ["veronica"])
+    monkeypatch.setattr(m, "CLIApp", CLI)
+    monkeypatch.setattr(m, "build_app", lambda config, interactive=True: SimpleNamespace(orchestrator=None))
+    m.main()
+    out = capsys.readouterr().out
+    assert "Goodbye" in out and "Traceback" not in out
