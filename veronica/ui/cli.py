@@ -154,6 +154,17 @@ class CLIApp:
             _voice_confirmer = self._confirm_by_voice
             from veronica.tools.voice_test_tools import set_voice_tester
             set_voice_tester(self._voice_test)
+            try:
+                from veronica.tools.voiceprint_tools import set_voice_enroller
+                from veronica.voice.voiceprint import get_voiceprint
+                set_voice_enroller(self._learn_voice)
+                vp = get_voiceprint(self.config)
+                if self.stt is not None and getattr(self.config.voice, "speaker_check", True):
+                    self.stt.voiceprint = vp     # only the owner's voice, once it's learned
+                if vp.enrolled:
+                    vp.warm()
+            except Exception:  # noqa: BLE001 - the voice check is optional
+                logger.exception("Voice check not set up.")
 
     def _make_corrections(self):
         from veronica.speech.corrections import Corrections
@@ -629,6 +640,9 @@ class CLIApp:
             # Stage 1: LISTEN — microphone is active
             self._status("[listening...]")
             result = self._listen_addressed()
+            if (result.error or "").startswith("Not your voice"):
+                self._status(f"[STT] {result.error}")      # someone else (TV, a video): stay quiet
+                return ""
             if not result.success and not (result.error or "").startswith("No speech detected"):
                 # She heard her name, so silence back would look like she's ignoring you.
                 self._status(f"[STT] {result.error}")
@@ -642,6 +656,42 @@ class CLIApp:
                 return ""
             return self._accept(result, open_conversation=False) or ""
         return input("You: ")
+
+    _VOICE_SENTENCES = (
+        "Veronica, what's the weather like today?",
+        "Open YouTube and play some music.",
+        "Remind me to call my mother at seven.",
+        "What's the latest news from India?",
+        "Thanks Veronica, that's all for now.",
+    )
+
+    def _learn_voice(self) -> str:
+        """'Learn my voice': record a few sentences, build the owner's voiceprint."""
+        from veronica.voice.voiceprint import get_voiceprint
+        vp = get_voiceprint(self.config)
+        self._say("Sure. I'll learn your voice. After each sentence I read out, say it back to me in your "
+                  "normal voice. There are five.")
+        clips: list[bytes] = []
+        self.stt.voice_check = False            # don't judge the sentences that build the voiceprint
+        try:
+            for line in self._VOICE_SENTENCES:
+                self._say(f"Say: {line}")
+                for _attempt in range(2):
+                    heard = self._listen(timeout_s=8)
+                    pcm = getattr(self.stt, "last_pcm", None) or b""
+                    if heard.success and len(pcm) >= 16000 * 2:      # at least a second of you
+                        clips.append(pcm)
+                        break
+                    self._say("I didn't get that one. Once more, please.")
+        finally:
+            self.stt.voice_check = True
+        if len(clips) < 3:
+            return "I couldn't get enough clear sentences to learn your voice. Let's try again later."
+        bar = vp.enroll(clips)
+        self.stt.voiceprint = vp
+        logger.info("Voiceprint enrolled (%d clips, bar %.2f).", len(clips), bar)
+        return ("Got it. I know your voice now, and I'll only respond to you. If I ever ignore you, "
+                "say 'stop checking my voice', or 'learn my voice' to do this again.")
 
     def _voice_test(self) -> str:
         """The guided voice check on the real mic and speaker (voice/voice_test.py)."""

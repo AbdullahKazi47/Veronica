@@ -329,6 +329,16 @@ class SpeechToText:
         if pcm is None:
             return STTResult(success=False, error=err, stats=stats)
         pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
+        self.last_pcm = pcm                     # for "learn my voice" (the CLI reads the clip)
+        vp = getattr(self, "voiceprint", None)
+        if vp is not None and getattr(self, "voice_check", True):
+            # "Only listen to me": a clip that clearly isn't the owner is dropped before
+            # it's transcribed (voice/voiceprint.py; nothing leaves this PC).
+            mine, score = vp.check(pcm)
+            if score is not None:
+                stats["voice_match"] = score
+            if not mine:
+                return STTResult(success=False, error=f"Not your voice (match {score:.2f}).", stats=stats)
         last = STTResult(success=False, error="No speech recognizer is available.")
         for name, engine in self._engines():
             try:

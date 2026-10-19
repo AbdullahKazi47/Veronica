@@ -179,6 +179,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.notification_tools import ReadNotificationsTool
     from veronica.tools.screen_tools import LookAtScreenTool
     from veronica.tools.understanding_tools import LookUpTool, ReviewFixesTool, TeachWordsTool
+    from veronica.tools.voiceprint_tools import VoiceprintTool
     from veronica.tools.voice_tools import ChangeVoiceTool
     from veronica.tools.gps_tools import UsePhoneGpsTool, WhereAmITool
     from veronica.tools.productivity_tools import (
@@ -300,6 +301,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         LookAtScreenTool(config=config),
         LookThroughCameraTool(config=config),
         ReadNotificationsTool(config=config),
+        VoiceprintTool(config=config),          # "learn my voice" / "only listen to me"
         VoiceTestTool(),                       # "run a voice test" (before self-heal: "check your hearing")
         SelfHealTool(config=config),           # "heal yourself" / "are you okay"
         PrivacyReportTool(config=config),      # "what do you send to the cloud"

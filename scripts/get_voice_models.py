@@ -75,10 +75,41 @@ def supertonic() -> bool:
     return ok
 
 
+SHERPA = Path(__file__).resolve().parent.parent / "data" / "models" / "sherpa"
+SHERPA_FILES = {   # "learn my voice": the speaker-embedding model (WeSpeaker CAM++, Apache-2.0)
+    "wespeaker_en_voxceleb_CAM++.onnx":
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+        "wespeaker_en_voxceleb_CAM++.onnx",
+}
+
+
+def sherpa() -> bool:
+    SHERPA.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for name, url in SHERPA_FILES.items():
+        out = SHERPA / name
+        if out.exists() and out.stat().st_size > 1_000_000:
+            print(f"{name}: already here")
+            continue
+        print(f"{name}: downloading ...")
+        try:
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(out, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+            print(f"{name}: ok")
+        except Exception as e:  # noqa: BLE001
+            print(f"{name}: failed ({e})")
+            ok = False
+    return ok
+
+
 def main() -> int:
     TARGET.mkdir(parents=True, exist_ok=True)
     ok = all(fetch(name, size, digest) for name, (size, digest) in FILES.items())
     ok = supertonic() and ok
+    ok = sherpa() and ok
     print("Voices ready." if ok else "Some files failed; run this again.")
     return 0 if ok else 1
 

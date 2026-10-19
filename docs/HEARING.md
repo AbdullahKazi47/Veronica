@@ -130,3 +130,19 @@ real bound method in the chain, so only a label-based gate can pass it.
 The general lesson, written down because it will recur: a mock that replaces the thing whose
 identity is under test cannot test that identity. This was found by running the real chain
 over real audio, not by reading the suite.
+
+## Only the owner's voice (2026-10-19)
+
+Say **"Veronica, learn my voice"**: she reads out five sentences, you repeat each one, and
+she builds a voiceprint (`voice/voiceprint.py`, sherpa-onnx WeSpeaker CAM++ on this PC,
+~0.03 s per clip). After that, every captured clip is compared with it **before**
+transcription; one that clearly isn't you (TV, other people, a video) is dropped quietly.
+The bar is calibrated from how alike your own five sentences are, minus a margin; clips
+under 0.8 s aren't judged. "Stop checking my voice" / "start checking my voice",
+"forget my voice", "is voice check on?". The voiceprint stays in `data/voiceprint.json`
+on this PC only. `voice.speaker_check: false` in config.yaml turns the feature off.
+
+Noise removal was tried and **not** added: GTCRN denoising (sherpa-onnx) before Whisper
+did not improve transcripts with this room's noise mixed in, and at higher noise it made
+them worse ("Close Chrome" -> "Close-crow"). Whisper is already robust to noise; the
+voice check is what keeps other voices out.

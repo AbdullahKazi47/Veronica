@@ -41,5 +41,6 @@ pytest>=7.4.0
 pyserial>=3.5          # USB GPS receivers (NMEA over a COM port)
 browser-use>=0.13      # "use the browser to find ..." (her own browser profile, no logins)
 mem0ai>=2.2            # facts picked up from conversation, stored locally in data/mem0/
+sherpa-onnx>=1.13      # "learn my voice": speaker check on this PC (model in data/models/sherpa)
 supertonic>=1.3        # "Female 2" (FreeTTS's local voices), her backup voice; model in data/models/supertonic
 kokoro-onnx>=0.4.7     # Kokoro voice on this PC; model files in data/models/kokoro (kokoro-v1.0.onnx, voices-v1.0.bin)
