@@ -273,13 +273,19 @@ class OpenAICompatibleProvider(LLMProvider):
                         slot = tool_assembler.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                         if frag.get("id"):
                             slot["id"] = frag["id"]
+                        if frag.get("extra_content"):       # Gemini's thought signature, replayed with the call
+                            slot["extra_content"] = frag["extra_content"]
                         fn = frag.get("function", {}) or {}
                         if isinstance(fn, dict):
                             if fn.get("name"):
                                 slot["name"] += fn["name"]
                             if fn.get("arguments"):
                                 slot["arguments"] += fn["arguments"]
-                if finish == "tool_calls" and tool_assembler:
+                # Gemini ends a streamed tool call with finish_reason "stop", not "tool_calls" (OpenAI
+                # does the latter). Gating on "tool_calls" dropped every Gemini tool call: the stream
+                # "completed empty" and she asked Google again, so each tool request took twice as long
+                # and spent twice the quota. Whatever the finish reason, collected calls are the answer.
+                if finish and tool_assembler:
                     assembled = []
                     for idx in sorted(tool_assembler):
                         slot = tool_assembler[idx]
@@ -296,8 +302,16 @@ class OpenAICompatibleProvider(LLMProvider):
                     # Best effort: streamed deltas carry no thought signature to replay.
                     self._remember({"role": "assistant", "content": None, "tool_calls": [
                         {"id": c["id"], "type": "function", "function": {
-                            "name": c["name"], "arguments": json.dumps(c["arguments"])}}
-                        for c in assembled]})
+                            "name": c["name"], "arguments": json.dumps(c["arguments"])},
+                         **({"extra_content": tool_assembler[i]["extra_content"]}
+                            if tool_assembler[i].get("extra_content") else {})}
+                        for i, c in zip(sorted(tool_assembler), assembled)]})
+                    if finish != "tool_calls":
+                        yield StreamChunk(text=text or "", sequence=seq, done=False, metadata={})
+                        seq += 1
+                        yield StreamChunk(text="", sequence=seq, done=True, finish_reason="tool_calls",
+                                          metadata=metadata)
+                        return
                 yield StreamChunk(text=text or "", sequence=seq, done=done,
                                   finish_reason=finish, metadata=metadata)
                 seq += 1

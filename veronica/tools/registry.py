@@ -210,6 +210,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         LearnTopicTool,
         RecallLearningTool,
         RunCodeTool,
+        StopCodeTool,
         UpdateCodeTool,
         WriteCodeTool,
     )
@@ -326,6 +327,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         RecallLearningTool(config=config),
         WriteCodeTool(config=config, llm=llm),
         UpdateCodeTool(config=config, llm=llm),
+        StopCodeTool(config=config, llm=llm),    # "stop the server" (before close_window's "close ...")
         RunCodeTool(config=config, llm=llm),
         ScreenshotTool(config=config),
         SystemStatusTool(),
