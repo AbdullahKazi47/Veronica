@@ -190,3 +190,15 @@ def test_dispatch_accepts_a_tool_argument_called_name(tmp_path):
     reg.register(OpenPathTool(home=tmp_path, opener=opened.append))
     res = reg.dispatch("open_path", name="placement", kind="folder")
     assert res.success and opened == [str(tmp_path / "Placement")]
+
+
+def test_sign_out_is_understood_however_it_is_said():
+    """'sign me out' (the natural way) wasn't recognised; only 'sign out' / 'log off' were."""
+    from veronica.tools.window_tools import ShutdownTool
+    tool = ShutdownTool(runner=lambda cmd: None)
+    for said in ("sign me out", "sign out of my pc", "log me off", "log me out", "sign out of windows", "sign out",
+                 "please sign me out of the laptop", "log off"):
+        assert tool.matches(said), said
+        assert tool.extract_arguments(said)["action"] == "sign_out", said
+    for said in ("what is my sign out policy", "sign the document", "sign out the book"):
+        assert not tool.matches(said), said

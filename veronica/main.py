@@ -393,6 +393,8 @@ def main() -> None:
                         help="Voice mode that waits for the wake word before each request (implies --voice).")
     parser.add_argument("--config", default=None, help="Path to config.yaml.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate risky actions instead of executing them.")
+    parser.add_argument("--remote", action="store_true",
+                        help="Also serve the phone page so your other devices can talk to her (see veronica/ui/remote).")
     args = parser.parse_args()
     if (args.voice or args.wake) and already_running():
         print("VERONICA is already running in another window.")
@@ -404,6 +406,9 @@ def main() -> None:
         config.safety.dry_run = True
 
     app = build_app(config, interactive=True)
+    if args.remote or config.remote.enabled:
+        from veronica.ui.remote.server import start_remote
+        start_remote(config, app.orchestrator)    # never raises; she starts either way
     cli = CLIApp(config=config, orchestrator=app.orchestrator,
                  voice_mode=args.voice or args.wake, wake_mode=args.wake)
     try:

@@ -63,6 +63,12 @@ def _confirm_in_terminal(description: str, level: PermissionLevel) -> bool:
         note_permission_refused(description)
         logger.info("Background task needed %s permission for %s; refused (not asked).", level.name, description)
         return False
+    from veronica.ui.remote.server import remote_confirmer
+    remote = remote_confirmer()
+    if remote is not None:
+        # Asked from the phone page: the question goes to that device, never to the
+        # PC's mic or terminal (where nobody may be). No answer in time means no.
+        return remote(description, level)
     if _voice_confirmer is not None:
         return _voice_confirmer(description, level)
     answer = input(f"\n[VERONICA needs {level.name} permission] {description}\nProceed? [y/N] ").strip().lower()

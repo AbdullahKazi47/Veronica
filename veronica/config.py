@@ -435,6 +435,18 @@ class ContextConfig:
 
 
 @dataclass
+class RemoteConfig:
+    """Talk to VERONICA from your phone/other devices (veronica/ui/remote).
+    The server listens on this PC only; Tailscale (`tailscale serve --bg 7272`) makes it
+    reachable from your own devices over HTTPS. Every request needs the access token."""
+    enabled: bool = False             # also started by `python -m veronica.main --remote`
+    host: str = "127.0.0.1"           # keep it local; Tailscale forwards to it
+    port: int = 7272
+    token_path: str = "data/remote_token.txt"   # or set VERONICA_REMOTE_TOKEN in config/.env
+    confirm_timeout_s: float = 60.0   # unanswered permission question on the phone = no
+
+
+@dataclass
 class VisionConfig:
     """Vision Model V1 configuration.
     ``enabled`` is the master switch; when False the vision provider is not used,
@@ -532,6 +544,7 @@ class Config:
     context: ContextConfig = field(default_factory=ContextConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
     log_level: str = "INFO"
     log_file: str = "data/veronica.log"
     # "conversation": the terminal shows only the user's and VERONICA's words (logs and

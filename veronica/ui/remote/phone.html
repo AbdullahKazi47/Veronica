@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>VERONICA</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #141821; --line: #232a37; --text: #e8ecf3; --muted: #8a94a7;
+    --accent: #5cc8ff; --accent-ink: #04121c; --me: #1d3a52; --warn: #ffb547; --bad: #ff6b6b; --ok: #4ade80;
+    --sheet: #171c27; --scrim: rgba(3, 5, 10, .66);
+    --danger: #ff7075; --danger-soft: #2c1517; --danger-dim: #7d2428; --danger-full: #d23b41;
+    --caution: #ffb547; --caution-soft: #2a1f0b; --caution-dim: #6e4410; --caution-full: #b25f00;
+    color-scheme: dark light;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6fa; --panel: #ffffff; --line: #dde2ec; --text: #141923; --muted: #5b6578;
+      --accent: #0a74b8; --accent-ink: #ffffff; --me: #d6e9f8; --warn: #9a5b00; --bad: #c62d36; --ok: #14833b;
+      --sheet: #ffffff; --scrim: rgba(10, 14, 24, .42);
+      --danger: #c62d36; --danger-soft: #fde8e9;
+      --caution: #9a5b00; --caution-soft: #fff1d6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; border-bottom: 1px solid var(--line);
+  }
+  .orb { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; transition: background .2s, box-shadow .2s; }
+  .orb.idle { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .orb.busy { background: var(--warn); box-shadow: 0 0 12px var(--warn); animation: pulse 1s infinite; }
+  .orb.rec  { background: var(--bad);  box-shadow: 0 0 14px var(--bad);  animation: pulse .6s infinite; }
+  .orb.off  { background: var(--muted); box-shadow: none; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  h1 { font-size: 15px; letter-spacing: .18em; margin: 0; font-weight: 650; }
+  #status { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+  .icon-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; padding: 6px 10px; font-size: 13px; }
+  .icon-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 85%; padding: 10px 13px; border-radius: 16px; white-space: pre-wrap; word-wrap: break-word; }
+  .me { align-self: flex-end; background: var(--me); border-bottom-right-radius: 5px; }
+  .her { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  .sys { align-self: center; color: var(--muted); font-size: 13px; text-align: center; max-width: 92%; }
+  .err { color: var(--bad); }
+  .meta { display: block; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .typing { display: inline-flex; gap: 4px; }
+  .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: pulse 1s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+
+  .icon-btn { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+  .icon-btn svg { width: 20px; height: 20px; }
+  body.sheet-open { overflow: hidden; }
+
+  /* ---- bottom sheets: the permission question and the PC menu ------------------------------ */
+  #scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity .22s; }
+  #scrim.show { opacity: 1; pointer-events: auto; }
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 560px; margin: 0 auto; max-height: 92dvh; overflow-y: auto;
+    background: var(--sheet); color: var(--text); border: 1px solid var(--line); border-bottom: 0; border-radius: 24px 24px 0 0;
+    padding: 8px 20px calc(env(safe-area-inset-bottom) + 20px); box-shadow: 0 -16px 48px rgba(0, 0, 0, .35);
+    transform: translateY(104%); transition: transform .3s cubic-bezier(.2, .8, .2, 1); overscroll-behavior: contain;
+    --tone: var(--accent); --tone-soft: var(--panel);
+  }
+  .sheet[hidden] { display: none; }
+  .sheet.show { transform: none; }
+  .sheet[data-sev="danger"]  { --tone: var(--danger);  --tone-soft: var(--danger-soft);  --tone-dim: var(--danger-dim);  --tone-full: var(--danger-full); }
+  .sheet[data-sev="caution"] { --tone: var(--caution); --tone-soft: var(--caution-soft); --tone-dim: var(--caution-dim); --tone-full: var(--caution-full); }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 4px auto 14px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .sheet-icon { width: 60px; height: 60px; border-radius: 20px; display: grid; place-items: center; background: var(--tone-soft); color: var(--tone); }
+  .sheet-icon svg { width: 30px; height: 30px; }
+  .sheet-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px; text-align: right; }
+  .tag { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--tone); }
+  .count { color: var(--muted); }
+  .sheet h2 { margin: 14px 0 6px; font-size: 24px; line-height: 1.2; letter-spacing: -.01em; }
+  #sheetBody { margin: 0 0 14px; color: var(--muted); font-size: 16px; line-height: 1.5; }
+  .facts { margin: 0 0 12px; padding: 12px 14px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+  .facts[hidden] { display: none; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; word-break: break-word; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  details { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  details summary { cursor: pointer; padding: 6px 0; min-height: 32px; }
+  details code { display: block; margin-top: 4px; padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); word-break: break-all; color: var(--text); font-size: 12px; }
+  .timer { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+  .track { flex: 1; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  #timerBar { height: 100%; background: var(--tone); transform-origin: left; transition: transform .25s linear; }
+  .timer.low #timerBar { background: var(--danger); } .timer.low span { color: var(--danger); }
+  .actions { display: grid; gap: 12px; }
+  .hold {
+    position: relative; overflow: hidden; min-height: 60px; border: 0; border-radius: 18px; font: inherit; font-weight: 700; font-size: 17px;
+    color: #fff; background: var(--tone-dim, var(--accent)); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  .hold:not(.needs-hold) { background: var(--tone-full, var(--accent)); }
+  .hold .fill { position: absolute; inset: 0; width: 0; background: var(--tone-full, var(--accent)); }
+  .hold .label { position: relative; z-index: 1; }
+  .hold.holding .fill { width: 100%; transition: width 1.1s linear; }
+  .hold:disabled { opacity: .55; }
+  .ghost { min-height: 56px; border-radius: 18px; background: transparent; color: var(--text); border: 1.5px solid var(--line); font: inherit; font-weight: 650; font-size: 17px; }
+  .ghost:active { background: var(--panel); }
+  .hint { margin: 12px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
+  .hint:empty { display: none; }
+  .hold:focus-visible, .ghost:focus-visible, .rows button:focus-visible, .icon-btn:focus-visible, details summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .menu-title { margin: 6px 0 4px; font-size: 22px; }
+  .menu-sub { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .rows { display: grid; gap: 10px; margin-bottom: 14px; }
+  .rows button { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 68px; padding: 10px 14px; text-align: left; font: inherit; border-radius: 18px; background: var(--panel); border: 1px solid var(--line); color: var(--text); }
+  .rows button:active { background: var(--line); }
+  .rows .ri { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; flex: none; background: var(--tone-soft); color: var(--tone); }
+  .rows .ri svg { width: 24px; height: 24px; }
+  .rows [data-tone="danger"]  { --tone: var(--danger);  --tone-soft: var(--danger-soft); }
+  .rows [data-tone="caution"] { --tone: var(--caution); --tone-soft: var(--caution-soft); }
+  .rows [data-tone="neutral"] { --tone: var(--accent);  --tone-soft: var(--bg); }
+  .rows b { display: block; font-size: 17px; }
+  .rows small { display: block; color: var(--muted); font-size: 13px; line-height: 1.35; }
+  .rows .ask-tag { margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+
+  .undo { align-self: stretch; display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--danger-soft); border: 1px solid var(--danger); font-size: 15px; }
+  .undo span { flex: 1; }
+  .undo button { min-height: 44px; padding: 0 16px; border-radius: 12px; border: 0; font: inherit; font-weight: 700; background: var(--danger-full); color: #fff; }
+  @media (prefers-reduced-motion: reduce) {
+    .sheet, #scrim, #timerBar, .hold.holding .fill { transition: none; }
+    .orb.busy, .orb.rec, .typing i { animation: none; }
+  }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
+    display: flex; gap: 10px; align-items: flex-end; background: var(--bg);
+  }
+  textarea {
+    flex: 1; resize: none; max-height: 120px; min-height: 46px; padding: 12px 14px; border-radius: 14px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .round { width: 46px; height: 46px; border-radius: 50%; border: 0; flex: none; display: grid; place-items: center; }
+  #send { background: var(--panel); color: var(--accent); border: 1px solid var(--line); }
+  #mic { width: 58px; height: 58px; background: var(--accent); color: var(--accent-ink); touch-action: none; user-select: none; -webkit-user-select: none; }
+  #mic.rec { background: var(--bad); color: #fff; transform: scale(1.08); }
+  #mic:disabled, #send:disabled { opacity: .45; }
+  svg { width: 24px; height: 24px; }
+
+  #login { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; justify-content: center; padding: 24px; gap: 14px; }
+  #login.show { display: flex; }
+  #login h2 { margin: 0; letter-spacing: .14em; font-size: 18px; }
+  #login p { margin: 0; color: var(--muted); }
+  #login input { padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
+  #login button { padding: 14px; border-radius: 12px; border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; font: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <span class="orb off" id="orb"></span>
+  <h1 id="title">VERONICA</h1>
+  <span id="status">connecting…</span>
+  <button class="icon-btn" id="speakToggle" aria-pressed="true" title="Speak replies" aria-label="Speak replies">🔊</button>
+  <button class="icon-btn" id="powerBtn" aria-haspopup="dialog" title="PC controls" aria-label="PC controls">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg>
+  </button>
+</header>
+
+<main id="log" aria-live="polite"></main>
+
+<footer>
+  <textarea id="text" rows="1" placeholder="Message VERONICA…" enterkeyhint="send"></textarea>
+  <button class="round" id="send" aria-label="Send">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+  </button>
+  <button class="round" id="mic" aria-label="Hold to talk">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+  </button>
+</footer>
+
+<div id="scrim" aria-hidden="true"></div>
+
+<section id="sheet" class="sheet" role="alertdialog" aria-modal="true" aria-labelledby="sheetTitle" aria-describedby="sheetBody" hidden>
+  <div class="grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <div class="sheet-icon" id="sheetIcon" aria-hidden="true"></div>
+    <div class="sheet-meta"><span class="tag" id="sheetTag"></span><span class="count" id="sheetCount"></span></div>
+  </div>
+  <h2 id="sheetTitle"></h2>
+  <p id="sheetBody"></p>
+  <dl class="facts" id="sheetFacts" hidden></dl>
+  <details><summary>Technical details</summary><code id="sheetRawText"></code></details>
+  <div class="timer" id="timer"><div class="track"><div id="timerBar"></div></div><span id="timerText"></span></div>
+  <div class="actions">
+    <button class="hold" id="confirmBtn" type="button"><span class="fill"></span><span class="label" id="confirmLabel"></span></button>
+    <button class="ghost" id="denyBtn" type="button">Not now</button>
+  </div>
+  <p class="hint" id="sheetHint"></p>
+</section>
+
+<section id="menu" class="sheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle" hidden>
+  <div class="grab" aria-hidden="true"></div>
+  <h2 class="menu-title" id="menuTitle">This PC</h2>
+  <p class="menu-sub">Everything except Lock asks you to confirm first.</p>
+  <div class="rows" id="menuRows"></div>
+  <button class="ghost" id="menuClose" type="button" style="width:100%">Close</button>
+</section>
+
+<div id="login">
+  <h2>VERONICA</h2>
+  <p>Paste the access link or token shown in VERONICA's window on your PC (also saved in <code>data/remote_link.txt</code>).</p>
+  <input id="tokenInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Access token">
+  <button id="tokenSave">Connect</button>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), orb = $("orb"), statusEl = $("status"), text = $("text"), mic = $("mic"), send = $("send");
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                  set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+  // ---- token: from ?t= once, then remembered on this device ---------------------------
+  let token = "";
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  if (fromUrl) { token = fromUrl.trim(); store.set("veronica_token", token); history.replaceState(null, "", "/"); }
+  else token = store.get("veronica_token") || "";
+
+  let speakReplies = store.get("veronica_speak") !== "0";
+  $("speakToggle").setAttribute("aria-pressed", String(speakReplies));
+  $("speakToggle").onclick = () => {
+    speakReplies = !speakReplies; store.set("veronica_speak", speakReplies ? "1" : "0");
+    $("speakToggle").setAttribute("aria-pressed", String(speakReplies));
+    if (!speakReplies) player.pause();
+  };
+
+  function setState(s, label) { orb.className = "orb " + s; if (label !== undefined) statusEl.textContent = label; }
+
+  function add(cls, content, meta) {
+    const d = document.createElement("div");
+    d.className = "msg " + cls;
+    d.textContent = content;
+    if (meta) { const m = document.createElement("span"); m.className = "meta"; m.textContent = meta; d.appendChild(m); }
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    return d;
+  }
+  function typing() {
+    const d = document.createElement("div"); d.className = "msg her";
+    d.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+    log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + token } });
+    if (res.status === 401) { showLogin("That token wasn't accepted."); throw new Error("unauthorized"); }
+    return res;
+  }
+
+  function showLogin(msg) {
+    $("login").classList.add("show");
+    if (msg) $("login").querySelector("p").textContent = msg + " Paste the access link or token from your PC.";
+    setState("off", "not connected");
+  }
+  $("tokenSave").onclick = () => {
+    let v = $("tokenInput").value.trim();
+    const m = v.match(/[?&]t=([^&\s]+)/); if (m) v = decodeURIComponent(m[1]);
+    if (!v) return;
+    token = v; store.set("veronica_token", v); $("login").classList.remove("show"); connect();
+  };
+
+  // ---- audio out: one element, unlocked on the first tap (iOS needs a user gesture) ----
+  const player = new Audio(); player.preload = "auto";
+  let unlocked = false;
+  function unlockAudio() {
+    if (unlocked) return; unlocked = true;
+    player.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+    player.play().catch(() => {});
+  }
+  async function speak(reply) {
+    if (!speakReplies || !reply) return;
+    try {
+      const res = await api("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+      if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
+      player.src = url; await player.play().catch(() => {});
+      player.onended = () => URL.revokeObjectURL(url);
+    } catch {}
+  }
+
+  // ---- permission questions: a bottom sheet over the chat (polled while a request runs) --------
+  const sheet = $("sheet"), menuEl = $("menu"), scrim = $("scrim");
+  const HOLD_MS = 1100;
+  const ICON = {
+    power: '<path d="M12 3v8"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>',
+    moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+    signout: '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4"/><path d="M16 8l4 4-4 4M20 12H9"/>',
+    restart: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/>',
+    terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+    window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 14l4 4M13 14l-4 4"/>',
+    play: '<path d="M7 5l12 7-12 7z"/>',
+    file: '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/>',
+    download: '<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>',
+    lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    shield: '<path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/>',
+  };
+  const icon = (n) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICON[n] || ICON.shield) + "</svg>";
+  const clip = (v, n = 80) => { const t = String(v ?? ""); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+
+  // What a permission question means, in plain words. Everything shown is set with textContent.
+  function describe(q) {
+    const a = q.args || {}, t = q.tool || "";
+    const d = Number(a.delay_seconds) || 30;
+    if (t === "shutdown_pc") {
+      if (a.action === "restart") return { icon: "restart", sev: "danger", hold: true, delay: d, title: "Restart your PC?", label: "Hold to restart",
+        body: "Everything running closes in " + d + " seconds. I only start again once you sign in.", facts: [] };
+      if (a.action === "sign_out") return { icon: "signout", sev: "danger", hold: true, title: "Sign out of your PC?", label: "Hold to sign out",
+        body: "This happens right away. Every app closes and I stop. To get back in, sign in at the PC or use Remote Desktop.", facts: [] };
+      return { icon: "power", sev: "danger", hold: true, delay: d, title: "Shut down your PC?", label: "Hold to shut down",
+        body: "It turns off in " + d + " seconds. Your phone can't switch it back on; you'd have to press its power button.", facts: [] };
+    }
+    if (t === "sleep_pc") return { icon: "moon", sev: "caution", hold: true, title: "Put your PC to sleep?", label: "Hold to sleep",
+      body: "It goes offline straight away. You can't wake it from your phone, only at the keyboard.", facts: [] };
+    if (t === "close_window") return { icon: "window", sev: "caution", title: "Close " + clip(a.app || "that window", 40) + "?", label: "Close it",
+      body: "Anything you haven't saved in it can be lost.", facts: [] };
+    if (t === "run_code") return { icon: "play", sev: "caution", title: "Run the code?", label: "Run it",
+      body: "I'll run the program I wrote, on your PC" + (a.project ? ": " + clip(a.project, 40) + "." : "."), facts: [] };
+    if (t === "delete_file") return { icon: "trash", sev: "danger", hold: true, title: "Delete this?", label: "Hold to delete",
+      body: "This can't be undone.", facts: [["File", clip(a.path || a.file || a.name || "")]] };
+    if (t === "run_shell_command") return { icon: "terminal", sev: "danger", hold: true, title: "Run a command?", label: "Hold to run",
+      body: "It runs on your PC exactly as written.", facts: [["Command", clip(a.command || a.cmd || "", 200)]] };
+    if (t === "write_file") return { icon: "file", sev: "caution", title: "Save a file?", label: "Save it",
+      body: "I'll write this file on your PC. If it exists, it's replaced.", facts: [["File", clip(a.path || a.file || a.name || "")]] };
+    if (t === "download_file") return { icon: "download", sev: "caution", title: "Download a file?", label: "Download",
+      body: "I'll fetch it into your Downloads folder.", facts: [["From", clip(a.url || "", 120)]] };
+    const critical = q.level === "CRITICAL", name = (t || "do this").replace(/_/g, " ");
+    return { icon: "shield", sev: critical ? "danger" : "caution", hold: critical, title: "Allow this?", label: critical ? "Hold to allow" : "Allow",
+      body: "I'd like to " + name + ".", facts: Object.entries(a).slice(0, 4).map(([k, v]) => [k.replace(/_/g, " "), clip(v, 120)]) };
+  }
+
+  function setInert(on) { for (const n of document.querySelectorAll("header, main, footer")) { if (on) n.setAttribute("inert", ""); else n.removeAttribute("inert"); } }
+  function openSheet(el) {
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();   // keyboard down first
+    el.hidden = false; scrim.classList.add("show"); void el.offsetWidth; el.classList.add("show");
+    document.body.classList.add("sheet-open"); setInert(true);
+  }
+  function closeSheet(el, done) {
+    el.classList.remove("show"); scrim.classList.remove("show");
+    setTimeout(() => { el.hidden = true; if (sheet.hidden && menuEl.hidden) { document.body.classList.remove("sheet-open"); setInert(false); } if (done) done(); }, 280);
+  }
+
+  const queue = [], seen = new Set();
+  let polling = null, current = null, answering = false, deadline = 0, total = 60, tick = null, armedAt = 0;
+
+  function startPolling() {
+    if (polling) return;
+    polling = setInterval(async () => {
+      try {
+        const r = await (await api("/api/pending")).json();
+        for (const q of r.questions || []) enqueue(q);
+      } catch {}
+    }, 1000);
+  }
+  async function checkPending() {
+    try { for (const q of (await (await api("/api/pending")).json()).questions || []) enqueue(q); } catch {}
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token) checkPending(); });
+  function stopPolling() {
+    clearInterval(polling); polling = null;
+    if (current && !answering) finishQuestion(current, false, "gone");      // the PC stopped waiting
+  }
+  function enqueue(q) {
+    if (seen.has(q.id)) return; seen.add(q.id); queue.push(q);
+    if (!menuEl.hidden) closeSheet(menuEl, next); else if (!current) next(); else $("sheetCount").textContent = "+" + queue.length + " more waiting";
+  }
+  function next() {
+    if (current || !queue.length) return;
+    showQuestion(queue.shift());
+  }
+
+  function showQuestion(q) {
+    current = q; answering = false;
+    const k = describe(q);
+    sheet.dataset.sev = k.sev; $("sheetIcon").innerHTML = icon(k.icon);
+    $("sheetTag").textContent = q.level === "CRITICAL" ? "High impact" : "Needs your OK";
+    $("sheetCount").textContent = queue.length ? "+" + queue.length + " more waiting" : "";
+    $("sheetTitle").textContent = k.title; $("sheetBody").textContent = k.body;
+    const facts = $("sheetFacts"); facts.textContent = "";
+    for (const [name, value] of k.facts) {
+      const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = name; dd.textContent = value; facts.append(dt, dd);
+    }
+    facts.hidden = !k.facts.length;
+    $("sheetRawText").textContent = q.description;
+    const btn = $("confirmBtn");
+    btn.className = "hold" + (k.hold ? " needs-hold" : ""); btn.dataset.hold = k.hold ? "1" : ""; btn.disabled = false; armedAt = 0;
+    $("confirmLabel").textContent = k.label; $("confirmLabel").dataset.label = k.label;
+    $("sheetHint").textContent = k.hold ? "Press and hold the button for a second. A quick tap does nothing." : "";
+    $("denyBtn").disabled = false;
+    total = Math.max(1, Number(q.expires_in ?? 60)); deadline = Date.now() + total * 1000;
+    openSheet(sheet); setTimeout(() => $("denyBtn").focus({ preventScroll: true }), 320);   // the safe choice has focus
+    runTimer();
+    if (navigator.vibrate) navigator.vibrate(k.sev === "danger" ? [60, 40, 60] : 60);
+  }
+
+  function runTimer() {
+    clearInterval(tick);
+    const paint = () => {
+      const left = Math.max(0, (deadline - Date.now()) / 1000);
+      $("timerBar").style.transform = "scaleX(" + (left / total) + ")";
+      $("timerText").textContent = left > 0 ? "Counts as No in " + Math.ceil(left) + " s" : "Time's up";
+      $("timer").classList.toggle("low", left <= 10);
+      if (left <= 0 && current && !answering) { clearInterval(tick); answering = true; $("confirmBtn").disabled = true; $("denyBtn").disabled = true; setTimeout(() => finishQuestion(current, false, "expired"), 900); }
+    };
+    paint(); tick = setInterval(paint, 250);
+  }
+
+  async function answer(allow) {
+    if (!current || answering) return;
+    answering = true; clearInterval(tick);
+    const q = current;
+    $("confirmBtn").disabled = true; $("denyBtn").disabled = true;
+    let ok = false;
+    try {
+      const r = await (await api("/api/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: q.id, allow }) })).json();
+      ok = !!r.ok;
+    } catch {}
+    finishQuestion(q, allow, ok ? "ok" : "late");
+  }
+
+  function finishQuestion(q, allow, how) {
+    clearInterval(tick); answering = true;
+    const k = describe(q);
+    closeSheet(sheet, () => {
+      current = null; answering = false;
+      if (how === "expired") add("sys", "No answer in time, so it counted as no: " + k.title.replace(/\?$/, ""));
+      else if (how === "gone") add("sys", "That question is no longer waiting for an answer.");
+      else if (how === "late") add("sys", "That one had already timed out, so it counted as no.");
+      else if (allow) { add("sys", "You allowed: " + k.title.replace(/\?$/, "")); if (k.delay) addUndo(k.delay, k.icon === "restart" ? "Restarting" : "Shutting down"); }
+      else add("sys", "You said no: " + k.title.replace(/\?$/, ""));
+      next();
+    });
+  }
+
+  // "Cancel shutdown" for a moment after a shutdown or restart was allowed (she keeps the PC waiting 30 s)
+  function addUndo(seconds, verb) {
+    const d = document.createElement("div"); d.className = "undo";
+    const label = document.createElement("span"), cancel = document.createElement("button"); cancel.textContent = "Cancel";
+    d.append(label, cancel); log.appendChild(d); log.scrollTop = log.scrollHeight;
+    let left = seconds;
+    const iv = setInterval(() => {
+      left -= 1; label.textContent = verb + " in " + Math.max(0, left) + " s";
+      if (left <= 0) { clearInterval(iv); label.textContent = verb + " now"; cancel.remove(); }
+    }, 1000);
+    label.textContent = verb + " in " + left + " s";
+    cancel.onclick = () => { clearInterval(iv); d.remove(); sendCommand("cancel shutdown", "Cancel shutdown"); };
+  }
+
+  // hold-to-confirm for the heavy ones; a plain tap for the rest
+  (function wireButtons() {
+    const btn = $("confirmBtn"); let timer = null;
+    const release = () => { clearTimeout(timer); timer = null; btn.classList.remove("holding"); };
+    btn.addEventListener("pointerdown", (e) => {
+      if (btn.disabled || !btn.dataset.hold || (e.button || 0) > 0) return;
+      e.preventDefault(); try { btn.setPointerCapture(e.pointerId); } catch {}
+      btn.classList.add("holding");
+      timer = setTimeout(() => { release(); if (navigator.vibrate) navigator.vibrate([25, 40, 25]); answer(true); }, HOLD_MS);
+    });
+    for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) btn.addEventListener(ev, release);
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+    btn.addEventListener("click", (e) => {
+      if (btn.disabled) return;
+      if (!btn.dataset.hold) { answer(true); return; }
+      if (e.detail === 0) {                       // keyboard or screen reader: nothing to "hold", so press twice
+        if (Date.now() - armedAt < 3000) { answer(true); return; }
+        armedAt = Date.now(); $("confirmLabel").textContent = "Press again to confirm";
+        setTimeout(() => { if (!answering) $("confirmLabel").textContent = $("confirmLabel").dataset.label; }, 3000);
+      }
+    });
+    $("denyBtn").onclick = () => answer(false);
+  })();
+
+  // ---- the PC menu: lock / sleep / sign out / restart / shut down ---------------------------------
+  const MENU = [
+    { icon: "lock", name: "Lock", sub: "Locks the screen. I keep running.", say: "lock my pc", tone: "neutral", asks: false },
+    { icon: "moon", name: "Sleep", sub: "Goes offline until someone wakes it at the keyboard.", say: "put my pc to sleep", tone: "caution", asks: true },
+    { icon: "signout", name: "Sign out", sub: "Closes every app and stops me.", say: "sign me out", tone: "danger", asks: true },
+    { icon: "restart", name: "Restart", sub: "Closes everything, then starts again.", say: "restart my pc", tone: "danger", asks: true },
+    { icon: "power", name: "Shut down", sub: "Turns the PC off.", say: "shut down my pc", tone: "danger", asks: true },
+  ];
+  const rows = $("menuRows");
+  for (const m of MENU) {
+    const b = document.createElement("button"); b.type = "button"; b.dataset.tone = m.tone;
+    const ri = document.createElement("span"); ri.className = "ri"; ri.innerHTML = icon(m.icon);
+    const txt = document.createElement("span"), nm = document.createElement("b"), sub = document.createElement("small");
+    nm.textContent = m.name; sub.textContent = m.sub; txt.append(nm, sub);
+    b.append(ri, txt);
+    if (m.asks) { const t = document.createElement("span"); t.className = "ask-tag"; t.textContent = "Asks first"; b.append(t); }
+    b.onclick = () => closeSheet(menuEl, () => sendCommand(m.say, m.name));
+    rows.append(b);
+  }
+  $("powerBtn").onclick = () => { if (current) return; openSheet(menuEl); };
+  $("menuClose").onclick = () => closeSheet(menuEl);
+  scrim.addEventListener("click", () => { if (!menuEl.hidden) closeSheet(menuEl); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menuEl.hidden) closeSheet(menuEl); });
+
+  function sendCommand(phrase, label) {
+    if (busy) { add("sys", "I'm still working on your last request."); return; }
+    unlockAudio(); add("me", label || phrase);
+    runTurn(() => api("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: phrase }) }));
+  }
+
+  // ---- a turn -----------------------------------------------------------------------------
+  let busy = false;
+  function setBusy(b) { busy = b; send.disabled = b; mic.disabled = b; setState(b ? "busy" : "idle", b ? "thinking…" : "online"); }
+
+  async function runTurn(request, heardBubble) {
+    setBusy(true); startPolling();
+    const t = typing();
+    try {
+      const r = await (await request()).json();
+      t.remove();
+      if (heardBubble) {
+        if (r.heard) heardBubble.firstChild.textContent = r.heard;
+        else heardBubble.remove();
+      }
+      if (!r.ok) { add("sys err", r.error || "Something went wrong."); return; }
+      add("her", r.reply || "(no reply)", r.tool ? "used " + r.tool : "");
+      speak(r.reply);
+    } catch (e) {
+      t.remove(); if (heardBubble && !heardBubble.isConnected) {}
+      if (String(e.message) !== "unauthorized") add("sys err", "Couldn't reach the PC. Is VERONICA running and Tailscale on?");
+    } finally { stopPolling(); setBusy(false); }
+  }
+
+  function sendText() {
+    const v = text.value.trim(); if (!v || busy) return;
+    unlockAudio(); text.value = ""; autosize();
+    add("me", v);
+    runTurn(() => api("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: v }) }));
+  }
+  send.onclick = sendText;
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } });
+  function autosize() { text.style.height = "auto"; text.style.height = Math.min(text.scrollHeight, 120) + "px"; }
+  text.addEventListener("input", autosize);
+
+  // ---- voice in: hold to talk, recorded as 16 kHz mono WAV in the browser ---------------
+  let ctx = null, stream = null, source = null, proc = null, chunks = [], recording = false, startedAt = 0;
+
+  async function startRec() {
+    if (busy || recording) return;
+    unlockAudio(); player.pause();
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      add("sys err", "The mic needs the secure https:// address from Tailscale (not http://)."); return;
+    }
+    try {
+      stream = stream || await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    } catch { add("sys err", "Microphone permission was blocked. Allow it in the browser's site settings."); return; }
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    source = ctx.createMediaStreamSource(stream);
+    proc = ctx.createScriptProcessor(4096, 1, 1);
+    chunks = [];
+    proc.onaudioprocess = (e) => { if (recording) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    source.connect(proc); proc.connect(ctx.destination);
+    recording = true; startedAt = Date.now();
+    mic.classList.add("rec"); setState("rec", "listening… release to send");
+    if (navigator.vibrate) navigator.vibrate(30);
+  }
+
+  function stopRec() {
+    if (!recording) return;
+    recording = false; mic.classList.remove("rec");
+    try { source.disconnect(); proc.disconnect(); } catch {}
+    const ms = Date.now() - startedAt;
+    if (ms < 400) { setState("idle", "online"); add("sys", "Hold the mic button while you speak."); return; }
+    const wav = toWav16k(chunks, ctx.sampleRate);
+    const bubble = add("me", "🎙️ …");
+    runTurn(() => api("/api/voice", { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav }), bubble);
+  }
+
+  function toWav16k(parts, rate) {
+    let n = 0; for (const p of parts) n += p.length;
+    const all = new Float32Array(n); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
+    const ratio = rate / 16000, outLen = Math.floor(n / ratio), pcm = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {                 // average each window: cheap low-pass + downsample
+      const a = Math.floor(i * ratio), b = Math.min(n, Math.floor((i + 1) * ratio));
+      let s = 0; for (let j = a; j < b; j++) s += all[j];
+      const v = Math.max(-1, Math.min(1, s / Math.max(1, b - a)));
+      pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    const buf = new ArrayBuffer(44 + pcm.length * 2), dv = new DataView(buf);
+    const w = (off, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(off + i, str.charCodeAt(i)); };
+    w(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    w(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+    new Int16Array(buf, 44).set(pcm);
+    return new Blob([buf], { type: "audio/wav" });
+  }
+
+  mic.addEventListener("pointerdown", (e) => { e.preventDefault(); mic.setPointerCapture(e.pointerId); startRec(); });
+  mic.addEventListener("pointerup", stopRec);
+  mic.addEventListener("pointercancel", stopRec);
+  mic.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // ---- connect ----------------------------------------------------------------------------
+  async function connect() {
+    if (!token) { showLogin(); return; }
+    try {
+      const r = await (await api("/api/ping")).json();
+      $("title").textContent = (r.name || "VERONICA").toUpperCase(); document.title = r.name || "VERONICA";
+      setState("idle", "online"); checkPending();
+      if (!log.children.length) add("sys", "Connected to your PC. Hold the mic to talk, or type.");
+      if (!r.voice_in) mic.disabled = true;
+    } catch (e) {
+      if (String(e.message) !== "unauthorized") { setState("off", "PC offline"); add("sys err", "Can't reach the PC right now. Retrying…"); setTimeout(connect, 5000); }
+    }
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

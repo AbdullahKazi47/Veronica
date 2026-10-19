@@ -681,3 +681,12 @@ gps:
   scan_serial: true
   udp_port: 10110
   tcp: ""
+
+# Talk to VERONICA from your phone / other devices (veronica/ui/remote, docs in server.py).
+# Listens on this PC only; Tailscale makes it reachable from YOUR devices over HTTPS:
+#   tailscale serve --bg 7272      (run once on this PC)
+remote:
+  enabled: true                   # start the phone page with VERONICA (or use --remote)
+  host: "127.0.0.1"               # keep local - never 0.0.0.0
+  port: 7272
+  confirm_timeout_s: 60           # permission question on the phone left unanswered = no

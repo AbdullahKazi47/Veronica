@@ -339,6 +339,17 @@ class SpeechToText:
                 stats["voice_match"] = score
             if not mine:
                 return STTResult(success=False, error=f"Not your voice (match {score:.2f}).", stats=stats)
+        return self._run_engines(pcm, stats)
+
+    def transcribe_pcm(self, pcm: bytes) -> STTResult:
+        """Transcribe audio recorded elsewhere (16 kHz mono 16-bit), e.g. the phone page
+        (ui/remote). Same engines and corrections as the PC mic; the voiceprint check is
+        skipped because a phone mic sounds different and the request is already
+        authenticated by the remote access token."""
+        pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
+        return self._run_engines(pcm, {"source": "remote"})
+
+    def _run_engines(self, pcm: bytes, stats: dict) -> STTResult:
         last = STTResult(success=False, error="No speech recognizer is available.")
         for name, engine in self._engines():
             try:

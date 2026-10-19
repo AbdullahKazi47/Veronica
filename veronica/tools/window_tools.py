@@ -280,7 +280,8 @@ class SleepPCTool(Tool):
 
 
 _SHUTDOWN = re.compile(r"^\s*(?:please\s+)?(?:(shut\s*down|turn\s+off|power\s+off)|(restart|reboot)|"
-                       r"(sign\s+out|log\s+out|log\s+off))(?:\s+(?:my\s+|the\s+)?(?:pc|computer|laptop|system))?"
+                       r"(sign\s+(?:me\s+)?out|log\s+(?:me\s+)?(?:out|off)))"
+                       r"(?:\s+(?:of\s+)?(?:my\s+|the\s+)?(?:pc|computer|laptop|system|windows))?"
                        r"(?:\s+in\s+(\d+)\s+(minutes?|mins?|seconds?|secs?))?\s*[.!]?\s*$", re.I)
 _SHUTDOWN_DELAY_S = 30
 
