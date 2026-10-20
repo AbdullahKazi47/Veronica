@@ -214,6 +214,8 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         UpdateCodeTool,
         WriteCodeTool,
     )
+    from veronica.tools.explorer_tools import ExplorerNavigateTool
+    from veronica.tools.tab_tools import CloseTabTool, ListTabsTool, SwitchTabTool
     from veronica.tools.window_tools import (
         CancelShutdownTool,
         CloseWindowTool,
@@ -314,13 +316,19 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         ShutdownTool(),
         LockPCTool(),
         SleepPCTool(),                         # asks first (SENSITIVE)
+        # Tabs and Explorer before the window tools: 'close all tabs' and 'switch to the docs tab' are not
+        # about windows; 'open C drive' / 'go into projects' are not apps.
+        ListTabsTool(),
+        SwitchTabTool(),
+        CloseTabTool(),                        # asks first (SENSITIVE)
+        ExplorerNavigateTool(),
         WindowControlTool(),
         CloseWindowTool(),
-        OpenPathTool(),
+        OpenPathTool(config=config, routing=open_routing),
         CurrentTimeTool(),
         CalculatorTool(),
         NoteTool(config=config),
-        OpenApplicationTool(config=config, routing=open_routing),
+        OpenApplicationTool(config=config, routing=open_routing, verify=True),
         SetVolumeTool(),                       # before update_code: 'make it louder'
         # Learning and coding: studying and writing never ask; running code always does.
         LearnTopicTool(config=config, llm=llm),

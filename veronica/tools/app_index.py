@@ -112,6 +112,8 @@ class AppIndex:
         self._browsers: Optional[list[dict]] = None
         self._last_refresh = 0.0
         self.home = home or Path.home()
+        self._home_given = home is not None
+        self._data_dir = data_dir
         assistant = getattr(config, "assistant", None)
         self.default_browser = getattr(assistant, "default_browser", None) or None
         self.search_url_template = getattr(assistant, "search_url", None) or "https://www.google.com/search?q={query}"
@@ -198,6 +200,24 @@ class AppIndex:
             if p.name.lower() == q or p.name.lower() == q.rstrip("s") or p.name.lower().rstrip("s") == q:
                 return p
         return None
+
+    def find_place(self, name: str) -> Optional[Path]:
+        """A folder of that name outside the home folder's first level — one she found before,
+        or one at a drive root / in the user's folders. A cheap look only (milliseconds); the
+        real search belongs to open_path. This is what lets a bare "open placement" be a folder."""
+        q = _norm(name)
+        if not q or len(q) > 60:
+            return None
+        try:
+            from veronica.core.understanding import Aliases
+            from veronica.tools.folder_search import FolderFinder
+            remembered = Aliases(self._data_dir / "aliases.json").place(q)
+            if remembered and Path(remembered).is_dir():
+                return Path(remembered)
+            return FolderFinder(home=self.home if self._home_given else None).exists_quick(q)
+        except Exception as e:  # noqa: BLE001 - routing must never break on a disk hiccup
+            logger.debug("Place lookup failed: %s", e)
+            return None
 
     # -- websites --------------------------------------------------------------------
     @staticmethod
@@ -291,6 +311,8 @@ def names_an_unknown_app(index: AppIndex, text: str) -> bool:
                     continue
                 # "open the projects folder" says "folder", but "open projects" does not.
                 if index.find_folder(target):
+                    continue
+                if getattr(index, "find_place", None) and index.find_place(target):
                     continue
             except Exception:  # noqa: BLE001 - a broken index must not force a cloud call
                 return False

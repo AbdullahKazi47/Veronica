@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -180,24 +181,54 @@ class WindowControlTool(Tool):
 _CLOSE = re.compile(r"^\s*(?:please\s+)?(?:close|quit|exit)\s+(?:the\s+|my\s+)?(.+?)(?:\s+(?:window|app))?\s*[.!]?\s*$", re.I)
 
 
+_TABS = re.compile(r"\btabs?\b", re.I)    # "close all tabs" is close_tab's, never a window called "all tabs"
+
+
+def _window_exists(hwnd: int) -> bool:
+    import win32gui
+    return bool(win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd))
+
+
 class CloseWindowTool(Tool):
     name = "close_window"
-    description = "Close an app's window (asks first: unsaved work could be lost)."
+    description = ("Close an app's window (asks first: unsaved work could be lost). Checks the window is really gone "
+                   "and says so if it isn't (it may be asking to save). For tabs use close_tab, not this.")
     permission = PermissionLevel.SENSITIVE
     parameters = {"type": "object", "properties": {"app": {"type": "string"}}, "required": ["app"]}
 
-    def __init__(self, find_window: Optional[Callable] = None, close: Optional[Callable[[int], None]] = None) -> None:
+    def __init__(self, find_window: Optional[Callable] = None, close: Optional[Callable[[int], None]] = None,
+                 exists: Optional[Callable[[int], bool]] = None, sleep: Callable[[float], None] = time.sleep,
+                 wait_s: float = 2.0) -> None:
         self._find, self._close = find_window, close
+        self._exists, self._sleep, self.wait_s = exists, sleep, wait_s
 
     def matches(self, text: str) -> bool:
         m = _CLOSE.match(text)
-        return bool(m) and not re.match(r"^(?:it|that|this|everything|all|the\s+conversation)$", m.group(1), re.I)
+        return (bool(m) and not _TABS.search(text)
+                and not re.match(r"^(?:it|that|this|everything|all|the\s+conversation)$", m.group(1), re.I))
 
     def extract_arguments(self, text: str) -> dict[str, Any]:
         m = _CLOSE.match(text)
         return {"app": m.group(1).strip()} if m else {}
 
+    def _gone(self, hwnd: int) -> Optional[bool]:
+        """True = the window is gone, False = still there, None = couldn't look."""
+        check = self._exists or _window_exists
+        deadline = time.monotonic() + self.wait_s
+        try:
+            while True:
+                if not check(hwnd):
+                    return True
+                if time.monotonic() >= deadline:
+                    return False
+                self._sleep(0.2)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Couldn't check the window: %s", e)
+            return None
+
     def run(self, app: str = "", **kwargs: Any) -> ToolResult:
+        if _TABS.search(app or ""):
+            return ToolResult.fail("That's about tabs, not a window — I'll use the tab tools for it.")
         from veronica.vision.app_windows import find_app_window
         found = (self._find or find_app_window)(app)
         if found is None:
@@ -211,7 +242,13 @@ class CloseWindowTool(Tool):
                 win32gui.PostMessage(found[0], win32con.WM_CLOSE, 0, 0)  # polite close: the app can ask to save
         except Exception as e:  # noqa: BLE001
             return ToolResult.fail(f"Couldn't close {app}: {e}")
-        return ToolResult.ok(f"Closed {app}.")
+        gone = self._gone(found[0])
+        if gone is True:
+            return ToolResult.ok(f"Closed {app}.")
+        if gone is False:
+            return ToolResult.fail(f"I asked {app} to close, but its window is still open — it may be asking to save. "
+                                   "Nothing was forced.", unconfirmed=True)
+        return ToolResult.fail(f"I sent the close to {app}, but I can't confirm it worked.", unconfirmed=True)
 
 
 # ---------------------------------------------------------------- power
@@ -374,33 +411,100 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s_\-]+", " ", (s or "").lower()).strip()
 
 
+_ABS_PATH = re.compile(r"^\s*(?:please\s+)?open\s+(?:the\s+)?([a-z]:[\\/][^\"<>|?*]*?)\s*[.!]?\s*$", re.I)
+_PICK = re.compile(r"^\s*(?:please\s+)?(?:open\s+)?(?:the\s+)?(?:(first|second|third|1st|2nd|3rd)(?:\s+one)?|"
+                   r"(?:number|option)\s+(\d)|(\d))(?:\s+one)?\s*[.!]?\s*$", re.I)
+_DEEPER = re.compile(r"^\s*(?:please\s+)?(?:search|look|try|dig)\s+(?:a\s+(?:bit|little)\s+)?(?:deeper|harder|further|everywhere)"
+                     r"(?:\s+for\s+it)?\s*[.!]?\s*$", re.I)
+_ON_DRIVE = re.compile(r"^\s*(?:please\s+)?(?:it'?s|try|look|search|check)\s+(?:for\s+it\s+)?(?:on|in)\s+(?:the\s+)?([a-z])\s*"
+                       r"(?:drive|:)?\s*[.!]?\s*$", re.I)
+_DRIVE_WORD = re.compile(r"^(?:the\s+)?([a-z])(?::|\s+drive)?$", re.I)
+_ORDINAL = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}
+_STATE_FRESH_S = 120
+
+
 class OpenPathTool(Tool):
     name = "open_path"
-    description = ("Open a folder or a document/photo/video by name or path, e.g. 'projects folder in "
-                   "documents', 'resume pdf', 'C:\\Users\\me\\Notes'. No permission needed. Never runs programs.")
+    description = ("Open a folder or a document/photo/video by name or path, anywhere on the PC (your folders, then every "
+                   "drive): 'placement folder', 'projects folder in documents', 'resume pdf', 'C:\\Users\\me\\Notes'. "
+                   "A name that fits several folders is asked about, never guessed. Remembers what it found. "
+                   "`deep` searches harder; `drive` limits to one drive. No permission needed. Never runs programs.")
     permission = PermissionLevel.MODERATE
     parameters = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Folder/file name or full path."},
             "kind": {"type": "string", "enum": ["folder", "file"], "description": "What to look for."},
-            "inside": {"type": "string", "description": "Optional parent folder name, e.g. 'documents'."},
+            "inside": {"type": "string", "description": "Optional parent folder name, e.g. 'documents', or a drive like 'D'."},
+            "pick": {"type": "integer", "description": "Choose the Nth folder from the ones just offered."},
+            "deep": {"type": "boolean", "description": "Search harder and deeper (slower)."},
+            "drive": {"type": "string", "description": "Only look on this drive letter."},
         },
-        "required": ["name"],
+        "required": [],
     }
 
     def __init__(self, home: Optional[Path] = None, opener: Optional[Callable[[str], None]] = None,
-                 max_depth: int = 5, max_entries: int = 60_000) -> None:
+                 max_depth: int = 5, max_entries: int = 80_000, drives: Optional[list] = None, config=None,
+                 aliases=None, routing=None, verify: Optional[Callable[[Path, bool], Optional[bool]]] = None,
+                 desktop=None, max_seconds: float = 1.8, clock: Callable[[], float] = time.monotonic,
+                 drive_map: Optional[dict] = None) -> None:
+        from veronica.tools.folder_search import FolderFinder
         self.home = Path(home) if home else Path.home()
+        self._injected_opener = opener is not None
         self._open = opener or (lambda p: os.startfile(p))  # type: ignore[attr-defined]
         self.max_depth, self.max_entries = max_depth, max_entries
+        self.finder = FolderFinder(home=home, drives=drives, max_seconds=max_seconds, max_entries=max_entries,
+                                   deep_depth=max_depth, clock=clock)
+        if aliases is None and config is not None:
+            from veronica.core.understanding import Aliases
+            aliases = Aliases(config.resolve_path("data/aliases.json"))
+        self.aliases = aliases
+        self.routing = routing
+        self._verify = verify
+        self._desktop = desktop
+        self._clock = clock
+        self._drive_map = drive_map or {}      # letter -> root (tests); real: 'D' -> D:\\
+        self._pending: Optional[dict] = None     # the folders just offered ("which one?")
+        self._last: Optional[dict] = None        # the last search, for "search deeper" / "try the D drive"
+        self._before: Optional[set] = None
+
+    # -- routing ---------------------------------------------------------------------
+    def _fresh(self, state: Optional[dict]) -> bool:
+        return bool(state) and self._clock() - state["at"] <= _STATE_FRESH_S
 
     def matches(self, text: str) -> bool:
-        return bool(_OPEN_PATH.match(text))
+        if _OPEN_PATH.match(text) or _ABS_PATH.match(text):
+            return True
+        if self._fresh(self._pending) and _PICK.match(text):
+            return True
+        if self._fresh(self._last) and (_DEEPER.match(text) or _ON_DRIVE.match(text)):
+            return True
+        if self.routing is not None:
+            parsed = self.routing.parse(text)
+            return bool(parsed) and parsed["kind"] == "place"
+        return False
 
     def extract_arguments(self, text: str) -> dict[str, Any]:
+        if self._fresh(self._pending):
+            m = _PICK.match(text)
+            if m:
+                word = (m.group(1) or m.group(2) or m.group(3)).lower()
+                return {"pick": _ORDINAL.get(word) or int(word)}
+        if self._fresh(self._last):
+            if _DEEPER.match(text):
+                return {"deep": True}
+            m = _ON_DRIVE.match(text)
+            if m:
+                return {"drive": m.group(1).upper(), "deep": True}
+        m = _ABS_PATH.match(text)
+        if m:
+            return {"name": m.group(1).strip(), "kind": "file" if Path(m.group(1)).suffix else "folder"}
         m = _OPEN_PATH.match(text)
         if not m:
+            if self.routing is not None:
+                parsed = self.routing.parse(text)
+                if parsed and parsed["kind"] == "place":
+                    return {"name": parsed["target"], "kind": "folder"}
             return {}
         if m.group(4):
             return {"name": m.group(4).strip(), "kind": "file"}
@@ -413,65 +517,165 @@ class OpenPathTool(Tool):
             args["inside"] = m.group(3).strip()
         return args
 
-    def _search(self, root: Path, name: str, want_dir: bool, exts: Optional[set]) -> Optional[Path]:
-        """Breadth-first: the shallowest match wins (so 'projects' finds Documents\\Projects
-        before some deeply nested folder of the same name)."""
-        target = _norm(Path(name).stem if not want_dir else name)
-        level, seen, best = [root], 0, None
-        for _depth in range(self.max_depth):
-            nxt = []
-            for folder in level:
-                try:
-                    entries = list(os.scandir(folder))
-                except OSError:
-                    continue
-                for e in entries:
-                    seen += 1
-                    if seen > self.max_entries:
-                        return best
-                    low = e.name.lower()
-                    if low.startswith(".") or low in _SKIP_DIRS:
-                        continue
-                    is_dir = e.is_dir(follow_symlinks=False)
-                    stem = _norm(e.name if is_dir else Path(e.name).stem)
-                    if is_dir == want_dir and (not exts or Path(e.name).suffix.lower() in exts):
-                        if stem == target:
-                            return Path(e.path)
-                        if best is None and target and target in stem:
-                            best = Path(e.path)
-                    if is_dir:
-                        nxt.append(e.path)
-            if best is not None:
-                return best
-            level = nxt
-        return best
+    # -- searching -------------------------------------------------------------------
+    def _remembered(self, name: str) -> Optional[Path]:
+        """A folder she resolved before — but only if it is still there."""
+        if self.aliases is None:
+            return None
+        try:
+            path = self.aliases.place(name)
+        except Exception:  # noqa: BLE001
+            return None
+        if path and Path(path).is_dir():
+            return Path(path)
+        if path:
+            try:
+                self.aliases.forget_place(name)
+            except Exception:  # noqa: BLE001
+                pass
+        return None
 
-    def run(self, name: str = "", kind: str = "folder", inside: str = "", **kwargs: Any) -> ToolResult:
+    def _remember(self, name: str, path: Path) -> None:
+        if self.aliases is not None:
+            try:
+                self.aliases.remember_place(name, str(path))
+            except Exception:  # noqa: BLE001
+                logger.debug("Couldn't remember %s", name)
+
+    def _ask(self, name: str, want_dir: bool, matches: list) -> ToolResult:
+        from veronica.tools.folder_search import place_label
+        shown = matches[:3]
+        ords = ["first", "second", "third"]
+        what = "folders" if want_dir else "files"
+        parts = [f"{ords[i]}, {m.path.name} {place_label(m.path, self.home)}" for i, m in enumerate(shown)]
+        more = f" (and {len(matches) - 3} more)" if len(matches) > 3 else ""
+        self._pending = {"at": self._clock(), "paths": [m.path for m in shown], "name": name, "want_dir": want_dir}
+        return ToolResult.fail(f"I found {len(matches)} {what} called {name}: " + "; ".join(parts) + f"{more}. Which one?",
+                               ask="path", choices=[str(m.path) for m in shown])
+
+    def run(self, name: str = "", kind: str = "folder", inside: str = "", pick: int = 0, deep: bool = False,
+            drive: str = "", **kwargs: Any) -> ToolResult:
+        if pick:
+            if not self._fresh(self._pending):
+                return ToolResult.fail("I'm not waiting on a choice — which folder do you want?")
+            paths = self._pending["paths"]
+            if not 1 <= int(pick) <= len(paths):
+                return ToolResult.fail(f"I only offered {len(paths)}. Say first, second or third.")
+            chosen = paths[int(pick) - 1]
+            if not chosen.exists():
+                return ToolResult.fail(f"{chosen.name} isn't there any more.")
+            asked = self._pending["name"]
+            self._remember(asked, chosen)
+            self._pending = None
+            return self._open_path(chosen, asked)
+        if not (name or "").strip() and self._fresh(self._last) and (deep or drive):
+            name, kind = self._last["name"], self._last["kind"]
+            inside = inside or self._last.get("inside", "")
         name = (name or "").strip().strip('"')
         if not name:
             return ToolResult.fail("Which folder or file?")
         want_dir = (kind or "folder") == "folder"
         exts = _DOC_KIND.get(kind) if not want_dir else None
         path = Path(os.path.expandvars(os.path.expanduser(name)))
-        if not path.is_absolute() or not path.exists():
-            root = self.home
-            if inside:
-                parent = self._search(self.home, inside, True, None)
-                if parent is None:
-                    return ToolResult.fail(f"I couldn't find a {inside} folder.")
-                root = parent
-            found = self._search(root, name, want_dir, exts)
-            if found is None and not want_dir and kind in ("file", "document") and "." in name:
-                found = self._search(root, name, False, {Path(name).suffix.lower()})
-            if found is None:
-                where = f" in {inside}" if inside else ""
-                return ToolResult.fail(f"I couldn't find a {name} {'folder' if want_dir else kind or 'file'}{where}.")
-            path = found
+        if path.is_absolute() and path.exists():
+            return self._open_path(path, name)
+        if path.is_absolute() and re.match(r"^[a-z]:[\\/]", name, re.I):
+            return ToolResult.fail(f"There's nothing at {name}.")
+
+        only_drive = None
+        letter = None
+        if drive:
+            letter = drive.strip()[:1].upper()
+        elif inside:
+            m = _DRIVE_WORD.match(inside.strip())
+            if m:
+                letter = m.group(1).upper()
+        if letter:
+            only_drive = Path(self._drive_map.get(letter) or f"{letter}:\\")
+            if not only_drive.exists():
+                return ToolResult.fail(f"I don't see a {letter} drive.")
+            inside = "" if not drive else inside
+
+        if want_dir and not inside and not deep and not only_drive:
+            hit = self._remembered(name)
+            if hit is not None:
+                return self._open_path(hit, name, remembered=True)
+
+        parent: Optional[Path] = None
+        if inside:
+            found_parent = self.finder.find(inside, True, None, deep=deep)
+            best = found_parent.best()
+            if not best:
+                return ToolResult.fail(f"I couldn't find a {inside} folder.")
+            parent = best[0].path
+
+        query, search_exts = name, exts
+        if not want_dir and "." in Path(name).name:
+            query, search_exts = Path(name).stem, (exts or {Path(name).suffix.lower()})
+        if parent is not None:
+            from veronica.tools.folder_search import FolderFinder
+            sub = FolderFinder(home=parent, drives=[], max_seconds=self.finder.max_seconds * (5 if deep else 1),
+                               max_entries=self.max_entries, deep_depth=self.max_depth, clock=self._clock)
+            result = sub.find_under(parent, query, want_dir, search_exts)
+        else:
+            result = self.finder.find(query, want_dir, search_exts, only_drive=only_drive, deep=deep)
+        self._last = {"at": self._clock(), "name": name, "kind": kind or "folder", "inside": inside}
+        matches = result.best()
+        if not matches and not want_dir and kind in ("file", "document") and "." in name and parent is None:
+            result = self.finder.find(Path(name).stem, False, {Path(name).suffix.lower()}, only_drive=only_drive, deep=deep)
+            matches = result.best()
+        if not matches:
+            where = f" in {inside}" if inside else (f" on the {letter} drive" if letter else "")
+            what = "folder" if want_dir else kind or "file"
+            tail = (" I ran out of time looking — say 'search deeper' and I'll look harder, or tell me which drive it's on."
+                    if result.timed_out else
+                    " Say 'search deeper' to look harder, or tell me which drive it's on.")
+            return ToolResult.fail(f"I couldn't find a {name} {what}{where}.{tail}")
+        if len(matches) > 1:
+            return self._ask(name, want_dir, matches)
+        if want_dir:
+            self._remember(name, matches[0].path)
+        return self._open_path(matches[0].path, name)
+
+    # -- opening, then checking ---------------------------------------------------------
+    def _check(self, path: Path) -> Optional[bool]:
+        """True = seen, False = looked and didn't see, None = no way to look."""
+        if self._verify is not None:
+            return self._verify(path, path.is_dir())
+        if self._injected_opener:
+            return None
+        try:
+            desktop = self._desktop
+            if desktop is None:
+                from veronica.vision.desktop_state import Desktop
+                desktop = self._desktop = Desktop()
+            return desktop.explorer_shows(str(path)) if path.is_dir() else self._file_window_opened(desktop, path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Couldn't verify the open: %s", e)
+            return None
+
+    def _file_window_opened(self, desktop, path: Path) -> bool:
+        return desktop.window_appeared([path.stem, path.name], wait_s=3.0, before=self._before) is not None
+
+    def _open_path(self, path: Path, asked: str, remembered: bool = False) -> ToolResult:
         if path.is_file() and path.suffix.lower() in _EXECUTABLE:
             return ToolResult.fail(f"{path.name} is a program or script. I won't run those by file — say "
                                    "'open <app name>' for apps.")
+        self._before = None
+        if not path.is_dir() and not self._injected_opener and self._verify is None:
+            try:
+                from veronica.vision.desktop_state import Desktop
+                self._desktop = self._desktop or Desktop()
+                self._before = {w.hwnd for w in self._desktop.windows()}
+            except Exception:  # noqa: BLE001
+                self._before = None
         try:
             self._open(str(path))
         except Exception as e:  # noqa: BLE001
             return ToolResult.fail(f"Couldn't open {path.name}: {e}")
-        return ToolResult.ok(f"Opening {path.name}.", path=str(path))
+        seen = self._check(path)
+        if seen is False or (seen is None and self._verify is not None):
+            return ToolResult.fail(f"I asked Windows to open {path.name}, but I can't confirm it's showing.",
+                                   path=str(path), unconfirmed=True)
+        note = " (the one I remembered)" if remembered else ""
+        return ToolResult.ok(f"Opening {path.name}{note}.", path=str(path), verified=seen is True)

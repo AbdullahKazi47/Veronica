@@ -365,8 +365,43 @@ $s.SetOutputToWaveFile("{path}", $fmt); $s.Speak("{said}"); $s.Dispose()'''],
                        ("take a screenshot", "take_screenshot"), ("find my resume", "find_file"),
                        ("show me the news", "show_news")]:
         check("pc control", f"'{text}'", route(text, tool))
+    # Tabs, folders and Explorer (Phase 1): routed, never run — except the read-only looks
+    for text, tool in [("close all tabs", "close_tab"), ("close this tab", "close_tab"), ("close the youtube tab", "close_tab"),
+                       ("list my tabs", "list_tabs"), ("switch to the docs tab", "switch_tab"),
+                       ("open c drive", "explorer_navigate"), ("open this pc", "explorer_navigate")]:
+        check("desktop", f"'{text}'", route(text, tool))
+    check("desktop", "'close all tabs' is not close_window", lambda: (
+        reg.find_fast_match("close all tabs").name != "close_window", "tabs have their own tool"))
+
+    def look_at_desktop():
+        """The real desktop, read-only: windows, tab strips, Explorer's folder. Whatever is open,
+        it must answer (a list or an honest 'none') and never raise."""
+        from veronica.vision.desktop_state import Desktop
+        d = Desktop()
+        note = d.describe()
+        tabs = reg.dispatch("list_tabs")
+        return bool(note) and isinstance(tabs.message, str) and bool(tabs.message), f"{note[-60:]!r} | {tabs.message[:60]}"
+    check("desktop", "looks at windows and tabs (read-only)", look_at_desktop)
+
+    def folder_search_tree():
+        """Folder search on a temp tree that stands in for a drive root outside home."""
+        from veronica.tools.window_tools import OpenPathTool
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "C" / "Placement").mkdir(parents=True)
+            (root / "D" / "placement").mkdir(parents=True)
+            (root / "home").mkdir()
+            opened: list[str] = []
+            tool = OpenPathTool(home=root / "home", drives=[root / "C", root / "D"], opener=opened.append)
+            asked = tool.run(name="placement")
+            (root / "D" / "placement").rmdir()
+            tool2 = OpenPathTool(home=root / "home", drives=[root / "C", root / "D"], opener=opened.append)
+            found = tool2.run(name="placements")
+            return (not asked.success and "Which one?" in asked.message and found.success
+                    and opened == [str(root / "C" / "Placement")]), asked.message[:80]
+    check("desktop", "finds a drive-root folder, asks when two fit", folder_search_tree)
     for tool, lvl in [("sleep_pc", "SENSITIVE"), ("shutdown_pc", "SENSITIVE"), ("close_window", "SENSITIVE"),
-                      ("delete_file", "CRITICAL"), ("run_shell_command", "CRITICAL")]:
+                      ("close_tab", "SENSITIVE"), ("delete_file", "CRITICAL"), ("run_shell_command", "CRITICAL")]:
         check("safety", f"{tool} needs permission", gate(tool, lvl))
     check("safety", "'go to sleep' never sleeps the PC", lambda: (reg.find_fast_match("go to sleep") is None or
                                                                  reg.find_fast_match("go to sleep").name != "sleep_pc",

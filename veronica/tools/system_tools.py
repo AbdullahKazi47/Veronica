@@ -62,6 +62,10 @@ def parse_open_request(text: str, index) -> Optional[dict]:
         return {"kind": "folder", "target": target}
     if index.find_app(target) is not None:
         return {"kind": "app", "target": target}
+    # "open placement": a folder that exists at a drive root / in the user's folders (open_path
+    # does the real search, asks if several fit, and checks it opened).
+    if verb == "open" and len(target.split()) <= 4 and getattr(index, "find_place", None)             and index.find_place(target) is not None:
+        return {"kind": "place", "target": target}
     # A bare name is a website only if that site really exists ("go to netflix").
     # A misheard sentence ("open camera and america") is left to the LLM, which can
     # tell what was meant, instead of being turned into a made-up web address.
@@ -96,9 +100,19 @@ class OpenApplicationTool(Tool):
         "required": ["app_name"],
     }
 
-    def __init__(self, config=None, index=None, routing: Optional[_OpenRouting] = None) -> None:
+    def __init__(self, config=None, index=None, routing: Optional[_OpenRouting] = None, desktop=None,
+                 verify: bool = False) -> None:
         self.routing = routing or _OpenRouting(config, index)
         self.index = self.routing.index
+        # verify=True (the real registry) looks at the desktop afterwards and only says "Opening X"
+        # when its window / folder is really there; unit tests leave it off or pass a fake desktop.
+        self._desktop, self._verify = desktop, bool(verify or desktop is not None)
+
+    def _look(self):
+        if self._desktop is None:
+            from veronica.vision.desktop_state import Desktop
+            self._desktop = Desktop()
+        return self._desktop
 
     def matches(self, text: str) -> bool:
         parsed = self.routing.parse(text)
@@ -116,18 +130,32 @@ class OpenApplicationTool(Tool):
         if folder is not None:
             try:
                 os.startfile(str(folder)) if platform.system() == "Windows" else subprocess.Popen(["xdg-open", str(folder)])
-                return ToolResult.ok(f"Opening your {folder.name} folder.", path=str(folder))
             except Exception as e:
                 return ToolResult.fail(f"Couldn't open {folder.name}: {e}")
+            if self._verify and not self._look().explorer_shows(str(folder)):
+                return ToolResult.fail(f"I asked Windows to open your {folder.name} folder, but I can't see Explorer showing it.",
+                                       path=str(folder), unconfirmed=True)
+            return ToolResult.ok(f"Opening your {folder.name} folder.", path=str(folder))
         app = self.index.find_app(name)
         if app is None:
             return ToolResult.fail(f"I couldn't find an app called {name} on this PC.")
         try:
             self.index.launch_app(app)
-            return ToolResult.ok(f"Opening {app['name']}.", app=app["name"])
         except Exception as e:
             logger.exception("Failed to open %s", app["name"])
             return ToolResult.fail(f"Couldn't open {app['name']}: {e}")
+        if self._verify:
+            # Already running with a window up counts as open too; a brand-new window is the proof otherwise.
+            words = [w for w in re.findall(r"[A-Za-z0-9+]+", app["name"]) if len(w) >= 3] or [app["name"]]
+            try:
+                seen = self._look().window_appeared(words, wait_s=4.0)
+            except Exception:  # noqa: BLE001
+                seen = None
+            if seen is None:
+                return ToolResult.fail(f"I started {app['name']}, but I can't see its window yet — I can't confirm it opened.",
+                                       app=app["name"], unconfirmed=True)
+            return ToolResult.ok(f"Opening {app['name']}.", app=app["name"], verified=True)
+        return ToolResult.ok(f"Opening {app['name']}.", app=app["name"])
 
 
 def _endpoint_volume():

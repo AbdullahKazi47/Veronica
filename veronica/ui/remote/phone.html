@@ -329,6 +329,13 @@
       body: "It goes offline straight away. You can't wake it from your phone, only at the keyboard.", facts: [] };
     if (t === "close_window") return { icon: "window", sev: "caution", title: "Close " + clip(a.app || "that window", 40) + "?", label: "Close it",
       body: "Anything you haven't saved in it can be lost.", facts: [] };
+    if (t === "close_tab") {
+      const all = a.scope === "all", named = a.scope === "named" && a.name;
+      const app = clip(a.app || "your", 30);
+      return { icon: "window", sev: "caution",
+        title: all ? "Close all " + app + " tabs?" : named ? "Close the " + clip(a.name, 40) + " tab?" : "Close this tab?", label: all ? "Close them" : "Close it",
+        body: "Anything you haven't saved in " + (all ? "them" : "it") + " can be lost." + (all ? " Closing the last tab of a browser closes its window too." : ""), facts: [] };
+    }
     if (t === "run_code") return { icon: "play", sev: "caution", title: "Run the code?", label: "Run it",
       body: "I'll run the program I wrote, on your PC" + (a.project ? ": " + clip(a.project, 40) + "." : "."), facts: [] };
     if (t === "delete_file") return { icon: "trash", sev: "danger", hold: true, title: "Delete this?", label: "Hold to delete",

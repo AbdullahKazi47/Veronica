@@ -117,14 +117,45 @@ class Aliases:
         self.store = _Store(path, {})
 
     def all(self) -> dict[str, str]:
-        return {k: v for k, v in self.store.load().items() if k and v}
+        """The spoken-word aliases only (reserved "__x__" keys hold other things)."""
+        return {k: v for k, v in self.store.load().items()
+                if k and v and isinstance(v, str) and not k.startswith("__")}
+
+    # -- folders she has found by name ("placement" -> C:\placement), same file ------
+    _PLACES = "__places__"
+
+    def place(self, name: str) -> Optional[str]:
+        places = self.store.load().get(self._PLACES)
+        value = places.get(_norm(name)) if isinstance(places, dict) else None
+        return value if isinstance(value, str) and value else None
+
+    def remember_place(self, name: str, path: str) -> bool:
+        key = _norm(name)
+        if not key or not path or len(key) > 60:
+            return False
+        with _lock:
+            data = self.store.load()
+            places = data.get(self._PLACES)
+            places = places if isinstance(places, dict) else {}
+            places[key] = str(path)
+            data[self._PLACES] = places
+            self.store.save(data)
+        return True
+
+    def forget_place(self, name: str) -> None:
+        with _lock:
+            data = self.store.load()
+            places = data.get(self._PLACES)
+            if isinstance(places, dict) and places.pop(_norm(name), None) is not None:
+                data[self._PLACES] = places
+                self.store.save(data)
 
     def add(self, phrase: str, meaning: str) -> bool:
         phrase, meaning = _norm(phrase), (meaning or "").strip(" .!?\"'")
         if not phrase or not meaning or phrase == meaning.lower() or len(phrase) > 40 or len(meaning) > 80:
             return False
         with _lock:
-            data = self.all()
+            data = self.store.load()
             data[phrase] = meaning
             self.store.save(data)
         return True
@@ -132,8 +163,8 @@ class Aliases:
     def remove(self, phrase: str) -> bool:
         phrase = _norm(phrase)
         with _lock:
-            data = self.all()
-            if phrase not in data:
+            data = self.store.load()
+            if phrase not in data or phrase.startswith("__"):
                 return False
             data.pop(phrase)
             self.store.save(data)
@@ -382,13 +413,29 @@ class Prepared:
 
 
 class Understanding:
-    def __init__(self, config=None, window_fn: Callable[[], Optional[ActiveWindow]] = active_window) -> None:
+    def __init__(self, config=None, window_fn: Callable[[], Optional[ActiveWindow]] = active_window,
+                 desktop_fn: Optional[Callable[[], str]] = None) -> None:
         def path(name: str) -> Path:
             return config.resolve_path(f"data/{name}") if config is not None else Path("data") / name
         self.aliases = Aliases(path("aliases.json"))
         self.fixes = Fixes(path("learned_fixes.json"))
         self.thread = Thread(path("conversation_state.json"))
         self._window_fn = window_fn
+        self._desktop_fn = desktop_fn          # None = look at the real desktop (lazily)
+
+    def desktop_block(self, text: str) -> str:
+        """[DESKTOP NOW] — open windows, the one in front, Explorer's folder — but only for a
+        request that is about windows, tabs or folders, so "this", "it" and "that tab" can be
+        resolved against what is really open instead of guessed."""
+        try:
+            from veronica.vision.desktop_state import Desktop, wants_desktop_block
+            if not wants_desktop_block(text):
+                return ""
+            if self._desktop_fn is not None:
+                return self._desktop_fn()
+            return Desktop().describe()
+        except Exception:  # noqa: BLE001 - a missing look must never block the request
+            return ""
 
     def window(self) -> Optional[ActiveWindow]:
         try:
@@ -433,7 +480,8 @@ class Understanding:
 
     def blocks(self, text: str) -> list[str]:
         window = self.window()
-        out = [b for b in (style_note(text, window=window), screen_block(text, window), self.thread.block()) if b]
+        out = [b for b in (style_note(text, window=window), screen_block(text, window), self.thread.block(),
+                           self.desktop_block(text)) if b]
         words = self.aliases.all()
         if words:
             out.append("[THE USER'S OWN WORDS] " + "; ".join(f"'{k}' means {v}" for k, v in list(words.items())[:20]) + ".")

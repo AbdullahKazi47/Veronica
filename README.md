@@ -53,6 +53,11 @@ abilities can be added without touching the core.
 
 **Control your PC**
 - Open apps, files and folders; switch, minimise, close windows; volume; lock, sleep, shut down.
+- **Tabs** in Chrome, Edge, Brave, Firefox, File Explorer and VS Code: list, switch, close one or all
+  (asks first), and she re-checks afterwards — "Closed 5 of 6 Chrome tabs; one is still open".
+- **Folders by name, anywhere** (every drive, not just your user folder): "open placement"; asks which
+  when two fit, remembers the answer. Drives and File Explorer: "open D drive", "go into docs",
+  "go back", "what's in this folder?". She says only what she verified.
 - Semantic computer control through Windows UI Automation (find the button named X → click it),
   with screenshots/OCR as fallback and every action verified afterwards.
 - Look at your screen or through the webcam, read notifications — only when you ask.
@@ -313,6 +318,7 @@ Logs: `data/veronica.log`.
 | Thread memory · episodic memory | [`docs/THREAD_MEMORY.md`](docs/THREAD_MEMORY.md) · [`docs/EPISODIC_MEMORY.md`](docs/EPISODIC_MEMORY.md) |
 | Hearing you correctly (the speech chain) | [`docs/HEARING.md`](docs/HEARING.md) |
 | Free quotas, dead rungs, honest failure | [`docs/STAYING_UP.md`](docs/STAYING_UP.md) |
+| Tabs, folders, Explorer, verify-then-report | [`docs/DESKTOP_UNDERSTANDING.md`](docs/DESKTOP_UNDERSTANDING.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |
