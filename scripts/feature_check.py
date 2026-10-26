@@ -400,6 +400,24 @@ $s.SetOutputToWaveFile("{path}", $fmt); $s.Speak("{said}"); $s.Dispose()'''],
             return (not asked.success and "Which one?" in asked.message and found.success
                     and opened == [str(root / "C" / "Placement")]), asked.message[:80]
     check("desktop", "finds a drive-root folder, asks when two fit", folder_search_tree)
+
+    def same_meaning_same_action():
+        """Different words, one meaning: each group must reach one tool (decision only, nothing runs)."""
+        from veronica.core.intent_catalogue import build_intents
+        from veronica.core.intents import IntentRouter
+        router = IntentRouter(build_intents(list(reg.all())))
+        groups = [["what's the news today", "what's happening around the world", "catch me up",
+                   "duniya mein kya chal raha hai", "okay tell me what's happening around the world today"],
+                  ["it's too loud", "turn it down", "lower the volume", "volume kam karo"],
+                  ["what's my day like", "anything on my calendar?", "am I free today"]]
+        bad = []
+        for g in groups:
+            got = {getattr(router.decide(p, reg).tool, "name", "?") for p in g}
+            if len(got) != 1 or "?" in got:
+                bad.append(f"{g[0]!r}: {got}")
+        asked = router.decide("close everything", reg).kind == "ask"
+        return not bad and asked, "; ".join(bad) or "all groups agree; 'close everything' -> a question"
+    check("understanding", "same meaning, same action", same_meaning_same_action)
     for tool, lvl in [("sleep_pc", "SENSITIVE"), ("shutdown_pc", "SENSITIVE"), ("close_window", "SENSITIVE"),
                       ("close_tab", "SENSITIVE"), ("delete_file", "CRITICAL"), ("run_shell_command", "CRITICAL")]:
         check("safety", f"{tool} needs permission", gate(tool, lvl))

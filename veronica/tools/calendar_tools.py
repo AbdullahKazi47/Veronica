@@ -23,11 +23,18 @@ logger = get_logger("tools.calendar")
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 _PARTS = {"morning": (6, 12), "afternoon": (12, 17), "evening": (17, 22), "night": (19, 24)}
 
+_WHEN = (r"(?:today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week)|next\s+week|"
+         + "|".join(_WEEKDAYS) + r")")
+# "what's ... today" alone is not a calendar question: "what's happening around the world
+# today" once opened the calendar. A calendar word, "planned/on for <day>", or "do I have"
+# is needed; world/news/weather questions are left to their own tools.
 _ASK = re.compile(
-    r"\b(?:what'?s|what\s+is|what\s+do\s+i\s+have|do\s+i\s+have\s+(?:anything|any\s+(?:meetings?|events?|plans?))|"
-    r"anything|any\s+(?:meetings?|events?|plans?))\b.*\b(?:on|today|tomorrow|tonight|this\s+week|next\s+week|"
-    r"calendar|schedule|agenda|planned|"
-    + "|".join(_WEEKDAYS) + r")\b|"
+    r"^(?!.*\b(?:world|news|globally|headlines|weather|rain|temperature)\b).*?(?:"
+    r"\b(?:what\s+do\s+i\s+have|do\s+i\s+have\s+(?:anything|any\s+(?:meetings?|events?|plans?|appointments?))|"
+    r"any\s+(?:meetings?|events?|plans?|appointments?))\b.*\b(?:on|planned|" + _WHEN[3:-1] + r")\b|"
+    r"\b(?:what'?s|what\s+is|anything)\b.*\b(?:calendar|schedule|agenda|planned|scheduled)\b|"
+    r"\b(?:what'?s|what\s+is|anything)\s+(?:on|planned|scheduled|happening)\s+(?:for\s+)?" + _WHEN + r"\b|"
+    r"\bwhat'?s\s+(?:my\s+)?(?:day|" + _WHEN[3:-1] + r")\s+(?:like|look\s+like)\b)|"
     r"\b(?:my|the)\s+(?:calendar|schedule|agenda)\b(?!.*\b(?:add|put|schedule|remove|delete|cancel)\b)|"
     r"\bwhat'?s\s+(?:my\s+)?next\s+(?:meeting|event|appointment|thing)\b|\bwhat'?s\s+next\b|"
     r"\bam\s+i\s+(?:free|busy)\b", re.I)

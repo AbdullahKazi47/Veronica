@@ -307,6 +307,7 @@ class UnderstandingConfig:
     """core/understanding.py + core/grounding.py. Off unless config.yaml turns it on."""
     enabled: bool = False
     ground_facts: bool = True        # look factual questions up (Wikipedia) and check figures
+    intents: bool = True             # core/intents.py: same meaning, same action, however it's worded
 
 
 @dataclass

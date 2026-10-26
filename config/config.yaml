@@ -658,6 +658,7 @@ proactive:
 understanding:
   enabled: true
   ground_facts: true
+  intents: true        # understand the meaning, not the exact words (core/intents.py, docs/UNDERSTANDING.md)
 
 # Mem0 (github.com/mem0ai/mem0): facts picked up from ordinary conversation ("I prefer tea",
 # "my exam is on Friday"), kept on this PC in data/mem0/. Gemini Flash-Lite writes the facts

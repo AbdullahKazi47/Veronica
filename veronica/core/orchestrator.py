@@ -308,6 +308,8 @@ class Orchestrator:
         self._turn.tool_text = []
         self._turn.action = None
         self._turn.task = False
+        self._turn.intent_hint = ""
+        self._turn.learn_from = ""
         text = self._without_name(text)
         self._turn.request = text
         self._turn.said = text
@@ -321,6 +323,11 @@ class Orchestrator:
             return text
         if prepared.text != text:
             logger.info("Understood %r as %r (%s).", text, prepared.text, prepared.note)
+        fix = getattr(prepared, "fix", None)
+        if fix is not None and not getattr(fix, "uses", 0):
+            # "No, I meant X": the words she got wrong become an example of what was meant,
+            # so the same kind of phrasing lands right next time (core/intents.py).
+            self._turn.learn_from = fix.said
         self._turn.request = prepared.text
         return prepared.text
 
@@ -358,6 +365,9 @@ class Orchestrator:
             return blocks
         try:
             blocks += u.blocks(text)
+            hint = getattr(self._turn, "intent_hint", "")
+            if hint:
+                blocks.append(hint)
             cfg = self.config.understanding
             if getattr(self._turn, "task", False):
                 blocks.append(_TASK_NOTE)
@@ -437,18 +447,9 @@ class Orchestrator:
         # recorded — the final accumulated text alone enters the conversation below.
         session.turn_count += 1
         session.short_term.add("user", text)
-        tool, fast_text = self.tools.fast_match(text)
-        if tool is not None:
-            args = tool.extract_arguments(fast_text)
-            if self.tool_event_callback:
-                self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
-            result = self.tools.dispatch(tool.name, **args)
-            self._turn.action = (tool.name, dict(args or {}))
-            session.last_tool_used = tool.name
-            from veronica.core.flair import dress
-            reply = dress(result.message, ok=result.success)
-            session.short_term.add("assistant", reply)
-            return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
+        quick = self._quick_route(text, session)
+        if quick is not None:
+            return quick
 
         response = self._handle_via_llm(text, session, stream=True)
         self._mem0_observe(text, response)
@@ -732,24 +733,83 @@ class Orchestrator:
         session.turn_count += 1
         session.short_term.add("user", text)
 
-        # ---- 1. fast path -----------------------------------------------------
-        tool, fast_text = self.tools.fast_match(text)
-        if tool is not None:
-            args = tool.extract_arguments(fast_text)
-            if self.tool_event_callback:
-                self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
-            result = self.tools.dispatch(tool.name, **args)
-            self._turn.action = (tool.name, dict(args or {}))
-            session.last_tool_used = tool.name
-            from veronica.core.flair import dress
-            reply = dress(result.message, ok=result.success)
-            session.short_term.add("assistant", reply)
-            return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
+        # ---- 1. fast path: exact rules, then meaning (core/intents.py) -------------
+        quick = self._quick_route(text, session)
+        if quick is not None:
+            return quick
 
         # ---- 2. LLM path (with tool-calling) -----------------------------------
         response = self._handle_via_llm(text, session)
         self._mem0_observe(text, response)
         return response
+
+    def _intent_router(self):
+        """core/intents.py — on with `understanding.enabled` (and `understanding.intents`)."""
+        cfg = getattr(self.config, "understanding", None)
+        if cfg is None or not getattr(cfg, "enabled", False) or not getattr(cfg, "intents", True):
+            return None
+        if getattr(self, "_intents", None) is None:
+            try:
+                from veronica.core.intent_catalogue import build_intents
+                from veronica.core.intents import IntentRouter
+                from veronica.vision.app_windows import _list_windows, find_app_window
+                from veronica.vision.uia_tabs import BROWSERS, app_for_process
+
+                def browsers() -> list[str]:
+                    return list(dict.fromkeys(app_for_process(p) for _h, _t, p in _list_windows()
+                                              if app_for_process(p) in BROWSERS))
+                self._intents = IntentRouter(build_intents(list(self.tools.all())),
+                                             examples_path=self.config.resolve_path("data/intent_examples.json"),
+                                             find_window=find_app_window, browser_names=browsers)
+            except Exception:  # noqa: BLE001 - no meaning layer is better than no assistant
+                logger.exception("Couldn't build the intent layer; exact rules only.")
+                self._intents = False
+        return self._intents or None
+
+    def _quick_route(self, text: str, session: SessionContext) -> Optional[OrchestratorResponse]:
+        """Exact rules first; then what the words MEAN. Returns the reply, or None for the
+        model (with a note of the likely candidates when there are some). Every action still
+        goes through ToolRegistry.dispatch() and the PermissionGate."""
+        router = self._intent_router()
+        args: Optional[dict] = None
+        if router is None:
+            tool, fast_text = self.tools.fast_match(text)
+        else:
+            try:
+                d = router.decide(text, self.tools)
+            except Exception:  # noqa: BLE001
+                logger.exception("Intent decision failed; exact rules only.")
+                d = None
+            if d is None:
+                tool, fast_text = self.tools.fast_match(text)
+            elif d.kind == "ask":
+                session.short_term.add("assistant", d.reply)
+                return OrchestratorResponse(text=d.reply)
+            elif d.kind == "model":
+                self._turn.intent_hint = d.hint
+                return None
+            else:
+                tool, fast_text = d.tool, d.text
+                if d.why != "regex":
+                    args = dict(d.args)
+        if tool is None:
+            return None
+        if args is None:
+            args = tool.extract_arguments(fast_text)
+        if self.tool_event_callback:
+            self.tool_event_callback(f"fast-path {tool.name} {args or ''}".strip())
+        result = self.tools.dispatch(tool.name, **args)
+        self._turn.action = (tool.name, dict(args or {}))
+        session.last_tool_used = tool.name
+        learn_from = getattr(self._turn, "learn_from", "")
+        if router is not None and learn_from:
+            intent = router.intent_for_tool(tool.name, args)
+            if intent:
+                router.learn(learn_from, intent)
+        from veronica.core.flair import dress
+        reply = dress(result.message, ok=result.success)
+        session.short_term.add("assistant", reply)
+        return OrchestratorResponse(text=reply, tool_used=tool.name, tool_results=[result.__dict__])
 
     def _handle_via_llm(self, text: str, session: SessionContext, *, stream: bool = False) -> OrchestratorResponse:
         tool_schemas = self.tools.schemas()

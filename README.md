@@ -49,6 +49,9 @@ abilities can be added without touching the core.
 - Accurate speech recognition with automatic fallback: Groq Whisper → Google → offline faster-whisper.
 - Natural voice output (ElevenLabs by default; edge-tts, Fish Audio, piper or pyttsx3 as alternatives).
 - Learns words she mishears ("when I say X, I mean Y").
+- **Understands what you mean, not the exact words:** "catch me up", "duniya mein kya chal raha hai" and
+  "what's the news" all give the news; "Chrome band karo" = "shut the browser" = "close Chrome". When a
+  line could mean two things she asks which (98% of 172 test phrasings routed right, up from 47%).
 - A real personality: concise, dry wit, answers first, anticipates the next question.
 
 **Control your PC**
@@ -319,6 +322,7 @@ Logs: `data/veronica.log`.
 | Hearing you correctly (the speech chain) | [`docs/HEARING.md`](docs/HEARING.md) |
 | Free quotas, dead rungs, honest failure | [`docs/STAYING_UP.md`](docs/STAYING_UP.md) |
 | Tabs, folders, Explorer, verify-then-report | [`docs/DESKTOP_UNDERSTANDING.md`](docs/DESKTOP_UNDERSTANDING.md) |
+| Understanding what you mean (paraphrases, Hinglish) | [`docs/UNDERSTANDING.md`](docs/UNDERSTANDING.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |
