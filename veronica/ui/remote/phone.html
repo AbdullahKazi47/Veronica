@@ -17,7 +17,7 @@
        (no blur — the user explicitly wants to see through, not frost, what's behind). */
     --bg: #05070c; --panel: rgba(16, 28, 36, .55); --line: rgba(57, 233, 255, .22); --text: #e8f6fb; --muted: #7fa3ad;
     --accent: #39e9ff; --accent-ink: #04141c; --me: rgba(9, 58, 78, .55); --warn: #ffb547; --bad: #ff5468; --ok: #4ade80;
-    --sheet: rgba(7, 14, 20, .92); --scrim: rgba(2, 6, 10, .55);
+    --sheet: rgba(7, 14, 20, .92); --scrim: rgba(3, 10, 14, .42);
     --danger: #ff5468; --danger-soft: rgba(255, 84, 104, .12); --danger-dim: #7d2428; --danger-full: #d23b41;
     --caution: #ffb547; --caution-soft: rgba(255, 181, 71, .12); --caution-dim: #6e4410; --caution-full: #b25f00;
     --glow: rgba(57, 233, 255, .45);
@@ -36,28 +36,45 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+  /* Reality check, in writing: a browser tab cannot render the real home screen or any
+     other app behind it — that live see-through overlay (Gemini/Assistant long-press) is
+     an OS-only permission, not something a web page or installed PWA can ever get. What
+     this CAN do: float VERONICA as an inset, rounded glass card — like an assistant sheet
+     laid over a dark stage — rather than a flat, edge-to-edge page. */
+  html, body {
+    background: #000; -webkit-tap-highlight-color: transparent; overscroll-behavior: none;
+  }
   body {
+    background: radial-gradient(ellipse 160% 70% at 50% -16%, rgba(57, 233, 255, .12), transparent 65%), #05070a;
+    color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: light) { html, body { background: #e7ebf2; } }
+  #app {
+    position: fixed; inset: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px) 10px;
+    display: flex; flex-direction: column; overflow: hidden; border-radius: 30px;
     background:
       radial-gradient(ellipse 120% 55% at 50% -12%, rgba(57, 233, 255, .10), transparent 60%),
       repeating-linear-gradient(180deg, rgba(57, 233, 255, .022) 0px, rgba(57, 233, 255, .022) 1px, transparent 1px, transparent 3px),
       var(--bg);
-    color: var(--text);
-    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column; overscroll-behavior: none;
-    -webkit-tap-highlight-color: transparent;
-    animation: bootUp .5s cubic-bezier(.2, .8, .2, 1) both;
+    box-shadow: 0 0 0 1px var(--line), 0 0 44px -18px var(--glow), 0 30px 70px -30px rgba(0, 0, 0, .7);
+    /* `transform` makes #app the containing block for its position:fixed children (the
+       scrim/sheet/menu/login), so those sheets stay INSIDE this floating card instead of
+       covering the whole real screen — a standard, well-supported CSS mechanism. */
+    transform: translateZ(0);
+    animation: bootUp .45s cubic-bezier(.2, .8, .2, 1) both;
   }
-  @media (prefers-color-scheme: light) { body { background: var(--bg); } }
-  @keyframes bootUp { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+  @media (prefers-color-scheme: light) { #app { background: var(--bg); box-shadow: 0 0 0 1px var(--line), 0 20px 50px -24px rgba(20, 25, 35, .35); } }
+  @keyframes bootUp { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
   header {
-    display: flex; align-items: center; gap: 10px;
-    padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px 12px; border-bottom: 1px solid var(--line);
     box-shadow: 0 10px 24px -18px var(--glow);
   }
-  .orb { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; transition: background .2s, box-shadow .2s; }
-  .orb.idle { background: var(--accent); box-shadow: 0 0 0 3px rgba(57, 233, 255, .14), 0 0 10px var(--accent), 0 0 22px var(--glow); }
-  .orb.busy { background: var(--warn); box-shadow: 0 0 0 3px rgba(255, 181, 71, .16), 0 0 12px var(--warn); animation: pulse 1s infinite; }
-  .orb.rec  { background: var(--bad);  box-shadow: 0 0 0 3px rgba(255, 84, 104, .18), 0 0 14px var(--bad);  animation: pulse .6s infinite; }
+  .orb { width: 32px; height: 32px; border-radius: 50%; background: var(--muted); flex: none; position: relative; transition: background .2s, box-shadow .2s; }
+  .orb::after { content: ""; position: absolute; top: 20%; left: 24%; width: 30%; height: 30%; border-radius: 50%; background: rgba(255, 255, 255, .6); filter: blur(1px); }
+  .orb.idle { background: var(--accent); box-shadow: 0 0 0 5px rgba(57, 233, 255, .12), 0 0 16px var(--accent), 0 0 30px var(--glow); }
+  .orb.busy { background: var(--warn); box-shadow: 0 0 0 5px rgba(255, 181, 71, .14), 0 0 18px var(--warn); animation: pulse 1s infinite; }
+  .orb.rec  { background: var(--bad);  box-shadow: 0 0 0 5px rgba(255, 84, 104, .16), 0 0 20px var(--bad);  animation: pulse .6s infinite; }
   .orb.off  { background: var(--muted); box-shadow: none; }
   @keyframes pulse { 50% { opacity: .45; } }
   h1 { font-size: 15px; letter-spacing: .18em; margin: 0; font-weight: 650; color: var(--accent); text-shadow: 0 0 12px var(--glow); }
@@ -154,25 +171,33 @@
   @media (prefers-reduced-motion: reduce) {
     .sheet, #scrim, #timerBar, .hold.holding .fill { transition: none; }
     .orb.busy, .orb.rec, .typing i { animation: none; }
-    body { animation: none; }
+    #app { animation: none; }
   }
 
+  /* The input bar is its own floating pill (like the reference's "Ask about screen" bar) —
+     inset from the card's edges, rounded all the way, not a docked edge-to-edge toolbar. */
   footer {
-    border-top: 1px solid var(--line); padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
-    display: flex; gap: 10px; align-items: flex-end; background: var(--bg);
-    box-shadow: 0 -10px 24px -18px var(--glow);
-  }
-  textarea {
-    flex: 1; resize: none; max-height: 120px; min-height: 46px; padding: 12px 14px; border-radius: 14px;
-    border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; outline: none;
+    margin: 0 14px calc(env(safe-area-inset-bottom) + 14px); padding: 6px 6px 6px 18px;
+    display: flex; gap: 6px; align-items: center; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .03) inset, 0 14px 30px -18px rgba(0, 0, 0, .6), 0 0 24px -10px var(--glow);
     transition: border-color .15s, box-shadow .15s;
   }
-  textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(57, 233, 255, .14); }
-  .round { width: 46px; height: 46px; border-radius: 50%; border: 0; flex: none; display: grid; place-items: center; }
-  #send { background: var(--panel); color: var(--accent); border: 1px solid var(--line); }
-  #mic { width: 58px; height: 58px; background: var(--accent); color: var(--accent-ink); touch-action: none; user-select: none; -webkit-user-select: none;
-         box-shadow: 0 0 0 4px rgba(57, 233, 255, .12), 0 0 26px -4px var(--glow); transition: transform .15s, box-shadow .15s, background .15s; }
-  #mic.rec { background: var(--bad); color: #fff; transform: scale(1.08); box-shadow: 0 0 0 4px rgba(255, 84, 104, .16), 0 0 28px -2px var(--bad); }
+  footer:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .03) inset, 0 14px 30px -18px rgba(0, 0, 0, .6),
+                0 0 0 3px rgba(57, 233, 255, .14), 0 0 24px -6px var(--glow);
+  }
+  textarea {
+    flex: 1; resize: none; max-height: 120px; min-height: 40px; padding: 9px 4px; align-self: center;
+    border: 0; background: transparent; color: var(--text); font: inherit; outline: none;
+  }
+  .round { width: 44px; height: 44px; border-radius: 50%; border: 0; flex: none; display: grid; place-items: center; }
+  #send { background: rgba(57, 233, 255, .08); color: var(--accent); }
+  @media (prefers-color-scheme: light) { #send { background: var(--bg); } }
+  #mic { width: 50px; height: 50px; background: var(--accent); color: var(--accent-ink); touch-action: none; user-select: none; -webkit-user-select: none;
+         box-shadow: 0 0 0 4px rgba(57, 233, 255, .12), 0 0 22px -4px var(--glow); transition: transform .15s, box-shadow .15s, background .15s; }
+  #mic.rec { background: var(--bad); color: #fff; transform: scale(1.08); box-shadow: 0 0 0 4px rgba(255, 84, 104, .16), 0 0 24px -2px var(--bad); }
   #mic:disabled, #send:disabled { opacity: .45; }
   svg { width: 24px; height: 24px; }
 
@@ -185,6 +210,7 @@
 </style>
 </head>
 <body>
+<div id="app">
 <header>
   <span class="orb off" id="orb"></span>
   <h1 id="title">VERONICA</h1>
@@ -241,6 +267,7 @@
   <input id="tokenInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Access token">
   <button id="tokenSave">Connect</button>
 </div>
+</div><!-- #app -->
 
 <script>
 (() => {
