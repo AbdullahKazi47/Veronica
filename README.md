@@ -65,6 +65,9 @@ abilities can be added without touching the core.
   with screenshots/OCR as fallback and every action verified afterwards.
 - Look at your screen or through the webcam, read notifications — only when you ask.
 - Downloads from direct links (asks first).
+- **Fix-it:** "what's wrong with this?" / "this game won't open". She reads the error, explains the cause and a
+  numbered fix; on "fix it" she downloads the official Microsoft fix (asks first), checks its signature,
+  installs it (asks first) and checks it worked. Never DLL sites or cracks.
 
 **Get things done**
 - **Agentic tasks:** goal → plan → execute → verify, with diagnosis and re-planning when a step fails.
@@ -323,6 +326,7 @@ Logs: `data/veronica.log`.
 | Free quotas, dead rungs, honest failure | [`docs/STAYING_UP.md`](docs/STAYING_UP.md) |
 | Tabs, folders, Explorer, verify-then-report | [`docs/DESKTOP_UNDERSTANDING.md`](docs/DESKTOP_UNDERSTANDING.md) |
 | Understanding what you mean (paraphrases, Hinglish) | [`docs/UNDERSTANDING.md`](docs/UNDERSTANDING.md) |
+| Fix-it mode (diagnose, plan, ask, verify) | [`docs/FIX_IT_MODE.md`](docs/FIX_IT_MODE.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |

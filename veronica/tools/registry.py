@@ -215,6 +215,9 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         WriteCodeTool,
     )
     from veronica.tools.explorer_tools import ExplorerNavigateTool
+    from veronica.tools.fixit_tools import (
+        ApplyFixTool, FixHistoryTool, FixProblemTool, FixSession, InstallProgramTool,
+    )
     from veronica.tools.tab_tools import CloseTabTool, ListTabsTool, SwitchTabTool
     from veronica.tools.window_tools import (
         CancelShutdownTool,
@@ -233,6 +236,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     from veronica.tools.app_index import shared_index
     from veronica.tools.system_tools import _OpenRouting
     apps = shared_index(config)
+    fix_session = FixSession(config)
     open_routing = _OpenRouting(config, apps)
     weather = WeatherTool(config=config, profile=profile)
     news = NewsTool(config=config, summarizer=_summarizer(llm))
@@ -246,6 +250,7 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     jev = Jev(config=config, llm=llm, facts=_facts_reader(config) if config is not None else None)
     for tool in (JevRouteTool(registry), JevWhyTool(jev), JevDecideTool(jev)):
         registry.register(tool)
+    fix_session.dispatch = registry.dispatch   # each fix step goes through the PermissionGate
     # Routines first: their names are the user's own phrases ("good night", "work mode")
     # and must win over every built-in matcher. Each step is still gated on its own.
     from veronica.tools.routine_tools import CreateRoutineTool, EditRoutineTool, RoutineInfoTool, RunRoutineTool
@@ -301,6 +306,11 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
         ShowNewsTool(config=config, news=news, index=apps),  # before news: 'show me the news'
         news,
         MediaControlTool(),                    # before YouTube: bare 'play'/'pause'
+        # Fix-it before the plain screen/camera looks: "look at this error" is a problem to solve.
+        ApplyFixTool(fix_session),             # "fix it" / "do it" — only with a fresh plan waiting
+        FixHistoryTool(fix_session),           # "what did you change?" / "undo that"
+        FixProblemTool(fix_session, config=config),
+        InstallProgramTool(config=config),     # asks; only Microsoft-/publisher-signed installers
         LookAtScreenTool(config=config),
         LookThroughCameraTool(config=config),
         ReadNotificationsTool(config=config),

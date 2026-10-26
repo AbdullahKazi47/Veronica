@@ -346,6 +346,9 @@
       body: "I'll write this file on your PC. If it exists, it's replaced.", facts: [["File", clip(a.path || a.file || a.name || "")]] };
     if (t === "download_file") return { icon: "download", sev: "caution", title: "Download a file?", label: "Download",
       body: "I'll fetch it into your Downloads folder.", facts: [["From", clip(a.url || "", 120)]] };
+    if (t === "install_program") return { icon: "download", sev: "danger", hold: true, title: "Install " + clip(a.label || "this program", 50) + "?",
+      label: "Hold to install", body: "It's signed by " + clip(a.publisher || "its publisher", 40) + " (Windows checked). It changes your PC; you can uninstall it from Settings > Apps.",
+      facts: [["File", clip(a.path || "", 120)]] };
     const critical = q.level === "CRITICAL", name = (t || "do this").replace(/_/g, " ");
     return { icon: "shield", sev: critical ? "danger" : "caution", hold: critical, title: "Allow this?", label: critical ? "Hold to allow" : "Allow",
       body: "I'd like to " + name + ".", facts: Object.entries(a).slice(0, 4).map(([k, v]) => [k.replace(/_/g, " "), clip(v, 120)]) };

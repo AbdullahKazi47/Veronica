@@ -418,6 +418,17 @@ $s.SetOutputToWaveFile("{path}", $fmt); $s.Speak("{said}"); $s.Dispose()'''],
         asked = router.decide("close everything", reg).kind == "ask"
         return not bad and asked, "; ".join(bad) or "all groups agree; 'close everything' -> a question"
     check("understanding", "same meaning, same action", same_meaning_same_action)
+
+    # Fix-it: diagnose only (nothing downloaded or installed; the words name the file, so no screenshot)
+    for text in ("what's wrong with this", "this game won't open", "look at this error"):
+        check("fix-it", f"'{text}'", route(text, "fix_problem"))
+    check("fix-it", "missing MSVCP140.dll -> Microsoft VC++ plan", lambda: (lambda r: (
+        r.success and "Visual C++" in r.message and "fix it" in r.message, r.message[:90]))(
+        reg.dispatch("fix_problem", description="my game says MSVCP140.dll was not found")))
+    check("fix-it", "a game's own DLL -> verify files, no download", lambda: (lambda r: (
+        r.success and "verify" in r.message.lower() and not r.data.get("can_do"), r.message[:90]))(
+        reg.dispatch("fix_problem", description="it says steam_api64.dll is missing")))
+    check("fix-it", "install_program asks first", gate("install_program", "SENSITIVE"))
     for tool, lvl in [("sleep_pc", "SENSITIVE"), ("shutdown_pc", "SENSITIVE"), ("close_window", "SENSITIVE"),
                       ("close_tab", "SENSITIVE"), ("delete_file", "CRITICAL"), ("run_shell_command", "CRITICAL")]:
         check("safety", f"{tool} needs permission", gate(tool, lvl))
