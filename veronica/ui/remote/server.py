@@ -49,6 +49,10 @@ from veronica.logging_setup import get_logger
 logger = get_logger("ui.remote")
 
 PAGE = Path(__file__).with_name("phone.html")
+# The home-screen icon (so "Add to Home Screen" shows VERONICA's own icon, not a blank page
+# glyph) — static files next to phone.html, served read-only and cached.
+_ICONS = {f"/{name}": (Path(__file__).with_name(name), "image/png") for name in
+          ("icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png")}
 MAX_BODY = 6 * 1024 * 1024              # ~3 min of 16 kHz audio; far above a spoken request
 MAX_FAILED_AUTH = 20                    # wrong tokens per window before locking out
 FAILED_AUTH_WINDOW_S = 600
@@ -292,9 +296,19 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/manifest.webmanifest":
             name = getattr(getattr(self.service.config, "assistant", None), "name", "VERONICA")
             self._send(200, json.dumps({"name": name, "short_name": name, "start_url": "/",
-                                        "display": "standalone", "background_color": "#0b0d12",
-                                        "theme_color": "#0b0d12"}).encode(),
+                                        "display": "standalone", "orientation": "portrait-primary",
+                                        "background_color": "#05070c", "theme_color": "#05070c",
+                                        "icons": [
+                                            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                                            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                                            {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png",
+                                             "purpose": "maskable"},
+                                        ]}).encode(),
                        "application/manifest+json")
+            return
+        if path in _ICONS:
+            # Static, served once "Add to Home Screen" installs the manifest; safe to cache.
+            self._send(200, _ICONS[path][0].read_bytes(), _ICONS[path][1], {"Cache-Control": "public, max-age=604800"})
             return
         if not path.startswith("/api/"):
             self._json({"ok": False, "error": "not found"}, 404)

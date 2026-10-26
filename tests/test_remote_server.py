@@ -189,6 +189,26 @@ def test_pending_lists_tool_args_and_time_left():
     t.join(2)
 
 
+def test_manifest_lists_the_home_screen_icons(live):
+    base, _, _ = live
+    with urllib.request.urlopen(base + "/manifest.webmanifest") as r:
+        assert r.status == 200
+        data = json.loads(r.read())
+    assert data["display"] == "standalone"           # hides Chrome's address bar once installed
+    srcs = {i["src"] for i in data["icons"]}
+    assert srcs == {"/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"}
+    assert any(i["purpose"] == "maskable" for i in data["icons"])
+
+
+def test_icon_files_are_served_and_cacheable(live):
+    base, _, _ = live
+    for path in ("/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png"):
+        with urllib.request.urlopen(base + path) as r:
+            assert r.status == 200 and r.headers["Content-Type"] == "image/png"
+            assert r.read()[:8] == b"\x89PNG\r\n\x1a\n"            # a real PNG, not an error page
+            assert "max-age" in r.headers["Cache-Control"]
+
+
 def test_phone_page_has_the_sheet_and_sets_text_safely():
     import re
     from pathlib import Path
