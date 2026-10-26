@@ -174,6 +174,15 @@ def build_routing(config: Config) -> Optional[RoutingAssembly]:
         # Ensure there is always a default to fall back to.
         raise ValueError("No default model: set default: true on one entry, or add a general model")
 
+    # Keep set-asides across restarts: a model out of its daily quota stays parked, one whose
+    # cooldown has passed is tried again. resolve_path may be absent on a bare config in tests.
+    resolve = getattr(config, "resolve_path", None)
+    if callable(resolve):
+        try:
+            registry.attach_health_store(resolve("data/model_health.json"))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Model-health store not attached: %s", e)
+
     analyzer = TaskAnalyzer(known_model_ids=set(registry.model_ids()))
     router = ModelRouter(registry, config=router_cfg)
     return RoutingAssembly(registry=registry, analyzer=analyzer, router=router)

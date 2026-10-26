@@ -70,6 +70,7 @@ class ModelRegistry:
         self._entries: dict[str, ModelEntry] = {}
         self._health_ttl_s = max(0.1, health_ttl_s)
         self._lock = threading.RLock()
+        self._store_path = None
 
     # -- registration ---------------------------------------------------------
     def register(self, profile: ModelProfile, provider_factory: Callable[[], LLMProvider]) -> ModelEntry:
@@ -180,6 +181,48 @@ class ModelRegistry:
 
     def health_summaries(self) -> dict[str, dict]:
         return {mid: entry.health.summary() for mid, entry in sorted(self._entries.items())}
+
+    # -- health that survives a restart ---------------------------------------
+    def attach_health_store(self, path) -> None:
+        """Keep each model's set-aside on disk, so a restart doesn't re-hammer a model that
+        is out of quota for the day. Only parked models are stored; a parked model whose
+        cooldown has elapsed is tried again (dropped on load). Call once, after registering
+        every model."""
+        from pathlib import Path
+        self._store_path = Path(path)
+        saved: dict = {}
+        try:
+            if self._store_path.exists():
+                import json
+                saved = json.loads(self._store_path.read_text(encoding="utf-8")) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Couldn't read the model-health store: %s", e)
+        restored = 0
+        with self._lock:
+            for mid, entry in self._entries.items():
+                data = saved.get(mid)
+                if isinstance(data, dict) and entry.health.restore(data):
+                    restored += 1
+                entry.health.on_change = self._on_health_change
+        if restored:
+            logger.info("Restored %d model(s) still in their set-aside from last run.", restored)
+
+    def _on_health_change(self, _health) -> None:
+        if self._store_path is not None:
+            self._save_health()
+
+    def _save_health(self) -> None:
+        """Write the currently-parked models (those with a set-aside still running)."""
+        if self._store_path is None:
+            return
+        snapshot = {mid: entry.health.to_state() for mid, entry in self._entries.items()
+                    if entry.health.set_aside_until() is not None}
+        try:
+            from veronica.core import jsonsafe
+            self._store_path.parent.mkdir(parents=True, exist_ok=True)
+            jsonsafe.write_json(self._store_path, snapshot)
+        except Exception as e:  # noqa: BLE001 — persistence must never break routing
+            logger.debug("Couldn't write the model-health store: %s", e)
 
     # -- registry metadata ----------------------------------------------------
     def summary(self) -> dict:
