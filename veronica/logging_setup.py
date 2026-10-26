@@ -11,8 +11,16 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import warnings
 from pathlib import Path
+
+# Model downloads (Hugging Face / fastembed, used by Mem0) draw progress bars and print
+# "Fetching 18 files" / "Download complete" straight into the terminal - the conversation.
+# Set before those libraries are imported (they read these once, on import).
+_QUIET_ENV = {"HF_HUB_DISABLE_PROGRESS_BARS": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+              "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "TQDM_DISABLE": "1",
+              "TRANSFORMERS_VERBOSITY": "error", "TOKENIZERS_PARALLELISM": "false"}
 
 _CONFIGURED = False
 
@@ -54,6 +62,8 @@ def setup_logging(log_level: str = "INFO", log_file: str | Path | None = None,
     _FILE_HANDLER = file_handler
     if console_level and console_level.upper() in ("ERROR", "CRITICAL"):
         _QUIET = True
+        for k, v in _QUIET_ENV.items():
+            os.environ.setdefault(k, v)
         quiet_third_party()
         # Library warnings (deprecation notices etc.) go to the log file, not the conversation.
         logging.captureWarnings(True)
@@ -90,6 +100,22 @@ def quiet_third_party() -> None:
     if not root.handlers:
         root.addHandler(logging.NullHandler())
     root.setLevel(logging.WARNING)
+    _loguru_to_file()
+
+
+def _loguru_to_file() -> None:
+    """fastembed logs through loguru, whose default sink is the terminal ("Local file sizes do
+    not match the metadata"). Send its warnings to the log file instead."""
+    try:
+        from loguru import logger as loguru_logger
+    except Exception:  # noqa: BLE001 - not installed: nothing to redirect
+        return
+    try:
+        loguru_logger.remove()
+        loguru_logger.add(lambda m: logging.getLogger("loguru").warning(str(m).rstrip()), level="WARNING",
+                          format="{name}: {message}")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def get_logger(name: str) -> logging.Logger:

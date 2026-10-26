@@ -41,6 +41,10 @@ def available() -> bool:
 
 
 def _build(config):
+    # Mem0's keyword search loads a small model (Qdrant/bm25) through fastembed, which keeps it
+    # in %TEMP% by default: Windows clears that, so it was fetched again in the middle of a
+    # reply. Kept with her other models instead, it is downloaded once.
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", str(config.resolve_path("data/models/fastembed")))
     from mem0 import Memory
     mc = getattr(config, "mem0", None)
     key = config.secret("GEMINI_API_KEY") or config.secret(config.llm.api_key_env)
@@ -87,6 +91,11 @@ class Mem0Memory:
                     self._mem = self._factory()
                     import atexit
                     atexit.register(self.close)
+                    # Load the keyword model now (at start-up, off the reply path), not during
+                    # the first answer.
+                    encoder = getattr(getattr(self._mem, "vector_store", None), "_get_bm25_encoder", None)
+                    if callable(encoder):
+                        encoder()
                 except Exception as e:  # noqa: BLE001
                     self._failed = f"{type(e).__name__}: {e}"
                     logger.warning("Mem0 couldn't start: %s", self._failed)
