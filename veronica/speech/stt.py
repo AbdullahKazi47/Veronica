@@ -62,6 +62,15 @@ def noise_list(text: str) -> bool:
     return len(words) >= 3 and len(set(words)) == 1
 
 
+def _without_own_name(text: str, names) -> str:
+    """'Veronica, eBay, Checkdown.' -> 'eBay, Checkdown.' (her name in front, once)."""
+    names = [re.escape(n.strip()) for n in (names or ()) if n and n.strip()]
+    if not names:
+        return text or ""
+    return re.sub(rf"^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:{'|'.join(names)})(?![\w'])[\s,.!?]*", "", text or "",
+                  count=1, flags=re.I)
+
+
 def _sounds_alike(offline: str, cloud: str) -> bool:
     """At least one word of the cloud read sounds like a word of the offline one. Both
     heard the same sounds if they agree on anything: "Open Door" -> "Open Doraemon" does;
@@ -326,6 +335,12 @@ class SpeechToText:
     def _listen_chain(self, timeout_s: int) -> STTResult:
         pcm, err = self._capture_utterance(timeout_s)
         stats = dict(self.last_capture_stats)
+        # One line per listen, so "she kept listening after I stopped" can be read off the
+        # log (how long, how much was voice, the room level, the bar) instead of guessed.
+        logger.info("Listened %.1fs (voice %.1fs; room %s, bar %s, peak %s)%s",
+                    float(stats.get("duration_s") or 0), float(stats.get("voiced_s") or 0),
+                    stats.get("ambient_rms"), stats.get("threshold"), stats.get("peak_rms"),
+                    f" - {err}" if err else "")
         if pcm is None:
             return STTResult(success=False, error=err, stats=stats)
         pcm = highpass(pcm, float(getattr(self.config, "highpass_hz", 0) or 0))
@@ -391,7 +406,11 @@ class SpeechToText:
             return None
         m = re.search(r"heard (['\"])(.*)\1\)\.?$", result.error or "")
         offline = m.group(2) if m else ""
-        if noise_list(offline):
+        # Her own name in front is the user talking to her, not a scrap of noise: judge
+        # what follows it. Seen live 2026-10-29: "Veronica, can you shut down" came out as
+        # "Veronica, eBay, Checkdown." — three short scraps, so it was binned as noise and
+        # the cloud never got to hear it. (A name said over and over is still noise.)
+        if noise_list(_without_own_name(offline, getattr(self, "own_names", ()))):
             # Noise, not a person: asking the cloud only got guesses back that she then
             # answered ("sabhi ka naya desh", "conveniencia", "Sir").
             logger.info("Not asking the cloud: the offline read %r is noise.", offline)

@@ -321,3 +321,56 @@ def test_quota_429_is_not_waited_on():
             return NS(status_code=429, text='{"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}}')
     _post_with_retry(Req(), "u", sleep=slept.append)
     assert len(calls) == 1 and slept == []
+
+
+# ---------------------------------------------------------------- 2026-10-29: "it listens but doesn't do what I say"
+
+def test_her_name_in_front_does_not_make_a_request_look_like_noise():
+    """'Veronica, can you shut down' came out as 'Veronica, eBay, Checkdown.' (three short
+    scraps) and was binned as noise; the cloud never got to hear it."""
+    unsure = STTResult(success=False, error="Not speech (low confidence; heard 'Veronica, eBay, Checkdown.').")
+    quiet = {"ambient_rms": 30.0, "speech_rms": 40.0, "voiced_s": 1.2}
+    stt = _stt(gemini_text="Veronica, can you shut down?")
+    stt.addressed, stt.own_names = True, ("VERONICA", "Veronica", "Vero")
+    got = stt._rescue("offline", unsure, b"pcm", quiet)
+    assert got is not None and got.text == "Veronica, can you shut down?"
+
+
+def test_her_name_said_over_and_over_is_still_noise():
+    unsure = STTResult(success=False, error="Not speech (low confidence; heard 'Veronica, Veronica, Veronica.').")
+    stt = _stt(gemini_text="anything")
+    stt.addressed, stt.own_names = True, ("Veronica",)
+    assert stt._rescue("offline", unsure, b"pcm", {"ambient_rms": 30.0, "speech_rms": 40.0, "voiced_s": 1.2}) is None
+
+
+def test_without_own_name_strips_only_a_leading_name():
+    from veronica.speech.stt import _without_own_name
+    names = ("VERONICA", "Vero")
+    assert _without_own_name("Veronica, eBay, Checkdown.", names) == "eBay, Checkdown."
+    assert _without_own_name("hey Veronica open Spotify", names) == "open Spotify"
+    assert _without_own_name("Veronica's voice", names) == "Veronica's voice"        # a word, not her name
+    assert _without_own_name("open Chrome", names) == "open Chrome"
+    assert _without_own_name("Veronica, eBay", ()) == "Veronica, eBay"                # no names known: unchanged
+
+
+def test_talking_over_her_stops_her_even_while_the_next_sentence_is_late():
+    """Seen live: talked over at 16:10:57, back to listening only at 16:15:07 — the player
+    waited for the next sentence's audio with no way for 'stop' to cut in."""
+    import threading
+    import time
+    from veronica.speech.tts import TextToSpeech
+    tts = TextToSpeech.__new__(TextToSpeech)
+    tts.config = SimpleNamespace(backend="supertonic")
+    release = threading.Event()
+
+    def slow_voice_file(piece, previous="", following=""):
+        release.wait(30)                       # the sentence's audio never arrives in time
+        return None
+    tts._voice_file = slow_voice_file
+    stop = threading.Event()
+    threading.Timer(0.2, stop.set).start()     # the user says "Veronica" 0.2 s in
+    t0 = time.monotonic()
+    done = tts.speak_stream(["Sorry, I didn't catch that.", "Say it again?"], stop)
+    took = time.monotonic() - t0
+    release.set()
+    assert done is False and took < 1.0, took

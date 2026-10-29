@@ -419,9 +419,20 @@ class TextToSpeech:
         threading.Thread(target=produce, name="tts-synth", daemon=True).start()
 
         while True:
-            item = clips.get()
+            # Never a bare clips.get(): if the next sentence is slow to arrive (its audio still
+            # being made, or the reply still being written), "Veronica" must still stop her
+            # at once. Seen live 2026-10-29: talked over at 16:10:57, she only came back to
+            # listen at 16:15:07. The producer is a daemon thread; leaving it is safe.
+            try:
+                item = clips.get(timeout=0.1)
+            except queue.Empty:
+                if stop.is_set():
+                    return False
+                continue
             if item is None:
                 return not stop.is_set()
+            if stop.is_set():
+                return False
             piece, path = item
             if on_piece is not None:
                 on_piece(piece)

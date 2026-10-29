@@ -141,6 +141,7 @@ class CLIApp:
                 from veronica.tools.app_index import names_an_unknown_app, shared_index
                 return names_an_unknown_app(shared_index(config), text)
             self.stt.unknown_target = names_unknown_app
+            self.stt.own_names = tuple(self._names())   # "Veronica, ..." is the user, not noise
             # Loading the offline Whisper model takes 13-19 s on this PC. Off the main
             # thread, so it happens while she greets you instead of before your first word.
             threading.Thread(target=self.stt.warm_up, name="stt-warm", daemon=True).start()
