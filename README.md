@@ -81,6 +81,9 @@ abilities can be added without touching the core.
 **Know things**
 - Weather, news (your region + world), web search, YouTube, calendar (Google calendars read-only
   via iCal, plus her own events).
+- **"What's happening?"**: one spoken briefing covering rain across India, quakes and cyclones (God's Eye),
+  volcanoes, WHO disease outbreaks and the headlines. Also "is it raining anywhere in India?", "any
+  volcanoes erupting?", "is this ship sanctioned?" (OFAC), and "open / activate God's Eye".
 - Live world data via optional integrations: aircraft, satellites, earthquakes, ships, conflicts,
   markets, outages, country risk; 3D satellite tracking and NASA imagery.
 - `learn_topic`: studies a subject and keeps notes for later.
@@ -327,6 +330,7 @@ Logs: `data/veronica.log`.
 | Tabs, folders, Explorer, verify-then-report | [`docs/DESKTOP_UNDERSTANDING.md`](docs/DESKTOP_UNDERSTANDING.md) |
 | Understanding what you mean (paraphrases, Hinglish) | [`docs/UNDERSTANDING.md`](docs/UNDERSTANDING.md) |
 | Fix-it mode (diagnose, plan, ask, verify) | [`docs/FIX_IT_MODE.md`](docs/FIX_IT_MODE.md) |
+| World watch: "what's happening?", rain, volcanoes, outbreaks, sanctioned ships | [`docs/WORLD_WATCH.md`](docs/WORLD_WATCH.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |

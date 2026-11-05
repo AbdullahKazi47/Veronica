@@ -429,6 +429,21 @@ $s.SetOutputToWaveFile("{path}", $fmt); $s.Speak("{said}"); $s.Dispose()'''],
         r.success and "verify" in r.message.lower() and not r.data.get("can_do"), r.message[:90]))(
         reg.dispatch("fix_problem", description="it says steam_api64.dll is missing")))
     check("fix-it", "install_program asks first", gate("install_program", "SENSITIVE"))
+
+    # World watch (2026-11-05): routed, then the read-only live sources really fetched
+    for text, tool in [("what's happening", "situation_report"), ("what's going on in India", "situation_report"),
+                       ("is it raining anywhere in India", "rain_now"), ("any volcanoes erupting", "volcano_activity"),
+                       ("any disease outbreaks", "disease_outbreaks"), ("is IMO 7406784 sanctioned", "ship_sanctions"),
+                       ("activate god's eye", "open_gods_eye_view")]:
+        check("world watch", f"'{text}'", route(text, tool))
+    check("world watch", "rain across India (Open-Meteo)", run("is it raining anywhere in India",
+                                                               lambda m: "India" in m, "rain_now"))
+    check("world watch", "volcano report names its week", run("any volcanoes erupting",
+                                                              lambda m: "weekly volcano report (" in m, "volcano_activity"))
+    check("world watch", "WHO outbreak news", run("any disease outbreaks", lambda m: "WHO" in m, "disease_outbreaks"))
+    check("world watch", "OFAC: IMO 7406784 is listed", lambda: (lambda r: (r.success and r.data.get("certain") is True,
+                                                                             r.message[:80]))(
+        reg.dispatch("ship_sanctions", imo="7406784")))
     for tool, lvl in [("sleep_pc", "SENSITIVE"), ("shutdown_pc", "SENSITIVE"), ("close_window", "SENSITIVE"),
                       ("close_tab", "SENSITIVE"), ("delete_file", "CRITICAL"), ("run_shell_command", "CRITICAL")]:
         check("safety", f"{tool} needs permission", gate(tool, lvl))

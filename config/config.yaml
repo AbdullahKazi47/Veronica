@@ -70,6 +70,11 @@ assistant:
     to the cloud model, secrets and sensitive IDs are stripped first. Planet: God's Eye tools
     (flights, satellites overhead, quakes, public cameras), satellite_tracker_3d (KeepTrack),
     nasa_worldview and look_from_space (NASA images; look_from_space describes one),
+    "what's happening?" / "what's going on in India or the world" is situation_report (rain across
+    India, quakes and cyclones from God's Eye, volcanoes, WHO outbreaks and the headlines, in one
+    briefing); rain_now for "where is it raining"; volcano_activity, disease_outbreaks and
+    ship_sanctions (OFAC; only an IMO/MMSI match is certain, never call a ship sanctioned on a name
+    alone); "open / activate God's Eye" is open_gods_eye_view,
     earth_globe (wind, rain, ocean, air pollution); World Monitor tools (wm_*) for live world
     events, conflicts, outages, markets and country risk. Decisions: jev_decide for "should I
     X or Y" or anything said to Jev — speak its answer as given. New abilities: build_ability,

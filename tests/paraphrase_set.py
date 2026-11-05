@@ -5,10 +5,18 @@ speech recognition mishears them."""
 INTENTS: dict[str, tuple[str, list[str]]] = {
     # intent name: (tool, phrasings)
     "world_news": ("get_news", [
-        "what's the news today", "what's happening around the world", "anything new going on in the world?",
-        "catch me up", "duniya mein kya chal raha hai", "okay tell me what's happening around the world today",
-        "what's going on globally", "any big news", "headlines please", "what's the latest", "fill me in on the news",
-        "what's the news around the world"]),
+        "what's the news today", "any big news", "headlines please", "fill me in on the news",
+        "what's the news around the world", "tell me today's headlines", "news batao", "any news",
+        "read the news", "latest news please"]),
+    "situation_report": ("situation_report", [
+        "what's happening around the world", "anything new going on in the world?", "duniya mein kya chal raha hai",
+        "okay tell me what's happening around the world today", "what's going on globally", "what's going on in india",
+        "give me a world update", "what's happening? is it raining somewhere in india", "situation report please",
+        "what's happening right now"]),
+    "rain_now": ("rain_now", [
+        "is it raining anywhere in india", "where is it raining right now", "is it raining somewhere in the country",
+        "which places have rain", "any rain across india", "kahan baarish ho rahi hai", "where's it raining",
+        "is there rain anywhere in india", "rain in india right now", "show me where it rains"]),
     "calendar_today": ("calendar", [
         "what's my day like", "anything on my calendar?", "am I free today", "do I have meetings today",
         "what's on my schedule", "anything planned for tomorrow", "am i busy this evening", "what's next for me today",

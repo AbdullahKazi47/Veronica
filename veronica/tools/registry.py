@@ -260,8 +260,27 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
     # God's Eye View first: its 'open the globe' / 'show me that' must win over 'open <site>'.
     from veronica.integrations.gods_eye import register_gods_eye
     from veronica.integrations.world_monitor import register_world_monitor
+    gods_eye = None
     if config is not None:
-        register_gods_eye(registry, config, profile)
+        gods_eye = register_gods_eye(registry, config, profile)
+    # World watch right after God's Eye and before the calendar: "what's happening today?" is
+    # a briefing, not a calendar question. Volcanoes, WHO outbreaks, OFAC ships, rain across India.
+    from veronica.tools.world_watch import (
+        DiseaseOutbreaksTool, RainNowTool, SanctionsList, ShipSanctionsTool, SituationReportTool,
+        VolcanoActivityTool,
+    )
+    sanctions = SanctionsList(config.resolve_path("data/ofac_vessels.json") if config is not None else None)
+    if gods_eye is not None:
+        gods_eye.sanctions = sanctions        # ships God's Eye reports are checked against the list
+    rain = RainNowTool(here=getattr(profile, "detected_coords", None))
+    volcano, outbreaks = VolcanoActivityTool(), DiseaseOutbreaksTool()
+    home_country = getattr(getattr(config, "assistant", None), "home_country", None) or "India"
+    for tool in (SituationReportTool(rain, volcano, outbreaks,
+                                     gods_eye_call=gods_eye.call if gods_eye is not None else None,
+                                     headlines=news.collect, summarizer=_summarizer(llm), home=home_country),
+                 rain, volcano, outbreaks, ShipSanctionsTool(sanctions)):
+        registry.register(tool)
+    if config is not None:
         try:
             register_world_monitor(registry, config)      # tools appear once its Docker stack answers
         except Exception:  # noqa: BLE001 - never block start-up

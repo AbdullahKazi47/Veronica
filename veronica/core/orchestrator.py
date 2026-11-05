@@ -474,6 +474,15 @@ class Orchestrator:
         lower = text.lower()
         if any(t in lower for t in self._AGENTIC_TRIGGERS):
             return True
+        # A tool built to answer a whole spoken question claims it, however many sentences
+        # it has: "What's happening? Is it raining somewhere in India?" is one briefing, not
+        # a plan. Only tools that say so (whole_request) — never ordinary commands.
+        try:
+            claimed = self.tools.find_fast_match(text)
+        except Exception:  # noqa: BLE001
+            claimed = None
+        if claimed is not None and getattr(claimed, "whole_request", False):
+            return False
         # >= 2 sentences signals a compound goal the splitter can't atomize.
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
         return len(sentences) >= 2

@@ -49,6 +49,7 @@ class GodsEyeService:
         self._next_id = 0
         self.tools: list[dict] = []
         self.last_view_url: Optional[str] = None
+        self.sanctions = None        # world_watch.SanctionsList: flags OFAC-listed ships in answers
         atexit.register(self.close)
 
     # -- lifecycle --------------------------------------------------------------------
@@ -241,6 +242,15 @@ class GodsEyeTool(Tool):
                 text = (text + "\nCamera view: " + seen).strip()
             except Exception as e:  # noqa: BLE001
                 logger.warning("Camera snapshot description failed: %s", e)
+        if self.name in ("vessels_in_area", "find_vessel") and getattr(self.service, "sanctions", None) is not None:
+            rows = ((result.get("structuredContent") or {}).get("rows")) or []
+            try:
+                notes = self.service.sanctions.flag_rows(rows)     # exact IMO/MMSI matches only
+            except Exception as e:  # noqa: BLE001 - a sanctions-list outage must not hide the ships
+                logger.info("Sanctions check skipped: %s", e)
+                notes = []
+            if notes:
+                text = (text + "\nSanctions: " + " ".join(notes)).strip()
         if self.name == "show_in_gods_eye_view" and self.service.last_view_url:
             _open(self.service.last_view_url)
             text = "Opened God's Eye View. " + text
@@ -253,7 +263,8 @@ def _open(url: str, browser: str = "") -> tuple[bool, str]:
 
 
 _SHOW = re.compile(r"^\s*(?:please\s+)?(?:show(?:\s+me)?(?:\s+(?:that|it|this|them))?(?:\s+on\s+(?:the\s+)?(?:globe|map))?|"
-                   r"(?:open|launch|start)\s+(?:the\s+)?(?:globe|god'?s\s*eye(?:\s*view)?|world\s+view|3d\s+map))"
+                   r"(?:open|launch|start|activate|turn\s+on|switch\s+on|bring\s+up|pull\s+up|fire\s+up|load|run|show\s+me)"
+                   r"\s+(?:up\s+)?(?:the\s+)?(?:globe|god'?s\s*eye(?:\s*view)?|gods?\s*eye(?:\s*view)?|world\s+view|3d\s+map))"
                    r"(?:\s+in\s+(\w+))?\s*[.!]?\s*$", re.I)
 
 

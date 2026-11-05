@@ -20,6 +20,8 @@ _TOOLS = {
     "apply_fix": ("MODERATE", []), "fix_history": ("SAFE", []), "window_control": ("MODERATE", ["action"]),
     "lock_pc": ("MODERATE", []), "list_tabs": ("SAFE", []), "close_tab": ("SENSITIVE", ["scope"]),
     "list_reminders": ("SAFE", []), "daily_briefing": ("SAFE", []),
+    "situation_report": ("SAFE", []), "rain_now": ("SAFE", []), "volcano_activity": ("SAFE", []),
+    "disease_outbreaks": ("SAFE", []), "ship_sanctions": ("SAFE", []), "open_gods_eye_view": ("MODERATE", []),
 }
 
 
@@ -96,7 +98,11 @@ def test_ambiguous_lines_get_a_question_and_never_a_risky_action(router):
 
 
 @pytest.mark.parametrize("group", [
-    ["what's the news today", "what's happening around the world", "catch me up", "duniya mein kya chal raha hai"],
+    # 2026-11-05: "what's happening" is now the God's Eye briefing (which includes the headlines);
+    # "the news" stays the news.
+    ["what's happening around the world", "catch me up", "duniya mein kya chal raha hai", "what's going on in india"],
+    ["what's the news today", "headlines please", "news batao", "any news"],
+    ["open god's eye", "activate god's eye", "turn on gods eye", "gods eye kholo"],
     ["shut the browser", "get rid of that chrome window", "chrome band karo", "close chrome"],
     ["it's too loud", "turn it down", "lower the volume", "volume kam karo"],
     ["what's my day like", "anything on my calendar?", "am I free today"],
@@ -128,11 +134,20 @@ def test_a_regex_match_is_kept_when_meaning_agrees_or_is_unsure(router):
     assert d.kind == "tool" and d.tool.name == "set_volume" and d.why == "regex"
 
 
+def test_news_said_outright_stays_the_news_even_next_to_the_briefing(router):
+    """'what's the news around the world' is close in meaning to the briefing; the news tool's
+    own rule ('what's the news') claims it first, as in the real registry."""
+    reg = FakeRegistry(regex={"get_news": lambda t: "the news" in t})
+    d = router.decide("what's the news around the world", reg)
+    assert d.kind == "tool" and d.tool.name == "get_news"
+
+
 def test_a_greedy_regex_is_overruled_when_the_meaning_clearly_differs(router):
     """The real bug: 'what's happening around the world today' ran the calendar (because of 'today')."""
     reg = FakeRegistry(regex={"calendar": lambda t: "today" in t})
     d = router.decide("okay tell me what's happening around the world today", reg)
-    assert d.kind == "tool" and d.tool.name == "get_news" and "overrules" in d.why
+    # (since 2026-11-05 "what's happening" is the God's Eye briefing; the point is: not the calendar)
+    assert d.kind == "tool" and d.tool.name == "situation_report" and "overrules" in d.why
 
 
 def test_sensitive_actions_are_not_taken_on_a_medium_guess(router):
