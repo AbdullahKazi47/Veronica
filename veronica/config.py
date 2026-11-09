@@ -73,6 +73,7 @@ class STTConfig:
     mic_device_name: Optional[str] = None   # e.g. "Microphone Array"; wins over the index
     min_speech_rms: float = 120.0       # int16 RMS floor for "speech started"; lower it for a quiet mic
     speech_over_ambient: float = 2.5    # speech must be this many times louder than the room
+    silence_over_ambient: float = 1.6   # below this many times the room level counts as silence (ends your sentence)
     max_utterance_s: float = 8.0
     # -- accuracy & noise (2026-10-16) --
     highpass_hz: float = 100.0          # cut fan/AC hum below this before recognition (0 = off)

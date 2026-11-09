@@ -223,6 +223,7 @@ Non-secret settings live in [`config/config.yaml`](config/config.yaml); secrets 
 | `stt.mic_device_name` | Microphone chosen by name, so Windows renumbering devices can't break it |
 | `stt.min_speech_rms` | Loudness floor for "you started talking" — lower it for a quiet mic |
 | `stt.pause_threshold` | Silence that ends your sentence (lower = faster replies) |
+| `stt.silence_over_ambient` | Sound under this many times the room level counts as silence (higher = small noises end your sentence sooner) |
 | `voice.wake_threshold` | Wake-word sensitivity (lower = more sensitive, more false wakes) |
 | `voice.conversation_mode` | Keep the conversation open after "Veronica" |
 | `voice.barge_in` | `wake_word` to interrupt her by name, `off` to disable |

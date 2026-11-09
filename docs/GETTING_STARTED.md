@@ -407,7 +407,7 @@ ask. Everyday tasks have dedicated tools, so they never fall back to a shell com
 | "minimize Chrome", "maximize Spotify", "switch to WhatsApp" | `window_control` | no |
 | "open the projects folder", "open veronica folder in projects", "open my resume pdf" | `open_path` | no |
 | "lock my PC" | `lock_pc` | no |
-| "put the laptop to sleep" (the PC must be named; "go to sleep" only ends the conversation) | `sleep_pc` | yes / no |
+| "put the laptop to sleep" (the PC must be named; "go to sleep" closes VERONICA, not the PC) | `sleep_pc` | yes / no |
 | "cancel shutdown" | `cancel_shutdown` | no |
 | "close Spotify" (unsaved work) | `close_window` | yes / no |
 | "shut down my PC", "restart in 5 minutes", "sign out" | `shutdown_pc` | yes / no, then a 30 s cancellable delay |
@@ -416,7 +416,7 @@ ask. Everyday tasks have dedicated tools, so they never fall back to a shell com
 `open_path` searches your home folder by name (the shallowest match wins, and AppData and
 hidden folders are skipped). It never runs programs or scripts (`.exe`, `.bat`, `.ps1`,
 `.lnk` and others): apps are opened by name with "open <app>". A bare "go to sleep" does not
-sleep the PC, because you have to name the PC.
+sleep the PC, because you have to name the PC. It closes VERONICA instead (see below).
 
 ### Learning and coding (`tools/learning_tools.py`, `memory/knowledge.py`)
 
@@ -512,6 +512,10 @@ to the wake word so the mic isn't live forever. Set it to `0` to never time out.
   synthesized, and the next is prepared while the current one plays. ElevenLabs gets the
   neighbouring sentences, so intonation stays natural.
 - The silence that ends your sentence is 0.65 s (`stt.pause_threshold`, was 0.8).
+- **Small sounds no longer keep her listening.** "Silence" means anything under 1.6x the room level
+  (`stt.silence_over_ambient`). It used to be about 1.08x with earphones, so a fan or a far-off noise
+  kept her recording to the 8 s cap and you had to mute the mic. She also stops once nothing as loud as
+  speech has been heard for 1.5 s. The log shows `silence below N` and why she stopped.
 
 **Talk over her** (`voice.barge_in: wake_word`)
 - Say **"Veronica"** while she's talking and she stops mid-word and listens, with no wake
@@ -668,8 +672,11 @@ Every tool she runs is logged in `data/veronica.log` as `Running tool <name>(...
 came from a quick command or the model chose it.
 
 **Sleep and shutdown always ask.** `sleep_pc`, `shutdown_pc` (restart and sign out included)
-and `close_window` need a yes/no. Saying "go to sleep", "goodnight", "bye" or "thanks" to her
-only ends the conversation. It never touches the PC, and it never quits VERONICA in voice mode.
+and `close_window` need a yes/no. Saying "goodnight", "bye" or "thanks" to her only ends the
+conversation. **"Go to sleep", "you can shut down now", "shut yourself down", "turn yourself off" or
+"quit"** said to her closes VERONICA: she says goodbye, the program exits and its terminal window
+closes. None of these touch the PC. "Shut down my PC" is still the PC shutdown, and it asks first.
+To start her again, double-click "Start VERONICA.bat" or sign in again (autostart).
 
 ### Downloading a file (`tools/download_tools.py`)
 

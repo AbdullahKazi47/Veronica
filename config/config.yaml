@@ -366,6 +366,7 @@ stt:
   mic_device_index: 1             # fallback only, if no device with that name exists
   min_speech_rms: 40              # speech-start floor; the real threshold is 3x the measured room level
                                   # (was 120: normal speech from a distance peaked ~50-96 and needed shouting)
+  silence_over_ambient: 1.6      # sound under 1.6x the room level is silence, so a fan or a small noise no longer keeps her listening
   max_utterance_s: 8.0
   vosk_model_path: "models/vosk-model-small-en-us"
   faster_whisper_model: "base"    # faster-whisper model: tiny/base/small/medium/large-v3 (only when backend is faster_whisper)

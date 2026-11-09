@@ -247,10 +247,22 @@ class SpeechToText:
                 return None, (f"No speech detected in {timeout_s:.0f}s "
                               f"(peak level {stats['peak_rms']}, needed {stats['threshold']}).")
 
-            # 3) record until a pause or the max length
+            # 3) record until a pause or the max length.
+            # "Silence" must sit clearly above the room's own hum. With earphones mode's
+            # lower bar (1.8x the room), 60% of the bar was only ~1.08x the room level, so
+            # ordinary noise kept resetting the pause and every sentence ran to the 8 s cap
+            # (seen live 2026-11-09: "What are you seeing on the screen?", ~2 s said,
+            # "Listened 8.3s (voice 7.0s; room 62.8, bar 113.0)") — the user had to mute the
+            # mic for her to answer. And if nothing as loud as speech has come for a while,
+            # the sentence is over even if a fan or a TV keeps the level up.
+            over_room = float(getattr(self.config, "silence_over_ambient", 1.6) or 1.6)
+            silence_cut = max(threshold * 0.6, ambient * over_room)
+            quiet_end_s = max(1.5, self.config.pause_threshold * 2)
             silent_s = 0.0
+            since_loud = 0.0
             spoken_s = 0.0
             voiced: list[float] = [level]
+            stats["silence_cut"] = round(silence_cut, 1)
             while spoken_s < self.config.max_utterance_s:
                 buf = mic.read()
                 if not buf:
@@ -259,12 +271,16 @@ class SpeechToText:
                 spoken_s += chunk_s
                 level = rms(buf)
                 stats["peak_rms"] = max(stats["peak_rms"], round(level, 1))
-                if level >= threshold * 0.6:
+                if level >= silence_cut:
                     silent_s = 0.0
                     voiced.append(level)
                 else:
                     silent_s += chunk_s
+                since_loud = 0.0 if level >= threshold else since_loud + chunk_s
                 if silent_s >= self.config.pause_threshold:
+                    break
+                if since_loud >= quiet_end_s:
+                    stats["ended_by"] = "no speech-level sound"
                     break
             stats["duration_s"] = round(len(frames) * chunk_s, 2)
             stats["voiced_s"] = round(len(voiced) * chunk_s, 2)
@@ -337,9 +353,10 @@ class SpeechToText:
         stats = dict(self.last_capture_stats)
         # One line per listen, so "she kept listening after I stopped" can be read off the
         # log (how long, how much was voice, the room level, the bar) instead of guessed.
-        logger.info("Listened %.1fs (voice %.1fs; room %s, bar %s, peak %s)%s",
+        logger.info("Listened %.1fs (voice %.1fs; room %s, bar %s, silence below %s, peak %s)%s%s",
                     float(stats.get("duration_s") or 0), float(stats.get("voiced_s") or 0),
-                    stats.get("ambient_rms"), stats.get("threshold"), stats.get("peak_rms"),
+                    stats.get("ambient_rms"), stats.get("threshold"), stats.get("silence_cut"),
+                    stats.get("peak_rms"), f" [{stats['ended_by']}]" if stats.get("ended_by") else "",
                     f" - {err}" if err else "")
         if pcm is None:
             return STTResult(success=False, error=err, stats=stats)

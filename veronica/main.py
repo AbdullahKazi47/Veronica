@@ -417,6 +417,27 @@ def main() -> None:
         # Ctrl+C is how she is stopped; it can land anywhere (mid-sentence, mid-request).
         # A goodbye, not a traceback.
         print(f"\n{config.assistant.name}: Shutting down. Goodbye, boss.")
+    if getattr(cli, "quit_requested", False):
+        _exit_now()
+
+
+def _exit_now(code: int = 0) -> None:
+    """Told to go to sleep: end the process for certain, so Start VERONICA.bat finishes and
+    its window closes. Her background threads (mic, GPS, Mem0, God's Eye helpers) could keep
+    Python alive after main() returns, so: run the normal clean-up first (atexit closes God's
+    Eye's node processes and the local Qdrant store), flush the log, then exit with code 0."""
+    import atexit
+    import logging
+    import os
+    try:
+        atexit._run_exitfuncs()
+    except Exception:  # noqa: BLE001 - clean-up must not stop her from closing
+        pass
+    try:
+        logging.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
+    os._exit(code)
 
 
 if __name__ == "__main__":

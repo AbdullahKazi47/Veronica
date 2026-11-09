@@ -51,6 +51,25 @@ _ENDS_CONVERSATION = re.compile(
     r"(?:you\s+can\s+)?(?:go\s+(?:to\s+)?)?sleep(?:\s+now)?|good\s*night|go\s+(?:to\s+)?rest|"
     r"(?:ok(?:ay)?\s+)?that'?s\s+enough|see\s+you(?:\s+later)?|goodbye)\s*[.!]?\s*$", re.I)
 
+# Said TO her, these close VERONICA herself (program and window) — 2026-11-09, the user's
+# request: "if I tell her to go to sleep, or you can shut down now, she must close." Only at
+# the end of what was said, after a start/pause ("That's all for today, Veronica. You can go
+# to sleep now."), never inside a sentence ("I can't go to sleep", "remind me to sleep at 11").
+# The PC is never touched: "shut down my PC" stays the shutdown tool, which always asks.
+_QUITS_VERONICA = re.compile(
+    r"(?:^|[.,!?;]\s*)(?:(?:ok(?:ay)?|so|alright|right)[,\s]+)?(?:(?:hey\s+)?veronica[,\s]+)?"
+    r"(?:(?:you\s+(?:can|may|should)|please|now|just)\s+)*"
+    r"(?:go\s+(?:to\s+)?sleep|go\s+offline|sleep|shut\s*down|shut\s+(?:yourself\s+)?(?:down|off)|"
+    r"turn\s+(?:yourself\s+)?off|switch\s+(?:yourself\s+)?off|power\s+(?:yourself\s+)?(?:down|off)|"
+    r"close\s+(?:yourself|veronica|the\s+program|your\s+(?:program|window))|"
+    r"(?:exit|quit|close)(?:\s+veronica)?|sign\s+off)"
+    r"(?:\s+(?:now|for\s+(?:now|today|the\s+(?:day|night))))?(?:[,\s]+(?:veronica|boss|please))?\s*[.!]?\s*$", re.I)
+
+
+def quits_veronica(text: str) -> bool:
+    return bool(_QUITS_VERONICA.search(text or ""))
+
+
 _NO_WORDS = re.compile(r"\b(no|nope|nah|cancel|stop|don'?t|do not|deny|negative|abort|wait)\b")
 _YES_WORDS = re.compile(r"\b(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|proceed|confirm|confirmed|affirmative|allow)\b")
 
@@ -152,6 +171,7 @@ class CLIApp:
             self.stt.hub = self.hub
         self.wake_gate = self._make_wake_gate(wake_gate) if (voice_mode and wake_mode) else None
         self._barged = False                     # the user just talked over her: listen at once
+        self.quit_requested = False              # "go to sleep" / "you can shut down now": close her
         self._speak_lock = threading.RLock()     # one voice at a time (replies + reminders)
         self._capturing = threading.Event()      # set while STT is recording the user
         self._stop = threading.Event()
@@ -295,10 +315,17 @@ class CLIApp:
 
                 if not text:
                     continue
+                if self.voice_mode and quits_veronica(text):
+                    # "Go to sleep" / "you can shut down now": close VERONICA herself — the
+                    # program and its window (main() exits cleanly with code 0). Never the PC.
+                    self._status(f"Closing by request: {text!r}")
+                    self._say("Okay, going to sleep. Goodnight, boss." if re.search(r"\bsleep\b", text, re.I)
+                              else "Okay, shutting myself down. Goodbye, boss.")
+                    self.quit_requested = True
+                    break
                 if self.voice_mode and self._ends_conversation(text):
-                    # Voice: "bye" / "go to sleep" / "thanks" end the conversation; she
-                    # goes back to waiting for her name. She is never quit by voice, and
-                    # nothing here touches the PC itself.
+                    # Voice: "bye" / "thanks" / "good night" end the conversation; she goes
+                    # back to waiting for her name. Nothing here touches the PC itself.
                     from veronica.core.flair import goodbye
                     self._say(goodbye())
                     self._follow_up_until = 0.0
@@ -535,7 +562,7 @@ class CLIApp:
     def _ends_conversation(self, text: str) -> bool:
         """An ending phrase ("thanks", "good night") — unless it is the name of one of the
         user's routines, which then runs instead."""
-        if not _ENDS_CONVERSATION.match(text or ""):
+        if not (_ENDS_CONVERSATION.match(text or "") or quits_veronica(text)):
             return False
         tools = getattr(getattr(self, "orchestrator", None), "tools", None)
         routine = tools.get("run_routine") if tools is not None and hasattr(tools, "get") else None
