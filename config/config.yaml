@@ -708,3 +708,15 @@ remote:
   host: "127.0.0.1"               # keep local - never 0.0.0.0
   port: 7272
   confirm_timeout_s: 60           # permission question on the phone left unanswered = no
+
+# One small real project a day into a separate GitHub repo (your portfolio), picked by VERONICA
+# and built + tested by Claude Code in the background whenever the laptop is on. A shutdown or a
+# Claude Code limit mid-build is resumed next time. It never touches VERONICA's own code.
+# "What did you build?", "pause daily builds", "build a game next", "build something now".
+daily_builds:
+  enabled: false                  # turns on once repo_url is set
+  repo_url: ""                    # https://github.com/<you>/<repo>.git
+  topics: ["python tool", "web app", "game", "cybersecurity learning (defensive)"]
+  per_day: 1
+  max_attempts: 3                 # tries per project before she moves on
+  min_battery_percent: 30         # on battery below this she waits for the charger

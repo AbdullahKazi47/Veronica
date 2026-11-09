@@ -280,6 +280,9 @@ def build_default_registry(gate: PermissionGate, config=None, llm=None) -> ToolR
                                      headlines=news.collect, summarizer=_summarizer(llm), home=home_country),
                  rain, volcano, outbreaks, ShipSanctionsTool(sanctions)):
         registry.register(tool)
+    # Daily builds: "what did you build?", "pause daily builds", "build a game next".
+    from veronica.tools.daily_build_tools import DailyBuildsTool, make_builder
+    registry.register(DailyBuildsTool(make_builder(config, llm) if config is not None else None))
     if config is not None:
         try:
             register_world_monitor(registry, config)      # tools appear once its Docker stack answers

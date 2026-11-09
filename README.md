@@ -332,6 +332,7 @@ Logs: `data/veronica.log`.
 | Understanding what you mean (paraphrases, Hinglish) | [`docs/UNDERSTANDING.md`](docs/UNDERSTANDING.md) |
 | Fix-it mode (diagnose, plan, ask, verify) | [`docs/FIX_IT_MODE.md`](docs/FIX_IT_MODE.md) |
 | World watch: "what's happening?", rain, volcanoes, outbreaks, sanctioned ships | [`docs/WORLD_WATCH.md`](docs/WORLD_WATCH.md) |
+| Daily builds: one real project a day into your GitHub portfolio repo, resumed after shutdowns | [`docs/DAILY_BUILDS.md`](docs/DAILY_BUILDS.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |

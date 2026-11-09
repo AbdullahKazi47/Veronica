@@ -303,6 +303,7 @@ class CLIApp:
         from veronica.core.background import BackgroundTasks
         self.background = BackgroundTasks(self.orchestrator, self._announce_task,
                                           store_path=self.config.resolve_path("data/background_tasks.json"))
+        self.daily_builder = self._start_daily_builds()
         self.proactive = self._start_proactive()
         self.health_monitor = self._start_self_heal()
         try:
@@ -364,9 +365,33 @@ class CLIApp:
         monitor = ProactiveMonitor(
             pcfg, self._proactive_say, state_path=self.config.resolve_path("data/proactive_state.json"),
             rain_probability=rain_probability_for(Profile(self.config)),
-            briefing=(lambda: briefing_tool.run(include_tasks=False).message) if briefing_tool else None)
+            briefing=(lambda: self._with_build_news(briefing_tool.run(include_tasks=False).message))
+            if briefing_tool else None)
         monitor.start()
         return monitor
+
+    def _start_daily_builds(self):
+        """One small project a day into the user's GitHub repo, in the background (off until a repo is set)."""
+        cfg = getattr(self.config, "daily_builds", None)
+        tool = self.orchestrator.tools.get("daily_builds")
+        builder = getattr(tool, "builder", None)
+        if not cfg or not cfg.enabled or not cfg.repo_url or builder is None:
+            return None
+        try:
+            builder.on_done = lambda line: self._proactive_say(line)
+            builder.start()
+        except Exception:  # noqa: BLE001 - optional
+            logger.exception("Couldn't start daily builds.")
+            return None
+        return builder
+
+    def _with_build_news(self, briefing: str) -> str:
+        builder = getattr(self, "daily_builder", None)
+        try:
+            news = builder.news() if builder is not None else ""
+        except Exception:  # noqa: BLE001
+            news = ""
+        return f"{briefing} {news}".strip() if news else briefing
 
     def _proactive_say(self, text: str, urgent: bool = False) -> None:
         while self._capturing.is_set() and not self._stop.is_set():

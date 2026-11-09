@@ -293,6 +293,26 @@ class ProactiveConfig:
 
 
 @dataclass
+class DailyBuildsConfig:
+    """One small real project a day, built by Claude Code into a separate GitHub repo
+    (automation/daily_builds.py). Off until repo_url is set. It never touches VERONICA's own code."""
+    enabled: bool = False
+    repo_url: str = ""                        # e.g. https://github.com/<you>/<repo>.git (an empty repo is fine)
+    local_dir: str = ""                       # default: ~/Documents/VERONICA Projects/<repo name>
+    topics: list = field(default_factory=lambda: ["python tool", "web app", "game", "cybersecurity learning"])
+    per_day: int = 1
+    start_delay_s: float = 600                # wait after start-up so she is up and talking first
+    check_every_s: float = 900                # how often she checks for a job to start or resume
+    max_attempts: int = 3                     # tries per project (an interrupted try counts) before skipping it
+    build_timeout_s: float = 2400             # one Claude Code session at most this long
+    test_timeout_s: float = 180
+    min_battery_percent: int = 30             # on battery below this, wait for the charger
+    claude_command: str = "claude"
+    model: str = ""                           # Claude Code model alias; "" = its default
+    push: bool = True
+
+
+@dataclass
 class GodsEyeConfig:
     """God's Eye View integration (live public spatial data + 3D globe). Off by default."""
     enabled: bool = False
@@ -531,6 +551,7 @@ class Config:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     gods_eye: GodsEyeConfig = field(default_factory=GodsEyeConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    daily_builds: DailyBuildsConfig = field(default_factory=DailyBuildsConfig)
     coding: CodingConfig = field(default_factory=CodingConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
