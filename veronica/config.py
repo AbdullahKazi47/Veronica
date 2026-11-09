@@ -294,11 +294,12 @@ class ProactiveConfig:
 
 @dataclass
 class DailyBuildsConfig:
-    """One small real project a day, built by Claude Code into a separate GitHub repo
-    (automation/daily_builds.py). Off until repo_url is set. It never touches VERONICA's own code."""
+    """One small real project a day, built by Claude Code, each in a NEW GitHub repo named after it
+    (automation/daily_builds.py). Needs the user's one-time `gh auth login`. Never touches VERONICA's code."""
     enabled: bool = False
-    repo_url: str = ""                        # e.g. https://github.com/<you>/<repo>.git (an empty repo is fine)
-    local_dir: str = ""                       # default: ~/Documents/VERONICA Projects/<repo name>
+    visibility: str = "public"                # the new repos: "public" or "private"
+    projects_dir: str = ""                    # default: ~/Documents/VERONICA Projects/Daily Builds
+    gh_command: str = "gh"                    # GitHub CLI
     topics: list = field(default_factory=lambda: ["python tool", "web app", "game", "cybersecurity learning"])
     per_day: int = 1
     start_delay_s: float = 600                # wait after start-up so she is up and talking first

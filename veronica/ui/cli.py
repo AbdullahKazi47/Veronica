@@ -371,11 +371,11 @@ class CLIApp:
         return monitor
 
     def _start_daily_builds(self):
-        """One small project a day into the user's GitHub repo, in the background (off until a repo is set)."""
+        """One small project a day, each in its own new GitHub repo, in the background."""
         cfg = getattr(self.config, "daily_builds", None)
         tool = self.orchestrator.tools.get("daily_builds")
         builder = getattr(tool, "builder", None)
-        if not cfg or not cfg.enabled or not cfg.repo_url or builder is None:
+        if not cfg or not cfg.enabled or builder is None:
             return None
         try:
             builder.on_done = lambda line: self._proactive_say(line)

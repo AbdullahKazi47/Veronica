@@ -30,8 +30,8 @@ _STATUS = re.compile(rf"\bwhat\s+(?:did|have)\s+you\s+(?:build|built|make|made)\
 
 class DailyBuildsTool(Tool):
     name = "daily_builds"
-    description = ("Daily builds: one small project a day, picked by VERONICA and built by Claude Code into the "
-                   "user's GitHub portfolio repo, in the background. Actions: status ('what did you build?'), "
+    description = ("Daily builds: one small project a day, picked by VERONICA and built by Claude Code, each in a "
+                   "new GitHub repo named after it, in the background. Actions: status ('what did you build?'), "
                    "skip_today ('don't do anything today': stop now, carry on tomorrow), pause, resume, now ('build something now'), prefer (the kind of project to build next).")
     permission = PermissionLevel.SAFE
     parameters = {"type": "object", "properties": {
@@ -68,9 +68,8 @@ class DailyBuildsTool(Tool):
 
     def run(self, action: str = "status", kind: str = "", **kwargs: Any) -> ToolResult:
         b = self.builder
-        if b is None or not b.cfg.repo_url:
-            return ToolResult.ok("Daily builds aren't set up yet. They need a GitHub repo to build into, "
-                                 "set as daily_builds.repo_url in the config.")
+        if b is None or not getattr(b.cfg, "enabled", False):
+            return ToolResult.ok("Daily builds are switched off in the config (daily_builds.enabled).")
         if action == "skip_today":
             stopped = b.skip_today()
             return ToolResult.ok(("Okay, I've stopped the build I was working on. " if stopped else "Okay. ")

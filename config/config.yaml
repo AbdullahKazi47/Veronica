@@ -709,13 +709,14 @@ remote:
   port: 7272
   confirm_timeout_s: 60           # permission question on the phone left unanswered = no
 
-# One small real project a day into a separate GitHub repo (your portfolio), picked by VERONICA
-# and built + tested by Claude Code in the background whenever the laptop is on. A shutdown or a
-# Claude Code limit mid-build is resumed next time. It never touches VERONICA's own code.
-# "What did you build?", "pause daily builds", "build a game next", "build something now".
+# One small real project a day, each in a NEW GitHub repo named after it (your portfolio), picked
+# by VERONICA and built + tested by Claude Code in the background whenever the laptop is on. A
+# shutdown or a Claude Code limit mid-build is resumed next time. Never touches VERONICA's own code.
+# Needs GitHub CLI signed in once: gh auth login. Until then she waits.
+# "What did you build?", "don't do anything today", "pause daily builds", "build a game next".
 daily_builds:
-  enabled: false                  # turns on once repo_url is set
-  repo_url: ""                    # https://github.com/<you>/<repo>.git
+  enabled: true
+  visibility: public              # the new repos
   topics: ["python tool", "web app", "game", "cybersecurity learning (defensive)"]
   per_day: 1
   max_attempts: 3                 # tries per project before she moves on

@@ -1,22 +1,24 @@
 """
-Daily builds: VERONICA picks one small, real project a day and Claude Code builds it into a
-separate GitHub repo (the user's portfolio). It runs in the background whenever the laptop
-is on, and it picks up where it stopped after a shutdown, a crash or a Claude Code limit.
+Daily builds: VERONICA picks one small, real project a day, Claude Code builds it, and she
+puts it in a NEW GitHub repo of its own, named after the project (the user's portfolio).
+It runs in the background whenever the laptop is on, and it picks up where it stopped
+after a shutdown, a crash or a Claude Code limit.
 
 Every step is saved to data/daily_builds.json before it starts, so an interrupted job is
 resumed, not lost or done twice:
 
-    picked -> building -> built (tests pass) -> committed -> pushed
+    picked -> building -> built (tests pass) -> committed -> repo created -> pushed
 
-Limits (the user's repo must never change behind their back in a bad way):
-  * Claude Code runs headless in `dontAsk` mode, inside the project's own folder only:
-    read/write/edit there, run `python -m pytest`, nothing else. No web, no installs, no
-    other folders. VERONICA's own code is never part of it.
-  * VERONICA checks the work herself before committing: changes only inside that folder,
-    a README and tests exist, the tests pass, and no secret or personal number is in any file
-    (the privacy guard). Anything else is thrown away and retried.
+Limits (nothing may reach the user's GitHub behind their back in a bad way):
+  * Every build, and every retry, is a brand-new Claude Code chat (never --continue/--resume),
+    headless in `dontAsk` mode, inside the project's own folder only: read/write/edit there,
+    run `python -m pytest`, nothing else. No web, no installs, no other folders.
+    VERONICA's own code is never part of it.
+  * VERONICA checks the work herself before committing: a README and tests exist, the tests
+    pass, and no real key, token, card or ID number is in any file. Anything else is retried.
   * The idea comes from the model and the user's chosen topics only, never from the
     conversation, screen or web pages, so nothing personal or injected ends up in a public repo.
+  * It only ever creates NEW repos; it never pushes into a repo it didn't create.
   * One project a day (config `per_day`), a few tries each, then she moves on.
 """
 from __future__ import annotations
@@ -30,7 +32,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from veronica.logging_setup import get_logger
 
@@ -46,11 +48,14 @@ internet, and come with automated tests (pytest). No recreations of existing com
 apps. Cybersecurity projects must be defensive or educational (checkers, analyzers, practice
 puzzles on local files) and never attack, scan or access real systems.
 
+The slug is the new GitHub repository's name: 2-4 lowercase words joined by hyphens that say what
+the code does (e.g. "password-strength-checker", "markdown-todo-cli", "snake-grid-game").
+
 Reply with JSON only:
-{{"title": "...", "slug": "kebab-case-folder-name", "kind": "one of the allowed kinds",
+{{"title": "...", "slug": "repo-name", "kind": "one of the allowed kinds",
   "summary": "one sentence", "spec": "5-10 short bullet lines describing features and tests"}}"""
 
-_BUILD_PROMPT = """Build this project in the current folder (it is the project's own folder; work only here).
+_BUILD_PROMPT = """Build this project in the current folder (it is the project's own folder and git repo; work only here).
 
 Title: {title}
 Kind: {kind}
@@ -63,9 +68,10 @@ Requirements:
 - A README.md: what it is, how to run it, how to run the tests, and a line "Built with Claude Code, picked by VERONICA."
 - Automated tests in tests/ that run with `python -m pytest -q` from this folder and pass. For a web project, put
   testable logic in a small Python module or test the HTML/JS files' structure from Python.
+- A .gitignore for __pycache__/ and .pytest_cache/.
 - Clean, readable code. No secrets, names, emails, phone numbers or locations.
 {resume}
-Run `python -m pytest -q` and fix anything that fails. Finish with a one-line summary of what you built."""
+Run `python -m pytest -q` and fix anything that fails. Do not run git. Finish with a one-line summary of what you built."""
 
 _LIMIT_WORDS = re.compile(r"usage limit|rate limit|limit reached|overloaded|credit balance|quota", re.I)
 _SLUG = re.compile(r"[^a-z0-9-]+")
@@ -73,7 +79,7 @@ _SLUG = re.compile(r"[^a-z0-9-]+")
 
 def slugify(text: str) -> str:
     s = _SLUG.sub("-", (text or "").lower()).strip("-")
-    return re.sub(r"-{2,}", "-", s)[:48] or "project"
+    return re.sub(r"-{2,}", "-", s)[:48].strip("-") or "project"
 
 
 _KEY_FORMATS = [
@@ -114,19 +120,73 @@ def _battery_ok(min_percent: int) -> bool:
     return b is None or b.power_plugged or b.percent >= min_percent
 
 
+def _out(r: subprocess.CompletedProcess) -> str:
+    return ((r.stdout or "") + (r.stderr or "")).strip()
+
+
+class GitHub:
+    """Creates the new repos, through GitHub's own CLI (`gh`) and the user's own sign-in
+    (`gh auth login`, done once by the user). VERONICA never sees or stores a password or token."""
+
+    def __init__(self, command: str = "gh", visibility: str = "public",
+                 run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> None:
+        self.command = command or "gh"
+        self.visibility = "private" if str(visibility).lower() == "private" else "public"
+        self._run = run
+
+    def _gh(self, *args: str, timeout: float = 90) -> subprocess.CompletedProcess:
+        exe = shutil.which(self.command) or self.command
+        if exe == "gh" and not shutil.which("gh"):
+            guess = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "GitHub CLI" / "gh.exe"
+            exe = str(guess) if guess.is_file() else exe
+        try:
+            return self._run([exe, *args], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=timeout)
+        except FileNotFoundError:
+            return subprocess.CompletedProcess([exe, *args], 127, "", "GitHub CLI (gh) is not installed")
+
+    def ready(self) -> str:
+        """"" when repos can be created, else what is missing (said to the user)."""
+        r = self._gh("auth", "status")
+        if r.returncode == 127:
+            return "the GitHub CLI isn't installed"
+        if r.returncode != 0:
+            return "GitHub isn't signed in yet (run: gh auth login)"
+        return ""
+
+    def exists(self, name: str) -> bool:
+        return self._gh("repo", "view", name, "--json", "name").returncode == 0
+
+    def url(self, name: str) -> str:
+        r = self._gh("repo", "view", name, "--json", "url", "--jq", ".url")
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+    def create(self, name: str, description: str) -> str:
+        """Create an empty repo; returns its URL ('' on failure)."""
+        r = self._gh("repo", "create", name, f"--{self.visibility}", "--description", description[:300])
+        if r.returncode != 0:
+            logger.info("Daily builds: could not create repo %s (%s)", name, _out(r)[:200])
+            return ""
+        m = re.search(r"https://\S+", r.stdout or "")
+        return m.group(0).rstrip(".") if m else self.url(name)
+
+
 class DailyBuilder:
     def __init__(self, config, state_path: Path, *, idea_maker: Optional[Callable[[str], str]] = None,
-                 run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                 host=None, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
                  now: Callable[[], dt.datetime] = dt.datetime.now, clock: Callable[[], float] = time.time,
                  battery_ok: Callable[[int], bool] = _battery_ok) -> None:
         self.cfg = config
         self.state_path = Path(state_path)
         self.idea_maker = idea_maker
+        self.host = host if host is not None else GitHub(getattr(config, "gh_command", "gh"),
+                                                         getattr(config, "visibility", "public"))
         self._run, self._now, self._clock, self._battery_ok = run, now, clock, battery_ok
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._child: Optional[subprocess.Popen] = None
-        self.on_done: Optional[Callable[[str], None]] = None   # she says it as soon as it is in the repo
+        self.on_done: Optional[Callable[[str], None]] = None   # she says it as soon as it is on GitHub
+        self.not_ready = ""                                    # why she can't create repos right now
         self.state = self._load()
 
     # -- state ---------------------------------------------------------------------------
@@ -147,11 +207,13 @@ class DailyBuilder:
         jsonsafe.write_json(self.state_path, self.state)
 
     @property
-    def repo_dir(self) -> Path:
-        if self.cfg.local_dir:
-            return Path(os.path.expanduser(self.cfg.local_dir))
-        name = Path(self.cfg.repo_url.rstrip("/")).name.removesuffix(".git") or "daily-builds"
-        return Path.home() / "Documents" / "VERONICA Projects" / name
+    def projects_dir(self) -> Path:
+        if getattr(self.cfg, "projects_dir", ""):
+            return Path(os.path.expanduser(self.cfg.projects_dir))
+        return Path.home() / "Documents" / "VERONICA Projects" / "Daily Builds"
+
+    def folder(self, slug: str) -> Path:
+        return self.projects_dir / slug
 
     def _today(self) -> str:
         return self._now().date().isoformat()
@@ -230,8 +292,6 @@ class DailyBuilder:
             self._lock.release()
 
     def _step(self) -> str:
-        if not self.cfg.repo_url:
-            return "no repo set"
         if self.state["paused"]:
             return "paused"
         if self.skipping_today():
@@ -240,8 +300,10 @@ class DailyBuilder:
             return "waiting (Claude Code limit)"
         if not self._battery_ok(int(self.cfg.min_battery_percent)):
             return "waiting for the charger"
-        if not self._ensure_repo():
-            return "repo unavailable"
+        self.not_ready = self.host.ready()
+        if self.not_ready:
+            return f"not ready: {self.not_ready}"
+        self.projects_dir.mkdir(parents=True, exist_ok=True)
         cur = self.state["current"]
         if cur is None:
             if self.built_today() >= int(self.cfg.per_day):
@@ -255,28 +317,15 @@ class DailyBuilder:
         if status == "built":
             return self._commit(cur)
         if status == "committed":
-            return self._push(cur)
+            return self._finish(cur)
         self.state["current"] = None
         self._save()
         return "cleared"
 
     # -- git -----------------------------------------------------------------------------
-    def _git(self, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
-        return self._run(["git", *args], cwd=str(self.repo_dir), capture_output=True, text=True,
+    def _git(self, folder: Path, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
+        return self._run(["git", *args], cwd=str(folder), capture_output=True, text=True,
                          encoding="utf-8", errors="replace", timeout=timeout)
-
-    def _ensure_repo(self) -> bool:
-        if (self.repo_dir / ".git").is_dir():
-            if self.state["current"] is None:
-                self._git("pull", "--ff-only", "--quiet")          # offline is fine
-            return True
-        self.repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        r = self._run(["git", "clone", "--quiet", self.cfg.repo_url, str(self.repo_dir)],
-                      capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-        if r.returncode != 0:
-            logger.info("Daily builds: could not clone %s (%s)", self.cfg.repo_url, (r.stderr or "").strip()[:200])
-            return False
-        return True
 
     # -- pick ------------------------------------------------------------------------------
     def _pick(self) -> Optional[dict]:
@@ -294,10 +343,11 @@ class DailyBuilder:
         if not isinstance(idea, dict) or not idea.get("title") or not idea.get("spec"):
             return None
         slug = slugify(idea.get("slug") or idea["title"])
-        taken = {h.get("slug") for h in self.state["history"]} | {
-            p.name for p in self.repo_dir.iterdir() if p.is_dir()}
+        taken = {h.get("slug") for h in self.state["history"]}
+        if self.projects_dir.is_dir():
+            taken |= {p.name for p in self.projects_dir.iterdir()}
         base, n = slug, 2
-        while slug in taken:
+        while slug in taken or self.host.exists(slug):      # never reuse a repo name you already have
             slug, n = f"{base}-{n}", n + 1
         spec = idea["spec"] if isinstance(idea["spec"], str) else "\n".join(map(str, idea["spec"]))
         cur = {"title": str(idea["title"])[:80], "slug": slug, "kind": str(idea.get("kind", ""))[:40],
@@ -305,7 +355,7 @@ class DailyBuilder:
                "status": "picked", "attempts": 0, "date": self._today(), "error": ""}
         self.state["current"], self.state["prefer"] = cur, ""
         self._save()
-        logger.info("Daily builds: picked %r", cur["title"])
+        logger.info("Daily builds: picked %r (repo %s)", cur["title"], slug)
         return cur
 
     # -- build -----------------------------------------------------------------------------
@@ -314,10 +364,12 @@ class DailyBuilder:
             return self._give_up(cur)
         cur["status"], cur["attempts"] = "building", cur["attempts"] + 1
         self._save()                                    # saved first: a shutdown mid-build resumes from here
-        folder = self.repo_dir / cur["slug"]
+        folder = self.folder(cur["slug"])
         folder.mkdir(parents=True, exist_ok=True)
+        if not (folder / ".git").is_dir():
+            self._git(folder, "init", "-q", "-b", "main")
         resume = ""
-        if any(folder.iterdir()):                       # an earlier try was cut short or not accepted
+        if any(p.name != ".git" for p in folder.iterdir()):   # an earlier try was cut short or not accepted
             resume = ("- This folder already holds an earlier, unfinished attempt. Look at it first, keep what works "
                       "and finish the project.\n")
             if cur.get("error"):
@@ -392,19 +444,14 @@ class DailyBuilder:
     # -- verify ----------------------------------------------------------------------------
     def check(self, cur: dict) -> str:
         """VERONICA's own check of Claude Code's work. "" = accepted, else the reason."""
-        folder = self.repo_dir / cur["slug"]
-        r = self._git("status", "--porcelain", "--untracked-files=all")
-        outside = [ln[3:] for ln in (r.stdout or "").splitlines()
-                   if ln[3:].strip('"').replace("\\", "/").split("/")[0] != cur["slug"]]
-        if outside:
-            return f"changed files outside its folder: {', '.join(outside[:3])}"
+        folder = self.folder(cur["slug"])
         if not (folder / "README.md").is_file():
             return "no README"
         tests = list(folder.glob("tests/test_*.py")) + list(folder.glob("test_*.py"))
         if not tests:
             return "no tests"
         for f in folder.rglob("*"):
-            if not f.is_file() or "__pycache__" in f.parts or ".pytest_cache" in f.parts:
+            if not f.is_file() or {"__pycache__", ".pytest_cache", ".git"} & set(f.parts):
                 continue
             if f.stat().st_size > 2_000_000:
                 return f"file too big: {f.name}"
@@ -422,77 +469,87 @@ class DailyBuilder:
             return "tests fail: " + (t.stdout or t.stderr or "")[-200:].strip()
         return ""
 
-    # -- commit / push ---------------------------------------------------------------------
-    def _write_index(self) -> None:
-        rows = [h for h in self.state["history"] if h.get("status") != "failed"]
-        cur = self.state["current"]
-        if cur is not None:
-            rows = rows + [cur]
-        lines = ["# Daily builds", "",
-                 "One small project a day, picked by VERONICA (my voice assistant) and built with Claude Code.",
-                 "Each folder has its own README and tests.", "", "| Date | Project | Kind | What it is |",
-                 "| --- | --- | --- | --- |"]
-        for h in sorted(rows, key=lambda h: h.get("date", ""), reverse=True):
-            lines.append(f"| {h.get('date', '')} | [{h['title']}]({h['slug']}/) | {h.get('kind', '')} | "
-                         f"{h.get('summary', '').replace('|', '/')} |")
-        (self.repo_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
+    # -- commit, create the repo, push -----------------------------------------------------
     def _commit(self, cur: dict) -> str:
-        self._write_index()
-        self._git("add", "--", cur["slug"], "README.md")
-        msg = (f"Add {cur['title']}\n\n{cur['summary']}\n\nPicked by VERONICA, built and tested with Claude Code.\n\n"
+        folder = self.folder(cur["slug"])
+        self._git(folder, "add", "-A")
+        msg = (f"{cur['title']}\n\n{cur['summary']}\n\nPicked by VERONICA, built and tested with Claude Code.\n\n"
                "Co-Authored-By: Claude <noreply@anthropic.com>\n")
         msg_file = self.state_path.parent / "daily_build_commit.txt"
         msg_file.write_text(msg, encoding="utf-8")
-        r = self._git("commit", "-q", "-F", str(msg_file))
+        r = self._git(folder, "commit", "-q", "-F", str(msg_file))
         msg_file.unlink(missing_ok=True)
-        if r.returncode != 0 and "nothing to commit" not in (r.stdout + r.stderr):
-            cur["error"] = (r.stderr or r.stdout)[-200:]
+        if r.returncode != 0 and "nothing to commit" not in _out(r):
+            cur["error"] = _out(r)[-200:]
             self._save()
             return "commit failed"
-        sha = self._git("rev-parse", "--short", "HEAD").stdout.strip()
-        cur.update(status="committed", commit=sha)
+        cur.update(status="committed", commit=self._git(folder, "rev-parse", "--short", "HEAD").stdout.strip())
         self._save()
-        return self._push(cur)
+        return self._finish(cur)
 
-    def _push(self, cur: dict) -> str:
-        pushed = False
-        if self.cfg.push:
-            r = self._git("push", "-q", "origin", "HEAD", timeout=180)
-            pushed = r.returncode == 0
-            if not pushed:
-                logger.info("Daily builds: push failed, will retry (%s)", (r.stderr or "").strip()[:200])
-        entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "date", "commit")}
+    def _publish(self, job: dict) -> bool:
+        """Create the project's new GitHub repo (once) and push to it. True when it's on GitHub."""
+        if not self.cfg.push:
+            return False
+        folder = self.folder(job["slug"])
+        if not job.get("repo_url"):
+            if not job.get("creating"):
+                job["creating"] = True          # saved first: if we die right after creating, we know it's ours
+                self._save()
+                url = self.host.create(job["slug"], job.get("summary", ""))
+            else:
+                url = self.host.url(job["slug"]) or self.host.create(job["slug"], job.get("summary", ""))
+            if not url:
+                return False
+            job["repo_url"] = url
+            self._save()
+            if self._git(folder, "remote", "add", "origin", url).returncode != 0:
+                self._git(folder, "remote", "set-url", "origin", url)
+        r = self._git(folder, "push", "-q", "-u", "origin", "main", timeout=180)
+        if r.returncode != 0:
+            logger.info("Daily builds: push of %s failed, will retry (%s)", job["slug"], _out(r)[:200])
+            return False
+        return True
+
+    def _finish(self, cur: dict) -> str:
+        pushed = self._publish(cur)
+        entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "commit", "repo_url", "creating")}
         entry.update(status="pushed" if pushed else "committed", announced=False,
                      date=self._today())             # the day it was finished (a resumed job counts today)
         self.state["history"].append(entry)
         self.state["current"] = None
         self._save()
-        logger.info("Daily builds: %r %s", cur["title"], "pushed" if pushed else "committed (push later)")
-        if pushed and self.on_done is not None:
-            try:
-                line = self.news()
-                if line:
-                    self.on_done(line)
-            except Exception:  # noqa: BLE001
-                pass
+        logger.info("Daily builds: %r %s", cur["title"], f"is on GitHub: {cur.get('repo_url')}" if pushed
+                    else "committed (GitHub later)")
+        if pushed:
+            self._announce()
         return "pushed" if pushed else "committed"
 
     def _push_pending(self) -> str:
-        pending = [h for h in self.state["history"] if h.get("status") == "committed"]
-        if not pending or not self.cfg.push:
-            return ""
-        if self._git("push", "-q", "origin", "HEAD", timeout=180).returncode != 0:
-            return ""
-        for h in pending:
-            h["status"] = "pushed"
-        self._save()
-        return "pushed earlier work"
+        done = 0
+        for h in self.state["history"]:
+            if h.get("status") == "committed" and self._publish(h):
+                h["status"] = "pushed"
+                done += 1
+                self._save()
+        if done:
+            self._announce()
+        return "pushed earlier work" if done else ""
+
+    def _announce(self) -> None:
+        if self.on_done is None:
+            return
+        try:
+            line = self.news()
+            if line:
+                self.on_done(line)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _give_up(self, cur: dict) -> str:
-        folder = self.repo_dir / cur["slug"]
-        if folder.is_dir() and folder.resolve().parent == self.repo_dir.resolve():
-            shutil.rmtree(folder, ignore_errors=True)    # the unfinished try, never committed
+        folder = self.folder(cur["slug"])
+        if folder.is_dir() and folder.resolve().parent == self.projects_dir.resolve():
+            shutil.rmtree(folder, ignore_errors=True)    # the unfinished try, never on GitHub
         entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "date", "error")}
         entry.update(status="failed", announced=True)
         self.state["history"].append(entry)
@@ -503,32 +560,36 @@ class DailyBuilder:
 
     # -- what she says -----------------------------------------------------------------
     def news(self) -> str:
-        """One line for her greeting about work finished since she last mentioned it (once)."""
-        fresh = [h for h in self.state["history"] if not h.get("announced")]
+        """One line about work that reached GitHub since she last mentioned it (said once)."""
+        fresh = [h for h in self.state["history"] if not h.get("announced") and h.get("status") == "pushed"]
         if not fresh:
             return ""
         for h in fresh:
             h["announced"] = True
         self._save()
+        if len(fresh) == 1:
+            return (f"By the way, I built {fresh[0]['title']} and put it in a new GitHub repo "
+                    f"called {fresh[0]['slug'].replace('-', ' ')}.")
         names = " and ".join(h["title"] for h in fresh[-2:])
-        return f"By the way, I built {names} and added it to your GitHub repo."
+        return f"By the way, I built {names}, each in its own new GitHub repo."
 
     def status(self) -> str:
-        if not self.cfg.repo_url:
-            return "Daily builds aren't set up yet: there's no GitHub repo to build into."
         cur, hist = self.state["current"], [h for h in self.state["history"] if h.get("status") != "failed"]
         bits = []
         if self.state["paused"]:
             bits.append("Daily builds are paused.")
         elif self.skipping_today():
             bits.append("Today is a day off; I'll build again tomorrow.")
+        if self.not_ready:
+            bits.append(f"I can't create repos right now: {self.not_ready}.")
         if cur is not None:
             bits.append(f"I'm working on {cur['title']}, try {max(1, cur['attempts'])}"
                         + (f"; last problem: {cur['error'][:120]}." if cur.get("error") else "."))
         if hist:
             last = hist[-1]
             bits.append(f"The last one was {last['title']} on {last['date']}"
-                        + ("." if last.get("status") == "pushed" else ", committed but not pushed yet."))
+                        + (", in its own GitHub repo." if last.get("status") == "pushed"
+                           else ", saved here but not on GitHub yet."))
             bits.append(f"{len(hist)} project{'s' if len(hist) != 1 else ''} so far.")
         elif cur is None:
             bits.append("Nothing built yet; the first one starts a few minutes after I start up.")

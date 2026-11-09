@@ -1,5 +1,6 @@
-"""Daily builds: pick -> build -> check -> commit -> push, resumed after interruptions.
-Real git (a local bare repo stands in for GitHub) and real pytest; only Claude Code is faked."""
+"""Daily builds: pick -> build -> check -> commit -> new repo -> push, resumed after interruptions.
+Real git (local bare repos stand in for new GitHub repos) and real pytest; only Claude Code and
+the GitHub CLI are faked."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from veronica.automation.daily_builds import DailyBuilder, slugify
+from veronica.automation.daily_builds import DailyBuilder, GitHub, find_leak, slugify
 from veronica.config import DailyBuildsConfig
 from veronica.tools.daily_build_tools import DailyBuildsTool
 
-IDEA = json.dumps({"title": "Word Counter", "slug": "word-counter", "kind": "python tool",
+IDEA = json.dumps({"title": "Word Counter", "slug": "word-counter-cli", "kind": "python tool",
                    "summary": "Counts words in a text file.", "spec": "- count words\n- tests"})
 
 GOOD_FILES = {
@@ -28,11 +29,31 @@ def _git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
 
 
-@pytest.fixture
-def remote(tmp_path):
-    bare = tmp_path / "remote.git"
-    _git("init", "--bare", "-q", str(bare), cwd=tmp_path)
-    return bare
+class FakeGitHub:
+    """Each 'new GitHub repo' is a local bare repo."""
+
+    def __init__(self, root: Path, existing=()):
+        self.root, self.created, self.not_ready = root, [], ""
+        root.mkdir(parents=True, exist_ok=True)
+        for name in existing:
+            _git("init", "--bare", "-q", str(root / name), cwd=root)
+        self.fail_create = False
+
+    def ready(self):
+        return self.not_ready
+
+    def exists(self, name):
+        return (self.root / name).is_dir()
+
+    def url(self, name):
+        return str(self.root / name) if self.exists(name) else ""
+
+    def create(self, name, description):
+        if self.fail_create or self.exists(name):
+            return ""
+        _git("init", "--bare", "-q", str(self.root / name), cwd=self.root)
+        self.created.append((name, description))
+        return str(self.root / name)
 
 
 class FakeClaude:
@@ -41,14 +62,15 @@ class FakeClaude:
     def __init__(self, *plans):
         self.plans = list(plans)          # each: dict of files, or ("fail", text)
         self.prompts: list[str] = []
+        self.names: list[str] = []
 
     def __call__(self, cmd, **kw):
         if cmd[0] != "claude":
             return subprocess.run(cmd, **kw)
         self.prompts.append(kw.get("input", ""))
-        assert "dontAsk" in cmd and "WebFetch" in cmd           # locked down every time
-        assert not {"-c", "--continue", "-r", "--resume"} & set(cmd)   # a new chat every time
-        self.names = getattr(self, "names", []) + [cmd[cmd.index("--name") + 1]]
+        assert "dontAsk" in cmd and "WebFetch" in cmd                     # locked down every time
+        assert not {"-c", "--continue", "-r", "--resume"} & set(cmd)     # a new chat every time
+        self.names.append(cmd[cmd.index("--name") + 1])
         plan = self.plans.pop(0) if self.plans else GOOD_FILES
         if isinstance(plan, tuple):
             return subprocess.CompletedProcess(cmd, 1, json.dumps({"is_error": True, "result": plan[1]}), "")
@@ -59,97 +81,136 @@ class FakeClaude:
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"subtype": "success", "result": "done"}), "")
 
 
-def _builder(tmp_path, remote, claude, **cfg):
-    c = DailyBuildsConfig(enabled=True, repo_url=str(remote), local_dir=str(tmp_path / "clone"), **cfg)
-    b = DailyBuilder(c, tmp_path / "state.json", idea_maker=lambda prompt: IDEA, run=claude,
-                     now=lambda: dt.datetime(2026, 11, 9, 20, 0), battery_ok=lambda p: True)
-    return b
+def _builder(tmp_path, claude, host=None, **cfg):
+    c = DailyBuildsConfig(enabled=True, projects_dir=str(tmp_path / "projects"), **cfg)
+    host = host or FakeGitHub(tmp_path / "github")
+    return DailyBuilder(c, tmp_path / "state.json", idea_maker=lambda prompt: IDEA, host=host, run=claude,
+                        now=lambda: dt.datetime(2026, 11, 9, 20, 0), battery_ok=lambda p: True)
 
 
-def _remote_files(remote, tmp_path):
-    check = tmp_path / "check"
-    _git("clone", "-q", str(remote), str(check), cwd=tmp_path)
+def _on_github(b, name, tmp_path):
+    check = tmp_path / f"check-{name}"
+    _git("clone", "-q", "-b", "main", b.host.url(name), str(check), cwd=tmp_path)
     return check
 
 
-def test_a_project_goes_from_idea_to_the_repo(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude())
+def test_each_project_gets_its_own_new_repo_named_after_it(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
     said = []
     b.on_done = said.append
     assert b.step() == "pushed"
-    pushed = _remote_files(remote, tmp_path)
-    assert (pushed / "word-counter" / "wc.py").is_file()
-    assert "Word Counter" in (pushed / "README.md").read_text(encoding="utf-8")
+    assert b.host.created == [("word-counter-cli", "Counts words in a text file.")]
+    pushed = _on_github(b, "word-counter-cli", tmp_path)
+    assert (pushed / "wc.py").is_file() and (pushed / "tests" / "test_wc.py").is_file()
     log = _git("log", "-1", "--format=%B", cwd=pushed).stdout
-    assert "Add Word Counter" in log and "Claude Code" in log
-    assert said == ["By the way, I built Word Counter and added it to your GitHub repo."]
+    assert log.startswith("Word Counter") and "Claude Code" in log
+    assert said == ["By the way, I built Word Counter and put it in a new GitHub repo called word counter cli."]
     assert b.news() == ""                                  # said once only
     assert b.step() == "done for today"                    # one a day
+    assert b.state["history"][-1]["repo_url"] == b.host.url("word-counter-cli")
 
 
-def test_a_shutdown_mid_build_is_resumed_next_start(tmp_path, remote):
+def test_next_day_is_a_second_new_repo(tmp_path):
+    day = [dt.datetime(2026, 11, 9, 20, 0)]
+    b = _builder(tmp_path, FakeClaude())
+    b._now = lambda: day[0]
+    b.step()
+    day[0] = dt.datetime(2026, 11, 10, 9, 0)
+    assert b.step() == "pushed"
+    assert [n for n, _ in b.host.created] == ["word-counter-cli", "word-counter-cli-2"]
+
+
+def test_never_reuses_a_repo_name_you_already_have(tmp_path):
+    host = FakeGitHub(tmp_path / "github", existing=["word-counter-cli"])
+    b = _builder(tmp_path, FakeClaude(), host=host)
+    assert b.step() == "pushed"
+    assert host.created[0][0] == "word-counter-cli-2"
+    assert _git("ls-remote", host.url("word-counter-cli"), cwd=tmp_path).stdout == ""   # untouched
+
+
+def test_waits_until_github_is_signed_in(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
+    b.host.not_ready = "GitHub isn't signed in yet (run: gh auth login)"
+    assert b.step().startswith("not ready")
+    assert "isn't signed in" in b.status()
+    b.host.not_ready = ""
+    assert b.step() == "pushed"
+
+
+def test_a_shutdown_mid_build_is_resumed_next_start(tmp_path):
     half = {"README.md": "# Word Counter\n"}               # no tests yet, then the laptop went off
-    b = _builder(tmp_path, remote, FakeClaude(half))
+    host = FakeGitHub(tmp_path / "github")
+    b = _builder(tmp_path, FakeClaude(half), host=host)
     assert b.step().startswith("rejected")
-    # Simulate the hard stop: a fresh VERONICA reads the same saved state.
     claude = FakeClaude()
-    b2 = _builder(tmp_path, remote, claude)
-    assert b2.state["current"]["slug"] == "word-counter"
+    b2 = _builder(tmp_path, claude, host=host)               # a fresh VERONICA, same saved state
+    assert b2.state["current"]["slug"] == "word-counter-cli"
     assert b2.step() == "pushed"
     assert "earlier, unfinished attempt" in claude.prompts[0] and "no tests" in claude.prompts[0]
 
 
-def test_killed_while_claude_was_running_resumes(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude())
-    b._ensure_repo()
+def test_killed_while_claude_was_running_resumes(tmp_path):
+    host = FakeGitHub(tmp_path / "github")
+    b = _builder(tmp_path, FakeClaude(), host=host)
     b._pick()
     b.state["current"]["status"], b.state["current"]["attempts"] = "building", 1
     b._save()                                               # what the file says after a power cut
-    claude = FakeClaude()
-    b2 = _builder(tmp_path, remote, claude)
-    assert b2.step() == "pushed" and b2.state["history"][-1]["slug"] == "word-counter"
+    b2 = _builder(tmp_path, FakeClaude(), host=host)
+    assert b2.step() == "pushed" and b2.state["history"][-1]["slug"] == "word-counter-cli"
 
 
-def test_a_claude_code_limit_waits_without_using_up_a_try(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude(("fail", "Claude usage limit reached")))
+def test_died_right_after_creating_the_repo_reuses_it(tmp_path):
+    host = FakeGitHub(tmp_path / "github")
+    b = _builder(tmp_path, FakeClaude(), host=host, push=False)
+    assert b.step() == "committed"                          # built + committed, not on GitHub yet
+    job = b.state["history"][-1]
+    job["creating"] = True                                   # the create call went through, then power cut
+    host.create(job["slug"], "")
+    b.cfg.push = True
+    assert b._push_pending() == "pushed earlier work"
+    assert len(host.created) == 1                            # not a second repo
+    assert (_on_github(b, "word-counter-cli", tmp_path) / "wc.py").is_file()
+
+
+def test_github_down_keeps_the_commit_and_publishes_later(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
+    b.host.fail_create = True
+    assert b.step() == "committed"
+    b.host.fail_create = False
+    assert b.step() == "pushed earlier work"
+    assert b.state["history"][-1]["status"] == "pushed"
+
+
+def test_a_claude_code_limit_waits_without_using_up_a_try(tmp_path):
+    b = _builder(tmp_path, FakeClaude(("fail", "Claude usage limit reached")))
     assert b.step() == "build interrupted"
     assert b.state["current"]["attempts"] == 0
     assert b.step() == "waiting (Claude Code limit)"
 
 
 @pytest.mark.parametrize("bad, why", [
-    ({**GOOD_FILES, "../outside.txt": "x"}, "outside its folder"),
     ({**GOOD_FILES, "notes.txt": "card 4111 1111 1111 1111"}, "secret or personal"),
+    ({**GOOD_FILES, "config.py": 'KEY = "sk-' + "a" * 30 + '"'}, "secret or personal"),
     ({**GOOD_FILES, "tests/test_wc.py": "def test_no():\n    assert False\n"}, "tests fail"),
 ])
-def test_bad_work_is_not_committed(tmp_path, remote, bad, why):
-    b = _builder(tmp_path, remote, FakeClaude(bad))
+def test_bad_work_never_reaches_github(tmp_path, bad, why):
+    b = _builder(tmp_path, FakeClaude(bad))
     result = b.step()
     assert result.startswith("rejected") and why in result
-    assert _git("ls-remote", str(remote), cwd=tmp_path).stdout == ""     # nothing reached GitHub
+    assert b.host.created == []
 
 
-def test_gives_up_after_the_tries_and_cleans_up(tmp_path, remote):
+def test_gives_up_after_the_tries_and_cleans_up(tmp_path):
     broken = {"README.md": "# x\n"}
-    b = _builder(tmp_path, remote, FakeClaude(broken, broken), max_attempts=2)
+    b = _builder(tmp_path, FakeClaude(broken, broken), max_attempts=2)
     b.step(); b.step()
     assert b.step() == "gave up"
-    assert not (b.repo_dir / "word-counter").exists()
-    assert b.state["history"][-1]["status"] == "failed"
+    assert not b.folder("word-counter-cli").exists()
+    assert b.state["history"][-1]["status"] == "failed" and b.host.created == []
 
 
-def test_push_failure_is_retried_later(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude())
-    b._ensure_repo()
-    _git("remote", "set-url", "origin", str(tmp_path / "nowhere.git"), cwd=b.repo_dir)
-    assert b.step() == "committed"
-    _git("remote", "set-url", "origin", str(remote), cwd=b.repo_dir)
-    assert b.step() == "pushed earlier work"
-    assert b.state["history"][-1]["status"] == "pushed"
-
-
-def test_paused_and_battery(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude())
+def test_paused_and_battery(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
     b.pause()
     assert b.step() == "paused"
     b.resume()
@@ -157,15 +218,42 @@ def test_paused_and_battery(tmp_path, remote):
     assert b.step() == "waiting for the charger"
 
 
-def test_no_repo_means_nothing_happens(tmp_path):
-    b = DailyBuilder(DailyBuildsConfig(), tmp_path / "s.json", idea_maker=lambda p: IDEA)
-    assert b.step() == "no repo set"
-    assert "aren't set up" in DailyBuildsTool(b).run(action="status").message
+def test_switched_off_in_config(tmp_path):
+    b = DailyBuilder(DailyBuildsConfig(enabled=False), tmp_path / "s.json", host=FakeGitHub(tmp_path / "g"))
+    assert "switched off" in DailyBuildsTool(b).run(action="status").message
+
+
+def test_real_github_cli_wrapper_reports_missing_sign_in():
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, "", "You are not logged into any GitHub hosts.")
+    assert "gh auth login" in GitHub(run=fake_run).ready()
+
+    def created(cmd, **kw):
+        assert cmd[1:4] == ["repo", "create", "my-tool"] and "--public" in cmd
+        return subprocess.CompletedProcess(cmd, 0, "https://github.com/someone/my-tool\n", "")
+    assert GitHub(run=created).create("my-tool", "x") == "https://github.com/someone/my-tool"
 
 
 def test_slugify():
     assert slugify("Retro Snake: Game!") == "retro-snake-game"
 
+
+def test_every_build_and_retry_is_its_own_named_chat(tmp_path):
+    claude = FakeClaude({"README.md": "# half\n"}, GOOD_FILES)
+    b = _builder(tmp_path, claude)
+    b.step(); b.step()
+    assert claude.names == ["Daily build 2026-11-09: Word Counter (try 1)",
+                            "Daily build 2026-11-09: Word Counter (try 2)"]
+
+
+def test_leak_check_fits_code():
+    assert find_leak('password = getpass.getpass("Password: ")\nif not password:\n    return 0\n') == ""
+    assert find_leak("Bearer tokens expire; the secret: rotate them") == ""
+    assert find_leak('KEY = "sk-' + "a" * 30 + '"') == "an API key"
+    assert find_leak("pay with 4111 1111 1111 1111") == "a card number"
+
+
+# ---------------------------------------------------------------- voice
 
 @pytest.mark.parametrize("text, action, kind", [
     ("what did you build today", "status", ""),
@@ -188,16 +276,6 @@ def test_voice_phrases(text, action, kind):
 def test_other_requests_are_not_daily_builds(text):
     assert not DailyBuildsTool().matches(text)
 
-
-def test_leak_check_fits_code():
-    from veronica.automation.daily_builds import find_leak
-    assert find_leak('password = getpass.getpass("Password: ")\nif not password:\n    return 0\n') == ""
-    assert find_leak("Bearer tokens expire; the secret: rotate them") == ""
-    assert find_leak('KEY = "sk-' + "a" * 30 + '"') == "an API key"
-    assert find_leak("pay with 4111 1111 1111 1111") == "a card number"
-
-
-# ---------------------------------------------------------------- "don't do anything today"
 
 @pytest.mark.parametrize("text", [
     "don't do anything for today", "Don't do anything today.", "do nothing today", "skip today",
@@ -222,7 +300,7 @@ def test_day_off_reaches_her_through_the_full_registry():
     assert reg.find_fast_match("don't do anything for today").name == "daily_builds"
 
 
-def test_day_off_stops_a_running_build_and_carries_on_tomorrow(tmp_path, remote):
+def test_day_off_stops_a_running_build_and_carries_on_tomorrow(tmp_path):
     day = [dt.datetime(2026, 11, 9, 20, 0)]
 
     class StoppedMidway(FakeClaude):
@@ -235,7 +313,7 @@ def test_day_off_stops_a_running_build_and_carries_on_tomorrow(tmp_path, remote)
             return super().__call__(cmd, **kw)
 
     claude = StoppedMidway()
-    b = _builder(tmp_path, remote, claude)
+    b = _builder(tmp_path, claude)
     b._now = lambda: day[0]
     assert b.step() == "stopped by you"
     assert b.state["current"]["attempts"] == 0           # not counted as a failed try
@@ -248,17 +326,9 @@ def test_day_off_stops_a_running_build_and_carries_on_tomorrow(tmp_path, remote)
     assert b.step() == "done for today"
 
 
-def test_day_off_by_voice(tmp_path, remote):
-    b = _builder(tmp_path, remote, FakeClaude())
+def test_day_off_by_voice(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
     msg = DailyBuildsTool(b).run(action="skip_today").message
     assert "tomorrow" in msg and b.step() == "day off"
     DailyBuildsTool(b).run(action="resume")
     assert b.step() == "pushed"                           # "resume daily builds" undoes it
-
-
-def test_every_build_and_retry_is_its_own_named_chat(tmp_path, remote):
-    claude = FakeClaude({"README.md": "# half\n"}, GOOD_FILES)
-    b = _builder(tmp_path, remote, claude)
-    b.step(); b.step()
-    assert claude.names == ["Daily build 2026-11-09: Word Counter (try 1)",
-                            "Daily build 2026-11-09: Word Counter (try 2)"]
