@@ -302,6 +302,7 @@ class DailyBuilder:
             return "waiting for the charger"
         self.not_ready = self.host.ready()
         if self.not_ready:
+            self._tell_blocked(self.not_ready)
             return f"not ready: {self.not_ready}"
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         cur = self.state["current"]
@@ -535,6 +536,19 @@ class DailyBuilder:
         if done:
             self._announce()
         return "pushed earlier work" if done else ""
+
+    def _tell_blocked(self, why: str) -> None:
+        """Waiting silently looked like 'she never started'. Log it every time, say it once a day."""
+        logger.info("Daily builds: waiting - %s", why)
+        key = f"{self._today()}|{why}"
+        if self.state.get("blocked_told") == key or self.on_done is None:
+            return
+        self.state["blocked_told"] = key
+        self._save()
+        try:
+            self.on_done(f"I wanted to start today's project, but {why}. I'll start as soon as that's done.")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _announce(self) -> None:
         if self.on_done is None:

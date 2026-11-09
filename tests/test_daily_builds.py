@@ -332,3 +332,13 @@ def test_day_off_by_voice(tmp_path):
     assert "tomorrow" in msg and b.step() == "day off"
     DailyBuildsTool(b).run(action="resume")
     assert b.step() == "pushed"                           # "resume daily builds" undoes it
+
+
+def test_she_says_why_she_is_waiting_once_a_day(tmp_path):
+    b = _builder(tmp_path, FakeClaude())
+    said = []
+    b.on_done = said.append
+    b.host.not_ready = "GitHub isn't signed in yet (run: gh auth login)"
+    b.step(); b.step()
+    assert said == ["I wanted to start today's project, but GitHub isn't signed in yet (run: gh auth login). "
+                    "I'll start as soon as that's done."]
