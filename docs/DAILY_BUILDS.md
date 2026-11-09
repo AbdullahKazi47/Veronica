@@ -34,6 +34,12 @@ Measured live on 2026-11-09: one project (password strength checker, 4 files, 35
 about 1 minute. The first try was rejected by her own check (a false alarm, since fixed). The
 next start resumed it and pushed it.
 
+## A new Claude Code chat every time
+Every build, and every retry, is a **brand-new Claude Code chat**. She never continues an
+old one, so nothing piles up in one long conversation. A retry reads the folder, not the old chat.
+Each chat is saved under its own name, for example "Daily build 2026-11-10: Word Counter (try 1)",
+so you can open it later from Claude Code's history (`claude --resume` lists them).
+
 ## What Claude Code is allowed to do
 It runs as `claude -p --permission-mode dontAsk` inside the project folder, with only these tools:
 read/write/edit/search **in that folder** and `python -m pytest`. Web access, other folders,

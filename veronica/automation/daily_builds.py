@@ -325,7 +325,7 @@ class DailyBuilder:
         prompt = _BUILD_PROMPT.format(title=cur["title"], kind=cur["kind"], summary=cur["summary"],
                                       spec=cur["spec"], resume=resume)
         logger.info("Daily builds: building %r (try %d)", cur["title"], cur["attempts"])
-        ok, out = self._claude(prompt, folder)
+        ok, out = self._claude(prompt, folder, name=f"Daily build {cur['date']}: {cur['title']} (try {cur['attempts']})")
         if not ok:
             if self.skipping_today() or self.state["paused"]:
                 cur["attempts"] -= 1                    # you stopped it: not a failed try
@@ -349,9 +349,12 @@ class DailyBuilder:
         self._save()
         return self._commit(cur)
 
-    def _claude(self, prompt: str, folder: Path) -> tuple[bool, str]:
-        cmd = [self.cfg.claude_command, "-p", "--permission-mode", "dontAsk", "--output-format", "json",
-               "--no-session-persistence",
+    def _claude(self, prompt: str, folder: Path, name: str = "Daily build") -> tuple[bool, str]:
+        # A brand-new Claude Code chat every time (never --continue / --resume): each build, and
+        # each retry, starts clean and reads the folder instead of a long shared history. The
+        # chat is saved under its own name, so it can be opened later from Claude Code's history.
+        cmd = [self.cfg.claude_command, "-p", "--name", name[:80],
+               "--permission-mode", "dontAsk", "--output-format", "json",
                "--allowedTools", "Read(./**)", "Write(./**)", "Edit(./**)", "Glob(./**)", "Grep(./**)",
                "Bash(python -m pytest:*)", "PowerShell(python -m pytest:*)",
                "--disallowedTools", "WebFetch", "WebSearch", "Agent"]

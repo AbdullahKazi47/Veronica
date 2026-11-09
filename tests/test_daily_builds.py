@@ -47,6 +47,8 @@ class FakeClaude:
             return subprocess.run(cmd, **kw)
         self.prompts.append(kw.get("input", ""))
         assert "dontAsk" in cmd and "WebFetch" in cmd           # locked down every time
+        assert not {"-c", "--continue", "-r", "--resume"} & set(cmd)   # a new chat every time
+        self.names = getattr(self, "names", []) + [cmd[cmd.index("--name") + 1]]
         plan = self.plans.pop(0) if self.plans else GOOD_FILES
         if isinstance(plan, tuple):
             return subprocess.CompletedProcess(cmd, 1, json.dumps({"is_error": True, "result": plan[1]}), "")
@@ -252,3 +254,11 @@ def test_day_off_by_voice(tmp_path, remote):
     assert "tomorrow" in msg and b.step() == "day off"
     DailyBuildsTool(b).run(action="resume")
     assert b.step() == "pushed"                           # "resume daily builds" undoes it
+
+
+def test_every_build_and_retry_is_its_own_named_chat(tmp_path, remote):
+    claude = FakeClaude({"README.md": "# half\n"}, GOOD_FILES)
+    b = _builder(tmp_path, remote, claude)
+    b.step(); b.step()
+    assert claude.names == ["Daily build 2026-11-09: Word Counter (try 1)",
+                            "Daily build 2026-11-09: Word Counter (try 2)"]
