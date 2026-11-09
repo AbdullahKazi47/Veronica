@@ -46,7 +46,8 @@ web pages. So nothing personal or planted by a website can end up in a public re
 | You say | She does |
 | --- | --- |
 | "What did you build?", "How's the daily build going?" | status: current job, last project, how many |
-| "Pause daily builds" / "Resume daily builds" | stops / restarts the background builds |
+| "Don't do anything today", "Skip today", "No builds today", "Take the day off" | stops a build that is running right now (its work is kept, the stop isn't counted as a failed try) and does nothing more today; it carries on by itself tomorrow |
+| "Pause daily builds" / "Resume daily builds" | stops until you say resume / restarts (also cancels a day off) |
 | "Build a game next", "Next project should be a web app" | the next idea will be that kind |
 | "Build something now" | starts the next step right away, in the background |
 

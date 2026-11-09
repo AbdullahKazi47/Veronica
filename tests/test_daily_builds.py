@@ -193,3 +193,62 @@ def test_leak_check_fits_code():
     assert find_leak("Bearer tokens expire; the secret: rotate them") == ""
     assert find_leak('KEY = "sk-' + "a" * 30 + '"') == "an API key"
     assert find_leak("pay with 4111 1111 1111 1111") == "a card number"
+
+
+# ---------------------------------------------------------------- "don't do anything today"
+
+@pytest.mark.parametrize("text", [
+    "don't do anything for today", "Don't do anything today.", "do nothing today", "skip today",
+    "skip today's build", "no builds today", "don't build anything today", "take the day off",
+    "stop building for today", "Veronica, don't do anything else today",
+])
+def test_day_off_phrases(text):
+    tool = DailyBuildsTool()
+    assert tool.matches(text) and tool.extract_arguments(text)["action"] == "skip_today"
+
+
+@pytest.mark.parametrize("text", ["I'm going to take a day off", "not today", "what's on today",
+                                  "That's all for today, Veronica"])
+def test_not_a_day_off(text):
+    assert DailyBuildsTool().extract_arguments(text)["action"] != "skip_today"
+
+
+def test_day_off_reaches_her_through_the_full_registry():
+    from veronica.safety.permissions import PermissionGate
+    from veronica.tools.registry import build_default_registry
+    reg = build_default_registry(PermissionGate())
+    assert reg.find_fast_match("don't do anything for today").name == "daily_builds"
+
+
+def test_day_off_stops_a_running_build_and_carries_on_tomorrow(tmp_path, remote):
+    day = [dt.datetime(2026, 11, 9, 20, 0)]
+
+    class StoppedMidway(FakeClaude):
+        def __call__(self, cmd, **kw):
+            if cmd[0] == "claude" and not self.prompts:
+                self.prompts.append(kw.get("input", ""))
+                b.skip_today()                        # the user said it while Claude was working
+                (Path(kw["cwd"]) / "README.md").write_text("# half done\n", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 1, "", "killed")
+            return super().__call__(cmd, **kw)
+
+    claude = StoppedMidway()
+    b = _builder(tmp_path, remote, claude)
+    b._now = lambda: day[0]
+    assert b.step() == "stopped by you"
+    assert b.state["current"]["attempts"] == 0           # not counted as a failed try
+    assert b.step() == "day off"
+    assert "day off" in b.status()
+    day[0] = dt.datetime(2026, 11, 10, 9, 0)              # next morning
+    assert b.step() == "pushed"
+    assert "earlier, unfinished attempt" in claude.prompts[-1]
+    assert b.state["history"][-1]["date"] == "2026-11-10"
+    assert b.step() == "done for today"
+
+
+def test_day_off_by_voice(tmp_path, remote):
+    b = _builder(tmp_path, remote, FakeClaude())
+    msg = DailyBuildsTool(b).run(action="skip_today").message
+    assert "tomorrow" in msg and b.step() == "day off"
+    DailyBuildsTool(b).run(action="resume")
+    assert b.step() == "pushed"                           # "resume daily builds" undoes it

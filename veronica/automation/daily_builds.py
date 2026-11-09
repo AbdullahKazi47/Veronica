@@ -168,11 +168,30 @@ class DailyBuilder:
     def resume(self) -> None:
         self.state["paused"] = False
         self.state["backoff_until"] = 0.0
+        self.state["skip_date"] = ""
         self._save()
 
     def prefer(self, kind: str) -> None:
         self.state["prefer"] = kind.strip()
         self._save()
+
+    def skip_today(self) -> bool:
+        """'Don't do anything today': no building for the rest of today, and a build that is
+        running right now is stopped. Its work stays in the folder and it carries on tomorrow
+        (the stopped try isn't counted). Returns True when a running build was stopped."""
+        self.state["skip_date"] = self._today()
+        self._save()
+        child = self._child
+        if child is not None and child.poll() is None:
+            try:
+                child.kill()
+                return True
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+    def skipping_today(self) -> bool:
+        return self.state.get("skip_date") == self._today()
 
     # -- background loop ---------------------------------------------------------------
     def start(self) -> None:
@@ -215,6 +234,8 @@ class DailyBuilder:
             return "no repo set"
         if self.state["paused"]:
             return "paused"
+        if self.skipping_today():
+            return "day off"
         if self._clock() < float(self.state.get("backoff_until") or 0):
             return "waiting (Claude Code limit)"
         if not self._battery_ok(int(self.cfg.min_battery_percent)):
@@ -306,6 +327,10 @@ class DailyBuilder:
         logger.info("Daily builds: building %r (try %d)", cur["title"], cur["attempts"])
         ok, out = self._claude(prompt, folder)
         if not ok:
+            if self.skipping_today() or self.state["paused"]:
+                cur["attempts"] -= 1                    # you stopped it: not a failed try
+                self._save()
+                return "stopped by you"
             if _LIMIT_WORDS.search(out or ""):
                 cur["attempts"] -= 1                    # not the project's fault: wait, don't count it
                 self.state["backoff_until"] = self._clock() + 3600
@@ -435,7 +460,8 @@ class DailyBuilder:
             if not pushed:
                 logger.info("Daily builds: push failed, will retry (%s)", (r.stderr or "").strip()[:200])
         entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "date", "commit")}
-        entry.update(status="pushed" if pushed else "committed", announced=False)
+        entry.update(status="pushed" if pushed else "committed", announced=False,
+                     date=self._today())             # the day it was finished (a resumed job counts today)
         self.state["history"].append(entry)
         self.state["current"] = None
         self._save()
@@ -491,6 +517,8 @@ class DailyBuilder:
         bits = []
         if self.state["paused"]:
             bits.append("Daily builds are paused.")
+        elif self.skipping_today():
+            bits.append("Today is a day off; I'll build again tomorrow.")
         if cur is not None:
             bits.append(f"I'm working on {cur['title']}, try {max(1, cur['attempts'])}"
                         + (f"; last problem: {cur['error'][:120]}." if cur.get("error") else "."))

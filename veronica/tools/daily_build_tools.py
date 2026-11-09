@@ -13,6 +13,11 @@ _PAUSE = re.compile(rf"\b(?:pause|stop|halt|turn\s+off|disable)\s+(?:the\s+|your
                     rf"building\s+projects|(?:daily\s+)?github\s+(?:builds?|projects?))\b", re.I)
 _RESUME = re.compile(rf"\b(?:resume|restart|start|turn\s+on|enable|continue)\s+(?:the\s+|your\s+|my\s+)?"
                      rf"(?:daily\s+builds?|building\s+projects|(?:daily\s+)?github\s+(?:builds?|projects?))\b", re.I)
+_SKIP = re.compile(
+    r"\b(?:don'?t|do\s+not)\s+(?:do|build|make|start)\s+anything\s+(?:for\s+|else\s+)?today\b|"
+    r"\bdo\s+nothing\s+(?:for\s+)?today\b|\bskip\s+(?:today'?s\s+(?:daily\s+)?(?:build|project)|today|"
+    r"the\s+(?:daily\s+)?build\s+today)\b|\bno\s+(?:more\s+)?(?:daily\s+)?(?:builds?|projects?|building)\s+today\b|"
+    r"^\s*(?:(?:you\s+can|just)\s+)?take\s+(?:the|a)\s+day\s+off\b|\bstop\s+(?:building\s+)?for\s+(?:today|the\s+day)\b", re.I)
 _NOW = re.compile(r"\b(?:build\s+(?:something|a\s+project|one)\s+now|start\s+today'?s\s+build|"
                   r"do\s+(?:the|today'?s)\s+(?:daily\s+)?build\s+now)\b", re.I)
 _PREFER = re.compile(r"\b(?:build\s+(?:me\s+)?(?:an?\s+)?(?P<a>[\w\s-]{2,40}?)\s+next|"
@@ -27,10 +32,10 @@ class DailyBuildsTool(Tool):
     name = "daily_builds"
     description = ("Daily builds: one small project a day, picked by VERONICA and built by Claude Code into the "
                    "user's GitHub portfolio repo, in the background. Actions: status ('what did you build?'), "
-                   "pause, resume, now ('build something now'), prefer (the kind of project to build next).")
+                   "skip_today ('don't do anything today': stop now, carry on tomorrow), pause, resume, now ('build something now'), prefer (the kind of project to build next).")
     permission = PermissionLevel.SAFE
     parameters = {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["status", "pause", "resume", "now", "prefer"]},
+        "action": {"type": "string", "enum": ["status", "skip_today", "pause", "resume", "now", "prefer"]},
         "kind": {"type": "string", "description": "for prefer: e.g. 'game', 'web app', 'python tool'"}},
         "required": ["action"]}
 
@@ -39,6 +44,8 @@ class DailyBuildsTool(Tool):
 
     def _action(self, text: str) -> tuple[str, str]:
         t = text or ""
+        if _SKIP.search(t):
+            return "skip_today", ""
         if _PAUSE.search(t):
             return "pause", ""
         if _RESUME.search(t):
@@ -64,6 +71,10 @@ class DailyBuildsTool(Tool):
         if b is None or not b.cfg.repo_url:
             return ToolResult.ok("Daily builds aren't set up yet. They need a GitHub repo to build into, "
                                  "set as daily_builds.repo_url in the config.")
+        if action == "skip_today":
+            stopped = b.skip_today()
+            return ToolResult.ok(("Okay, I've stopped the build I was working on. " if stopped else "Okay. ")
+                                 + "Nothing more today; I'll pick it up again tomorrow.")
         if action == "pause":
             b.pause()
             return ToolResult.ok("Okay, daily builds are paused. Say 'resume daily builds' to start again.")
