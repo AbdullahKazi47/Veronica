@@ -349,6 +349,10 @@ class Orchestrator:
             from veronica.core.grounding import check_reply
             # What her tools returned this turn (a page she read) counts as a source too.
             response.text = check_reply(response.text, grounding, extra=getattr(self._turn, "tool_text", []))
+        done = getattr(self._turn, "action", None) or ((response.tool_used, {}) if response.tool_used else None)
+        if done and done[0]:
+            self._last_action = done
+            self._recent_tools = ([done[0]] + [t for t in getattr(self, "_recent_tools", []) if t != done[0]])[:4]
         u = self.understanding()
         if u is not None:
             action = getattr(self._turn, "action", None) or (response.tool_used, {})
@@ -389,6 +393,10 @@ class Orchestrator:
         text = text.strip()
         if not text:
             return OrchestratorResponse(text="I didn't catch anything.")
+
+        understood = self._interpret_turn(text, session)
+        if understood is not None:
+            return understood
 
         # ---- 0. agentic path (plan → execute → verify) -------------------------
         # Decided BEFORE the compound split on purpose: a goal like "plan and run a
@@ -433,6 +441,10 @@ class Orchestrator:
         text = text.strip()
         if not text:
             return OrchestratorResponse(text="I didn't catch anything.")
+
+        understood = self._interpret_turn(text, session, stream=True)
+        if understood is not None:
+            return understood
 
         # Agentic / compound / fast-path: identical to handle(); not model streams.
         if self._is_agentic_request(text):
@@ -751,6 +763,169 @@ class Orchestrator:
         response = self._handle_via_llm(text, session)
         self._mem0_observe(text, response)
         return response
+
+    # -- meaning first (core/interpreter.py) -------------------------------------------------
+    def _interpreter(self):
+        """A fast model reads every sentence with the conversation before any pattern decides.
+        On with `understanding.interpreter`; None when off or it couldn't be built."""
+        cfg = getattr(self.config, "understanding", None)
+        if cfg is None or not getattr(cfg, "enabled", False) or not getattr(cfg, "interpreter", False):
+            return None
+        if getattr(self, "_interp", None) is None:
+            try:
+                from veronica.core.interpreter import Interpreter
+                self._interp = Interpreter(self._interpreter_chat, self.tools,
+                                           max_tools=int(getattr(cfg, "interpreter_max_tools", 9)))
+            except Exception:  # noqa: BLE001
+                logger.exception("Couldn't build the interpreter; patterns and examples only.")
+                self._interp = False
+        return self._interp or None
+
+    def _interpreter_models(self) -> list[tuple[str, object]]:
+        """The interpreter's own short ladder: (model id, provider) for `understanding.interpreter_models`,
+        built from the same entries as the main ladder but with their own providers, a short timeout
+        and a small-answer setting. Their health is tracked separately on purpose: a model the main
+        path set aside for rejecting her full tool list (Groq, always) answers this small prompt fine."""
+        if getattr(self, "_interp_models", None) is None:
+            cfg = self.config.understanding
+            entries = {m.model_id: m for m in (getattr(self.config.routing, "models", None) or [])
+                       if hasattr(m, "model_id")}
+            built = []
+            from veronica.llm.router import build_provider_for_model
+            for mid in (getattr(cfg, "interpreter_models", None) or []):
+                entry = entries.get(mid)
+                if entry is None or not getattr(entry, "enabled", True):
+                    continue
+                key = self.config.secret(entry.api_key_env or self.config.llm.api_key_env)
+                if entry.provider == "openai_compatible" and not key:
+                    continue
+                try:
+                    provider = build_provider_for_model(entry.provider, mid, base_url=entry.base_url or self.config.llm.base_url,
+                                                        api_key=key, timeout_s=int(getattr(cfg, "interpreter_timeout_s", 6)))
+                    provider.extra_payload = dict(getattr(cfg, "interpreter_payload", None) or {})
+                    provider.fail_fast = True       # busy -> the next model at once, never a wait
+                    built.append((mid, provider))
+                except Exception:  # noqa: BLE001
+                    logger.exception("Couldn't set up interpreter model %s.", mid)
+            self._interp_models = built
+            self._interp_down = {}
+        return self._interp_models
+
+    def _interpreter_chat(self, system: str, user: str) -> tuple[str, str]:
+        """One short, tool-less call on the fastest model that is up. A model that fails is left
+        alone for a minute, so an outage costs one slow turn, not every turn."""
+        import time as _time
+        messages = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
+        models = self._interpreter_models()
+        if not models:
+            response = self.llm.chat(messages, temperature=0.0)
+            if not getattr(response, "ok", True) or not response.content:
+                raise RuntimeError("the model did not answer")
+            return response.content, str(getattr(self.llm, "model", ""))
+        # Take turns: each model has its own per-minute allowance, so alternating doubles it.
+        self._interp_next = (getattr(self, "_interp_next", -1) + 1) % len(models)
+        order = models[self._interp_next:] + models[:self._interp_next]
+        now = _time.monotonic()
+        tried = 0
+        for mid, provider in order:
+            if now < self._interp_down.get(mid, 0.0):
+                continue
+            tried += 1
+            response = provider.chat(messages, temperature=0.0)
+            if getattr(response, "ok", True) and response.content:
+                return response.content, mid
+            self._interp_down[mid] = _time.monotonic() + float(getattr(self.config.understanding, "interpreter_retry_s", 20))
+            if tried >= 2:
+                break                                # two failures in one turn is enough waiting
+        raise RuntimeError("no interpreter model is up")
+
+    def _interpret_turn(self, text: str, session: SessionContext, *, stream: bool = False) -> Optional[OrchestratorResponse]:
+        """Meaning first. Returns the reply, or None to let the older path handle the turn:
+        an exact command the patterns and the examples agree on (no model needed), an explicit
+        'plan this' request for the planner, or no model reachable."""
+        interpreter = self._interpreter()
+        if interpreter is None:
+            return None
+        lower = text.lower()
+        if self.planner is not None and any(t in lower for t in self._AGENTIC_TRIGGERS):
+            return None
+        router = self._intent_router()
+        try:
+            regex_tool, used = self.tools.fast_match(text)
+            ranked = router.matcher.rank(text, top=8) if router is not None else []
+        except Exception:  # noqa: BLE001
+            logger.exception("Couldn't gather candidates; older path.")
+            return None
+        parts = split_compound_command(text)
+        if regex_tool is not None and ranked and len(parts) == 1:
+            from veronica.core.intents import HIGH
+            if ranked[0][0].tool == regex_tool.name and ranked[0][1] >= HIGH:
+                return None                      # said plainly, and both ways of reading it agree: just do it
+        part_tools: list[str] = []
+        for tool in self.tools.all():            # every pattern that fires is evidence, not only the first
+            if tool is regex_tool or len(part_tools) >= 4:
+                continue
+            try:
+                if tool.matches(text):
+                    part_tools.append(tool.name)
+            except Exception:  # noqa: BLE001
+                pass
+        if len(parts) > 1:                       # several requests in one breath: candidates for each part
+            for part in parts[:5]:
+                try:
+                    hit, _ = self.tools.fast_match(part)
+                    if hit is not None:
+                        part_tools.append(hit.name)
+                    if router is not None:
+                        part_tools += [i.tool for i, _s in router.matcher.rank(part, top=2) if i.tool]
+                except Exception:  # noqa: BLE001
+                    pass
+        regex_args = None
+        if regex_tool is not None:
+            try:
+                regex_args = regex_tool.extract_arguments(used)
+            except Exception:  # noqa: BLE001
+                regex_args = None
+        notes: list[str] = []
+        u = self.understanding()
+        if u is not None:
+            try:
+                notes = u.blocks(text)
+            except Exception:  # noqa: BLE001
+                notes = []
+        result = interpreter.interpret(
+            text, history=session.short_term.as_messages(), ranked=ranked, regex_tool=regex_tool, regex_args=regex_args,
+            recent_tools=list(getattr(self, "_recent_tools", [])), last_action=getattr(self, "_last_action", None),
+            notes=notes, part_tools=part_tools)
+        if result is None:
+            return None                          # no model could say: patterns and examples, as before
+        session.turn_count += 1
+        session.short_term.add("user", text)
+        if result.kind == "ask":
+            session.short_term.add("assistant", result.question)
+            return OrchestratorResponse(text=result.question)
+        if result.kind in ("chat", "other"):
+            if result.kind == "other":
+                from veronica.core.understanding import is_multistep_task
+                self._turn.task = bool(u is not None and is_multistep_task(text))
+            response = self._handle_via_llm(text, session, stream=stream)
+            self._mem0_observe(text, response)
+            return response
+        from veronica.core.flair import dress
+        replies: list[str] = []
+        results: list[dict] = []
+        for step in result.steps:
+            if self.tool_event_callback:
+                self.tool_event_callback(f"understood {step.tool} {step.args or ''}".strip())
+            outcome = self.tools.dispatch(step.tool, **step.args)      # the PermissionGate is in here
+            self._turn.action = (step.tool, dict(step.args))
+            session.last_tool_used = step.tool
+            results.append(outcome.__dict__)
+            if outcome.message:
+                replies.append(dress(outcome.message, ok=outcome.success))
+        reply = " ".join(r if r.rstrip().endswith((".", "!", "?")) else r.rstrip() + "." for r in replies) or "Done."
+        session.short_term.add("assistant", reply)
+        return OrchestratorResponse(text=reply, tool_used=result.steps[-1].tool, tool_results=results)
 
     def _intent_router(self):
         """core/intents.py — on with `understanding.enabled` (and `understanding.intents`)."""

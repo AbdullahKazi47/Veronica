@@ -333,6 +333,7 @@ Logs: `data/veronica.log`.
 | Fix-it mode (diagnose, plan, ask, verify) | [`docs/FIX_IT_MODE.md`](docs/FIX_IT_MODE.md) |
 | World watch: "what's happening?", rain, volcanoes, outbreaks, sanctioned ships | [`docs/WORLD_WATCH.md`](docs/WORLD_WATCH.md) |
 | Daily builds: one real project a day, each in a new GitHub repo named after it, resumed after shutdowns | [`docs/DAILY_BUILDS.md`](docs/DAILY_BUILDS.md) |
+| Meaning first: a model reads each sentence with the conversation before any pattern decides (audit + results) | [`docs/UNDERSTANDING_AUDIT.md`](docs/UNDERSTANDING_AUDIT.md) |
 | Wake word and VAD · barge-in | [`docs/PHASE_11C_WAKE_VAD.md`](docs/PHASE_11C_WAKE_VAD.md) · [`docs/PHASE_11D_BARGE_IN.md`](docs/PHASE_11D_BARGE_IN.md) |
 | Voice runtime | [`docs/PHASE_11E_VOICE_ONLY_RUNTIME.md`](docs/PHASE_11E_VOICE_ONLY_RUNTIME.md) |
 | Third-party code and licenses | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |

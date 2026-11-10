@@ -664,6 +664,14 @@ proactive:
 # Obsidian"), lessons from "No, I meant ...", a style note (late, rushed, "why", a game),
 # Wikipedia sources for factual questions with figures checked, and multi-step tasks.
 understanding:
+  # Meaning first (core/interpreter.py): a fast model reads each sentence WITH the conversation before
+  # any keyword pattern decides. Follow-ups ("and in Delhi?"), "it"/"again", several requests in one
+  # breath, slang/Hinglish, and words used in another sense ("I can't sleep") are understood, not
+  # matched. Exact commands that both the patterns and the examples agree on still run instantly,
+  # and with no model reachable everything works as before. Measured 2026-11-10: ~1.5 s per call.
+  interpreter: true
+  interpreter_models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]   # Groq: the only ones fast enough (Gemini 6-8 s)
+  interpreter_payload: {reasoning_effort: low}
   enabled: true
   ground_facts: true
   intents: true        # understand the meaning, not the exact words (core/intents.py, docs/UNDERSTANDING.md)

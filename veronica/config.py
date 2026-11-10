@@ -340,6 +340,15 @@ class UnderstandingConfig:
     enabled: bool = False
     ground_facts: bool = True        # look factual questions up (Wikipedia) and check figures
     intents: bool = True             # core/intents.py: same meaning, same action, however it's worded
+    # core/interpreter.py: a fast model reads each sentence WITH the conversation before any keyword
+    # pattern decides (follow-ups, "it"/"again", several requests in one breath, words used in another
+    # sense). Patterns still act alone for exact commands and when no model is reachable.
+    interpreter: bool = False
+    interpreter_models: list = field(default_factory=list)   # model ids to try, fastest first; [] = llm.chat
+    interpreter_max_tools: int = 9   # how many candidate tools the model is shown (prompt size = speed + limits)
+    interpreter_timeout_s: int = 4   # past this the turn falls back to patterns and examples
+    interpreter_retry_s: float = 20  # a model that failed (usually its per-minute limit) is left alone this long
+    interpreter_payload: dict = field(default_factory=dict)   # extra request fields, e.g. {reasoning_effort: low}
 
 
 @dataclass

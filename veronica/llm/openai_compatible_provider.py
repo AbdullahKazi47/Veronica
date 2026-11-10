@@ -32,19 +32,20 @@ def _is_quota(body: str) -> bool:
     return "quota" in b or "resource_exhausted" in b or "perday" in b or "per day" in b
 
 
-def _post_with_retry(requests, url, *, sleep=None, **kw):
+def _post_with_retry(requests, url, *, sleep=None, once=False, **kw):
     """POST, retrying the brief overload errors. Returns the final response (raises on
-    connection failure after the retries)."""
+    connection failure after the retries). `once`: no retries (a caller with its own next model)."""
     import time as _time
     sleep = sleep or _time.sleep
     resp = None
-    for attempt, delay in enumerate((0.0,) + _RETRY_DELAYS_S):
+    delays = () if once else _RETRY_DELAYS_S
+    for attempt, delay in enumerate((0.0,) + delays):
         if delay:
             sleep(delay)
         try:
             resp = requests.post(url, **kw)
         except requests.ConnectionError:
-            if attempt == len(_RETRY_DELAYS_S):
+            if attempt == len(delays):
                 raise
             continue
         if resp.status_code not in _RETRY_STATUS:
@@ -150,13 +151,14 @@ class OpenAICompatibleProvider(LLMProvider):
         }
         if tools:
             payload["tools"] = tools
+        payload.update(getattr(self, "extra_payload", None) or {})   # e.g. the interpreter's short, low-effort answers
 
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         try:
             resp = _post_with_retry(
                 requests, f"{self.base_url}/chat/completions", json=payload, headers=headers,
-                timeout=self.timeout_s,
+                timeout=self.timeout_s, once=bool(getattr(self, "fail_fast", False)),
             )
             if resp.status_code >= 400:  # keep the provider's own explanation in the log
                 logger.warning("Cloud LLM %s error body: %s", resp.status_code, resp.text[:300])

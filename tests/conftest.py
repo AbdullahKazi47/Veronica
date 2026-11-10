@@ -23,3 +23,13 @@ def _no_real_desktop(monkeypatch, request):
     if getattr(request.module, "FAKE_DESKTOP_TESTS", False):      # the module drives Desktop with fakes itself
         return
     monkeypatch.setattr("veronica.vision.desktop_state.Desktop.describe", lambda self, *a, **k: "")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_interpreter_models(monkeypatch, request):
+    """The interpreter (core/interpreter.py) calls real fast models listed in config.yaml. A test
+    that builds the app from the real config must never reach them: the interpreter's own model
+    ladder is empty in tests, so it uses the test's (fake) llm.chat, or a test supplies its own."""
+    if getattr(request.module, "REAL_INTERPRETER_TESTS", False):
+        return
+    monkeypatch.setattr("veronica.core.orchestrator.Orchestrator._interpreter_models", lambda self: [])
