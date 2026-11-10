@@ -68,6 +68,9 @@ web pages. So nothing personal or planted by a website can end up in a public re
 2. **You** sign in once: run `gh auth login --web --git-protocol https`, then choose GitHub.com
    and confirm in the browser. VERONICA never sees your password or token. Until you sign in she
    waits, and "what did you build?" tells you she isn't signed in.
+   `Start VERONICA.bat` starts her with the normal Python launcher, not the `python` shortcut in
+   `WindowsApps`. That shortcut runs Python as a packaged app, which can't see the GitHub sign-in:
+   found on 2026-11-10, when she kept saying "not signed in" right after a successful sign-in.
 3. `config/config.yaml`:
 ```yaml
 daily_builds:
