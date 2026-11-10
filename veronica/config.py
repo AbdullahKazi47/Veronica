@@ -310,6 +310,16 @@ class DailyBuildsConfig:
     min_battery_percent: int = 30             # on battery below this, wait for the charger
     claude_command: str = "claude"
     model: str = ""                           # Claude Code model alias; "" = its default
+    # Who writes the code. Changed by voice ("use Antigravity instead of Claude Code"); the choice is
+    # kept in data/daily_builds.json. builders = [] uses automation/builders.py DEFAULT_BUILDERS
+    # (Claude Code, Antigravity, VERONICA's own model); add any command-line coding agent here as
+    # {name, kind: command, command, args: [..., "{task}"], aliases: [...]}.
+    builder: str = "Claude Code"
+    builders: list = field(default_factory=list)
+    fallback: bool = True                     # the chosen one can't be used (limit, signed out) -> try the others
+    window_open_wait_s: float = 20            # kind "window": let the app open before handing over the task
+    window_poll_s: float = 20
+    window_quiet_s: float = 60                # files unchanged this long = its agent has finished
     push: bool = True
 
 

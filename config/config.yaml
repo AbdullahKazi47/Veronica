@@ -717,6 +717,9 @@ remote:
 daily_builds:
   enabled: true
   visibility: public              # the new repos
+  builder: Claude Code            # who writes the code; change it by voice ("use Antigravity instead of
+                                  # Claude Code", "build them yourself"). Others: Antigravity, my own model.
+  fallback: true                  # chosen builder hit its limit / is signed out -> she uses the next one and says so
   topics: ["python tool", "web app", "game", "cybersecurity learning (defensive)"]
   per_day: 1
   max_attempts: 3                 # tries per project before she moves on

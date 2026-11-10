@@ -39,6 +39,45 @@ Every step is saved to `data/daily_builds.json` **before** it starts:
 Measured live on 2026-11-09: one project (password strength checker, 4 files, 356 lines) took
 about 1 minute to build and check.
 
+## Who writes the code (you choose, by voice)
+Nothing is wired to one tool. The builders are a list, found on this PC when she starts:
+
+| Builder | How it works | Needs |
+| --- | --- | --- |
+| **Claude Code** (default) | silent, in the background, locked to the project folder | your Claude plan |
+| **Antigravity** | she opens the project folder in Antigravity, hands its agent the task, and watches the folder until the work is done. You see its window. Antigravity's own settings decide what its agent may do | you signed in to Antigravity |
+| **Her own model** | her own AI models write the files. No coding tool or subscription at all | nothing extra |
+
+Say it in your own words, in English or Hinglish:
+- "Claude Code's subscription ended, use Antigravity instead of Claude Code."
+- "Stop using Claude Code and build with Antigravity." / "Claude Code khatam ho gaya, Antigravity use karo."
+- "Build the projects on your own." / "Go back to Claude Code for the builds."
+- "Which coding tools can you build with?"
+
+With one tool named, that's the one. With two named, she works out which one you're moving away from
+("instead of…", "…ended", "stop using…"). If it's still unclear her model decides, and if that's unclear
+too she asks you "Which one: A or B?". She never guesses. The choice is remembered across restarts.
+
+**Automatic fallback.** If the chosen builder can't be used (usage limit, signed out, not installed), she
+sets it aside for a while, builds with the next one, and tells you: "Claude Code hit its usage limit, so
+I used my own model." If nothing can build, she says why and tries again in 30 minutes. That doesn't use
+up one of the project's tries.
+
+**Adding another coding tool** needs no code, only an entry in `config/config.yaml`:
+```yaml
+daily_builds:
+  builders:
+    - {name: Claude Code, kind: claude, command: claude, aliases: [claude code, claude, cloud code]}
+    - {name: OpenCode, kind: command, command: opencode, args: [run, "{task}"], aliases: [opencode, open code]}
+    - {name: my own model, kind: self, aliases: [yourself, your own brain]}
+```
+
+Tested live on 2026-11-10:
+- Her own model built a project end to end. The first attempt failed her tests and the second passed. It took 42 s.
+- Antigravity opened and took the task, but its log said "You are not logged into Antigravity", so
+  its agent wrote nothing. She detects that from the log and says it. A full Antigravity build has
+  **not** been verified yet; that needs you to sign in to Antigravity first.
+
 ## A new Claude Code chat every time
 Every build, and every retry, is a **brand-new Claude Code chat**. She never continues an
 old one, so nothing piles up in one long conversation. A retry reads the folder, not the old chat.
@@ -86,5 +125,6 @@ uses. That's about $0.4–2 of usage per project at API prices. Picking the idea
 
 ## Files
 - `veronica/automation/daily_builds.py`: the job, the checks, the GitHub CLI wrapper, resume logic
+- `veronica/automation/builders.py`: the list of builders, and working out which one you mean
 - `veronica/tools/daily_build_tools.py`: the voice controls
 - `tests/test_daily_builds.py`: real git and pytest; fake Claude Code and a fake GitHub made of local repos

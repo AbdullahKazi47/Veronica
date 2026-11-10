@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from veronica.automation.builders import (BRIEF_FILE, SELF_FORMAT, TASK_LINE, Builder, by_name, choose,
+                                          load_builders, write_files_from_reply)
 from veronica.logging_setup import get_logger
 
 logger = get_logger("automation.daily_builds")
@@ -74,6 +76,8 @@ Requirements:
 Run `python -m pytest -q` and fix anything that fails. Do not run git. Finish with a one-line summary of what you built."""
 
 _LIMIT_WORDS = re.compile(r"usage limit|rate limit|limit reached|overloaded|credit balance|quota", re.I)
+_NO_ACCESS = re.compile(r"not (?:logged|signed) in|isn'?t signed in|log ?in required|/login|subscription|"
+                        r"unauthori[sz]ed|invalid api key|not installed|no credentials", re.I)
 _SLUG = re.compile(r"[^a-z0-9-]+")
 
 
@@ -187,6 +191,7 @@ class DailyBuilder:
         self._child: Optional[subprocess.Popen] = None
         self.on_done: Optional[Callable[[str], None]] = None   # she says it as soon as it is on GitHub
         self.not_ready = ""                                    # why she can't create repos right now
+        self.builders: list[Builder] = load_builders(config)   # who can write the code (found at run time)
         self.state = self._load()
 
     # -- state ---------------------------------------------------------------------------
@@ -199,6 +204,8 @@ class DailyBuilder:
         data.setdefault("current", None)
         data.setdefault("history", [])
         data.setdefault("backoff_until", 0.0)
+        data.setdefault("builder", "")              # the user's choice; "" = the config default
+        data.setdefault("parked", {})               # builder name -> can't be used until (clock)
         return data
 
     def _save(self) -> None:
@@ -236,6 +243,41 @@ class DailyBuilder:
     def prefer(self, kind: str) -> None:
         self.state["prefer"] = kind.strip()
         self._save()
+
+    # -- who builds ------------------------------------------------------------------------
+    def chosen_builder(self) -> Optional[Builder]:
+        return (by_name(self.builders, self.state.get("builder") or "")
+                or by_name(self.builders, getattr(self.cfg, "builder", "") or "")
+                or (self.builders[0] if self.builders else None))
+
+    def use_builder(self, text: str) -> tuple[Optional[Builder], list[Builder]]:
+        """Switch builder from the user's own words. Returns (the new builder or None, those named)."""
+        builder, named = choose(text, self.builders, ask_model=self.idea_maker)
+        if builder is not None:
+            self.state["builder"] = builder.name
+            self.state["parked"].pop(builder.name, None)     # the user says it works again: try it
+            self.state["backoff_until"] = 0.0
+            self._save()
+        return builder, named
+
+    def why_unusable(self, b: Builder) -> str:
+        """"" when this builder can be tried now, else the reason in plain words."""
+        if not b.installed(has_model=self.idea_maker is not None):
+            return "isn't installed on this PC" if b.kind != "self" else "has no AI model to use"
+        parked = self.state["parked"].get(b.name) or {}
+        if self._clock() < float(parked.get("until", 0)):
+            return parked.get("why", "can't be used right now")
+        return ""
+
+    def _park(self, b: Builder, why: str, seconds: float) -> None:
+        self.state["parked"][b.name] = {"until": self._clock() + seconds, "why": why}
+        self._save()
+
+    def _build_order(self) -> list[Builder]:
+        first = self.chosen_builder()
+        rest = [b for b in self.builders if b is not first]
+        rest.sort(key=lambda b: b.kind == "window")          # apps that take over a window come last
+        return ([first] if first else []) + (rest if getattr(self.cfg, "fallback", True) else [])
 
     def skip_today(self) -> bool:
         """'Don't do anything today': no building for the rest of today, and a build that is
@@ -377,21 +419,39 @@ class DailyBuilder:
                 resume += f"- Last time it was not accepted because: {cur['error'][:300]}\n"
         prompt = _BUILD_PROMPT.format(title=cur["title"], kind=cur["kind"], summary=cur["summary"],
                                       spec=cur["spec"], resume=resume)
-        logger.info("Daily builds: building %r (try %d)", cur["title"], cur["attempts"])
-        ok, out = self._claude(prompt, folder, name=f"Daily build {cur['date']}: {cur['title']} (try {cur['attempts']})")
-        if not ok:
+        ok, out, why_not = False, "", []
+        for b in self._build_order():
+            reason = self.why_unusable(b)
+            if reason:
+                why_not.append(f"{b.name} {reason}")
+                continue
+            logger.info("Daily builds: building %r with %s (try %d)", cur["title"], b.name, cur["attempts"])
+            ok, out, trouble = self._run_builder(b, prompt, folder, cur)
+            if ok:
+                cur["built_by"] = b.name
+                break
             if self.skipping_today() or self.state["paused"]:
                 cur["attempts"] -= 1                    # you stopped it: not a failed try
                 self._save()
                 return "stopped by you"
-            if _LIMIT_WORDS.search(out or ""):
-                cur["attempts"] -= 1                    # not the project's fault: wait, don't count it
-                self.state["backoff_until"] = self._clock() + 3600
-                cur["error"] = "Claude Code limit; waiting an hour"
-            else:
-                cur["error"] = (out or "Claude Code stopped")[-300:]
+            if trouble:                                 # limit / signed out / missing: not the project's fault
+                self._park(b, trouble, 3600 if "limit" in trouble else 1800)
+                why_not.append(f"{b.name} {trouble}")
+                logger.info("Daily builds: %s %s; trying the next builder", b.name, trouble)
+                continue
+            cur["error"] = (out or f"{b.name} stopped")[-300:]
             self._save()
             return "build interrupted"
+        if not ok:
+            cur["attempts"] -= 1                        # nobody could build: wait, don't use up a try
+            cur["error"] = "; ".join(why_not)[:300]
+            self.state["backoff_until"] = self._clock() + 1800
+            self._save()
+            self._tell_blocked("nothing can build it right now: " + "; ".join(why_not))
+            return "no builder available"
+        first = self.chosen_builder()
+        if first is not None and cur["built_by"] != first.name and why_not:
+            cur["note"] = f"{why_not[0]}, so I used {cur['built_by']}"
         problem = self.check(cur)
         if problem:
             cur["error"] = problem
@@ -402,35 +462,124 @@ class DailyBuilder:
         self._save()
         return self._commit(cur)
 
-    def _claude(self, prompt: str, folder: Path, name: str = "Daily build") -> tuple[bool, str]:
+    def _run_builder(self, b: Builder, prompt: str, folder: Path, cur: dict) -> tuple[bool, str, str]:
+        """(built, what it said, trouble). `trouble` is set when the builder itself can't be used
+        right now (limit, signed out, missing): the next builder is tried and no try is used up."""
+        name = f"Daily build {cur['date']}: {cur['title']} (try {cur['attempts']})"
+        if b.kind == "claude":
+            ok, out = self._claude(prompt, folder, name=name, command=b.command or self.cfg.claude_command)
+        elif b.kind == "self":
+            ok, out = self._build_myself(prompt, folder)
+        elif b.kind == "window":
+            ok, out = self._window(b, prompt, folder)
+        else:
+            ok, out = self._command(b, prompt, folder)
+        (folder / BRIEF_FILE).unlink(missing_ok=True)
+        if ok:
+            return True, out, ""
+        if _LIMIT_WORDS.search(out or ""):
+            return False, out, "hit its usage limit"
+        if _NO_ACCESS.search(out or ""):
+            return False, out, "isn't signed in or its subscription has ended"
+        return False, out, ""
+
+    def _spawn(self, cmd: list[str], folder: Path, stdin_text: Optional[str] = None,
+               timeout: Optional[float] = None) -> tuple[int, str, str]:
+        """Run a builder's command; the child is remembered so 'go to sleep' / 'not today' can stop it."""
+        timeout = float(timeout or self.cfg.build_timeout_s)
+        if self._run is not subprocess.run:              # tests: a fake runner
+            r = self._run(cmd, cwd=str(folder), input=stdin_text, capture_output=True, text=True, timeout=timeout)
+            return r.returncode, r.stdout or "", r.stderr or ""
+        try:
+            self._child = subprocess.Popen(cmd, cwd=str(folder), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            out, err = self._child.communicate(stdin_text, timeout=timeout)
+            return self._child.returncode, out or "", err or ""
+        except subprocess.TimeoutExpired:
+            self._child.kill()
+            return 124, "", "it took too long"
+        except FileNotFoundError:
+            return 127, "", "not installed"
+        finally:
+            self._child = None
+
+    def _claude(self, prompt: str, folder: Path, name: str = "Daily build", command: str = "claude") -> tuple[bool, str]:
         # A brand-new Claude Code chat every time (never --continue / --resume): each build, and
         # each retry, starts clean and reads the folder instead of a long shared history. The
         # chat is saved under its own name, so it can be opened later from Claude Code's history.
-        cmd = [self.cfg.claude_command, "-p", "--name", name[:80],
+        cmd = [command, "-p", "--name", name[:80],
                "--permission-mode", "dontAsk", "--output-format", "json",
                "--allowedTools", "Read(./**)", "Write(./**)", "Edit(./**)", "Glob(./**)", "Grep(./**)",
                "Bash(python -m pytest:*)", "PowerShell(python -m pytest:*)",
                "--disallowedTools", "WebFetch", "WebSearch", "Agent"]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
-        if self._run is not subprocess.run:              # tests: a fake runner
-            r = self._run(cmd, cwd=str(folder), input=prompt, capture_output=True, text=True,
-                          timeout=float(self.cfg.build_timeout_s))
-            return self._parse_claude(r.returncode, r.stdout, r.stderr)
+        code, out, err = self._spawn(cmd, folder, stdin_text=prompt)
+        return self._parse_claude(code, out, err)
+
+    def _command(self, b: Builder, prompt: str, folder: Path) -> tuple[bool, str]:
+        """Any other command-line coding agent, described in the config (command + args)."""
+        (folder / BRIEF_FILE).write_text(prompt, encoding="utf-8")
+        args = [str(a).replace("{folder}", str(folder)).replace("{task}", TASK_LINE) for a in (b.args or ["{task}"])]
+        code, out, err = self._spawn([b.exe() or b.command, *args], folder)
+        return code == 0, (out or err)[-2000:]
+
+    def _window(self, b: Builder, prompt: str, folder: Path) -> tuple[bool, str]:
+        """A coding app with an agent chat but no headless mode: open the folder in it, hand its
+        agent the task, then watch the folder until the work is there and has stopped changing."""
+        (folder / BRIEF_FILE).write_text(prompt, encoding="utf-8")
+        exe = b.exe() or b.command
+        self._spawn([exe, "-n", str(folder)], folder, timeout=60)
+        if self._nap(float(getattr(self.cfg, "window_open_wait_s", 20))):
+            return False, "stopped"
+        if b.signed_out():
+            return False, f"{b.name} is not signed in"
+        code, out, err = self._spawn([exe, "chat", "-r", "-m", "agent", TASK_LINE], folder, timeout=60)
+        if code != 0:
+            return False, (err or out or f"{b.name} did not take the task")[-300:]
+        waited, quiet_for = 0.0, float(getattr(self.cfg, "window_quiet_s", 60))
+        step = float(getattr(self.cfg, "window_poll_s", 20))
+        while waited < float(self.cfg.build_timeout_s):
+            if self._nap(step):
+                return False, "stopped"
+            waited += step
+            if self.skipping_today() or self.state["paused"]:
+                return False, "stopped"
+            if b.signed_out():
+                return False, f"{b.name} is not signed in"
+            files = [f for f in folder.rglob("*") if f.is_file() and ".git" not in f.parts and f.name != BRIEF_FILE]
+            has_work = (folder / "README.md").is_file() and any(f.name.startswith("test_") for f in files)
+            newest = max((f.stat().st_mtime for f in files), default=0.0)
+            if has_work and time.time() - newest >= quiet_for:
+                return True, f"{b.name} finished"
+        return False, f"{b.name} did not finish in time"
+
+    def _nap(self, seconds: float) -> bool:
+        """Wait; True when VERONICA is shutting down."""
+        return self._stop.wait(seconds) if seconds > 0 else self._stop.is_set()
+
+    def _build_myself(self, prompt: str, folder: Path) -> tuple[bool, str]:
+        """No coding tool at all: her own model writes the files. Only paths inside the folder are written."""
+        if self.idea_maker is None:
+            return False, "no AI model"
+        existing = ""
+        for f in sorted(folder.rglob("*")):
+            if f.is_file() and ".git" not in f.parts and "__pycache__" not in f.parts and f.stat().st_size < 20_000:
+                try:
+                    body = f.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                existing += f"\n=== FILE: {f.relative_to(folder).as_posix()} ===\n{body}\n=== END FILE ===\n"
+        ask = prompt.replace("Run `python -m pytest -q` and fix anything that fails.", "Make sure the tests would pass.")
+        if existing:
+            ask += "\nThe files written so far (fix and complete them; reply with every file again):\n" + existing[:30_000]
         try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            self._child = subprocess.Popen(cmd, cwd=str(folder), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                           creationflags=flags)
-            out, err = self._child.communicate(prompt, timeout=float(self.cfg.build_timeout_s))
-            return self._parse_claude(self._child.returncode, out, err)
-        except subprocess.TimeoutExpired:
-            self._child.kill()
-            return False, "Claude Code took too long"
-        except FileNotFoundError:
-            return False, "Claude Code (claude) is not installed"
-        finally:
-            self._child = None
+            reply = self.idea_maker(ask + SELF_FORMAT)
+        except Exception as e:  # noqa: BLE001
+            return False, f"the model failed: {e}"
+        written = write_files_from_reply(reply or "", folder)
+        return (True, f"wrote {len(written)} files") if written else (False, (reply or "the model wrote no files")[-300:])
 
     @staticmethod
     def _parse_claude(code: int, out: str, err: str) -> tuple[bool, str]:
@@ -473,9 +622,12 @@ class DailyBuilder:
     # -- commit, create the repo, push -----------------------------------------------------
     def _commit(self, cur: dict) -> str:
         folder = self.folder(cur["slug"])
+        (folder / BRIEF_FILE).unlink(missing_ok=True)
         self._git(folder, "add", "-A")
-        msg = (f"{cur['title']}\n\n{cur['summary']}\n\nPicked by VERONICA, built and tested with Claude Code.\n\n"
-               "Co-Authored-By: Claude <noreply@anthropic.com>\n")
+        by = cur.get("built_by") or "Claude Code"
+        msg = f"{cur['title']}\n\n{cur['summary']}\n\nPicked by VERONICA, built with {by}, checked and tested by VERONICA.\n"
+        if by == "Claude Code":
+            msg += "\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
         msg_file = self.state_path.parent / "daily_build_commit.txt"
         msg_file.write_text(msg, encoding="utf-8")
         r = self._git(folder, "commit", "-q", "-F", str(msg_file))
@@ -514,7 +666,8 @@ class DailyBuilder:
 
     def _finish(self, cur: dict) -> str:
         pushed = self._publish(cur)
-        entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "commit", "repo_url", "creating")}
+        entry = {k: cur.get(k) for k in ("title", "slug", "kind", "summary", "commit", "repo_url", "creating",
+                                         "built_by", "note")}
         entry.update(status="pushed" if pushed else "committed", announced=False,
                      date=self._today())             # the day it was finished (a resumed job counts today)
         self.state["history"].append(entry)
@@ -582,8 +735,9 @@ class DailyBuilder:
             h["announced"] = True
         self._save()
         if len(fresh) == 1:
+            note = f" {fresh[0]['note'][0].upper()}{fresh[0]['note'][1:]}." if fresh[0].get("note") else ""
             return (f"By the way, I built {fresh[0]['title']} and put it in a new GitHub repo "
-                    f"called {fresh[0]['slug'].replace('-', ' ')}.")
+                    f"called {fresh[0]['slug'].replace('-', ' ')}.{note}")
         names = " and ".join(h["title"] for h in fresh[-2:])
         return f"By the way, I built {names}, each in its own new GitHub repo."
 
@@ -609,4 +763,16 @@ class DailyBuilder:
             bits.append("Nothing built yet; the first one starts a few minutes after I start up.")
         if self.state["prefer"]:
             bits.append(f"Next one will be a {self.state['prefer']}.")
+        chosen = self.chosen_builder()
+        if chosen is not None:
+            reason = self.why_unusable(chosen)
+            bits.append(f"The code is written by {chosen.name}" + (f", but it {reason}." if reason else "."))
         return " ".join(bits)
+
+    def builders_report(self) -> str:
+        chosen = self.chosen_builder()
+        parts = []
+        for b in self.builders:
+            reason = self.why_unusable(b)
+            parts.append(f"{b.name}" + (" (in use)" if b is chosen else "") + (f", which {reason}" if reason else ""))
+        return "I can build with " + "; ".join(parts) + ". Tell me which one to use."

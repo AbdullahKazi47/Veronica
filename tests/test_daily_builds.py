@@ -25,6 +25,11 @@ GOOD_FILES = {
 }
 
 
+CLAUDE = {"name": "Claude Code", "kind": "claude", "command": "claude", "aliases": ["claude code", "claude", "cloud code"]}
+MYSELF = {"name": "VERONICA", "kind": "self", "aliases": ["yourself", "your own brain", "on your own"]}
+ANTI = {"name": "Antigravity", "kind": "window", "command": "antigravity", "aliases": ["antigravity", "anti gravity"]}
+
+
 def _git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
 
@@ -66,6 +71,7 @@ class FakeClaude:
 
     def __call__(self, cmd, **kw):
         if cmd[0] != "claude":
+            assert cmd[0] in ("git", "python"), f"a test tried to start a real program: {cmd[0]}"
             return subprocess.run(cmd, **kw)
         self.prompts.append(kw.get("input", ""))
         assert "dontAsk" in cmd and "WebFetch" in cmd                     # locked down every time
@@ -82,6 +88,7 @@ class FakeClaude:
 
 
 def _builder(tmp_path, claude, host=None, **cfg):
+    cfg.setdefault("builders", [CLAUDE])                 # tests never see the PC's real coding apps
     c = DailyBuildsConfig(enabled=True, projects_dir=str(tmp_path / "projects"), **cfg)
     host = host or FakeGitHub(tmp_path / "github")
     return DailyBuilder(c, tmp_path / "state.json", idea_maker=lambda prompt: IDEA, host=host, run=claude,
@@ -183,8 +190,11 @@ def test_github_down_keeps_the_commit_and_publishes_later(tmp_path):
 
 def test_a_claude_code_limit_waits_without_using_up_a_try(tmp_path):
     b = _builder(tmp_path, FakeClaude(("fail", "Claude usage limit reached")))
-    assert b.step() == "build interrupted"
+    said = []
+    b.on_done = said.append
+    assert b.step() == "no builder available"            # Claude Code is the only builder here
     assert b.state["current"]["attempts"] == 0
+    assert "Claude Code hit its usage limit" in said[0]
     assert b.step() == "waiting (Claude Code limit)"
 
 
@@ -342,3 +352,149 @@ def test_she_says_why_she_is_waiting_once_a_day(tmp_path):
     b.step(); b.step()
     assert said == ["I wanted to start today's project, but GitHub isn't signed in yet (run: gh auth login). "
                     "I'll start as soon as that's done."]
+
+
+# ---------------------------------------------------------------- who writes the code (not wired to one tool)
+
+from veronica.automation.builders import choose, load_builders, write_files_from_reply  # noqa: E402
+
+ALL = [CLAUDE, ANTI, MYSELF]
+FILES_REPLY = "".join(f"=== FILE: {path} ===\n{text.rstrip()}\n=== END FILE ===\n" for path, text in GOOD_FILES.items())
+
+
+def _names(text):
+    b, named = choose(text, load_builders(DailyBuildsConfig(builders=ALL)))
+    return (b.name if b else None), sorted(n.name for n in named)
+
+
+@pytest.mark.parametrize("text, want", [
+    ("since Claude Code subscription ended, you can use Antigravity instead of Claude Code", "Antigravity"),
+    ("use antigravity instead of claude code", "Antigravity"),
+    ("Claude Code's limit is over, switch to anti gravity for the daily builds", "Antigravity"),
+    ("stop using claude code and build with antigravity", "Antigravity"),
+    ("my antigravity plan expired, go back to claude code", "Claude Code"),
+    ("don't use antigravity, use cloud code", "Claude Code"),
+    ("claude code khatam ho gaya, antigravity use karo", "Antigravity"),
+    ("build the projects on your own, not with claude code", "VERONICA"),
+    ("use antigravity for the daily builds", "Antigravity"),
+])
+def test_she_understands_which_builder_you_mean(text, want):
+    assert _names(text)[0] == want
+
+
+def test_two_tools_named_with_no_hint_is_asked_not_guessed():
+    b, named = choose("claude code antigravity", load_builders(DailyBuildsConfig(builders=ALL)))
+    assert b is None and len(named) == 2
+    b, _ = choose("claude code antigravity", load_builders(DailyBuildsConfig(builders=ALL)),
+                  ask_model=lambda prompt: "Antigravity")              # the model breaks the tie
+    assert b.name == "Antigravity"
+
+
+def _maker(prompt):
+    return FILES_REPLY if "=== FILE:" in prompt else IDEA
+
+
+def test_switch_by_voice_then_the_new_builder_builds(tmp_path):
+    claude = FakeClaude()
+    b = _builder(tmp_path, claude, builders=[CLAUDE, MYSELF])
+    b.idea_maker = _maker
+    tool = DailyBuildsTool(b)
+    said = "since Claude Code subscription ended, build the projects on your own instead of Claude Code"
+    assert tool.matches(said)
+    result = tool.run(**tool.extract_arguments(said))
+    assert "VERONICA writes the code" in result.message
+    assert b.step() == "pushed"
+    assert claude.prompts == []                              # Claude Code was not used at all
+    assert b.state["history"][-1]["built_by"] == "VERONICA"
+    log = _git("log", "-1", "--format=%B", cwd=_on_github(b, "word-counter-cli", tmp_path)).stdout
+    assert "built with VERONICA" in log and "Co-Authored-By: Claude" not in log
+    # ...and the choice survives a restart
+    assert _builder(tmp_path, FakeClaude(), host=b.host, builders=[CLAUDE, MYSELF]).chosen_builder().name == "VERONICA"
+
+
+def test_when_the_chosen_builder_hits_its_limit_the_next_one_builds_and_she_says_so(tmp_path):
+    b = _builder(tmp_path, FakeClaude(("fail", "Claude usage limit reached")), builders=[CLAUDE, MYSELF])
+    b.idea_maker = _maker
+    said = []
+    b.on_done = said.append
+    assert b.step() == "pushed"
+    assert b.state["history"][-1]["built_by"] == "VERONICA"
+    assert "Claude Code hit its usage limit, so I used VERONICA" in said[-1]
+    assert "hit its usage limit" in b.why_unusable(b.chosen_builder())      # set aside for an hour
+
+
+@pytest.fixture
+def fake_apps(monkeypatch):
+    """The coding apps 'exist' under their plain names, so no real one on this PC is ever found or started."""
+    from veronica.automation import builders
+    monkeypatch.setattr(builders.shutil, "which", lambda name: name)
+
+
+def test_a_window_app_builds_by_being_handed_the_task(tmp_path, fake_apps):
+    calls = []
+
+    class FakeApp(FakeClaude):
+        def __call__(self, cmd, **kw):
+            if cmd[0] == "antigravity":
+                calls.append(cmd[1:])
+                if cmd[1] == "chat":                         # its agent "does the work" in the folder
+                    assert (Path(kw["cwd"]) / "BUILD_BRIEF.md").is_file()
+                    for rel, text in GOOD_FILES.items():
+                        p = Path(kw["cwd"]) / rel
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_text(text, encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return super().__call__(cmd, **kw)
+
+    b = _builder(tmp_path, FakeApp(), builders=[ANTI], builder="Antigravity",
+                 window_open_wait_s=0, window_poll_s=0, window_quiet_s=0)
+    assert b.step() == "pushed"
+    assert calls[0][0] == "-n" and calls[1][:4] == ["chat", "-r", "-m", "agent"]
+    pushed = _on_github(b, "word-counter-cli", tmp_path)
+    assert (pushed / "wc.py").is_file() and not (pushed / "BUILD_BRIEF.md").exists()
+
+
+def test_a_signed_out_app_is_said_plainly(tmp_path, fake_apps):
+    log = tmp_path / "app.log"
+    log.write_text("E1110 error getting token source: You are not logged into Antigravity.\n", encoding="utf-8")
+    anti = {**ANTI, "signed_out_log": str(log), "signed_out_text": "not logged into"}
+
+    class FakeApp(FakeClaude):
+        def __call__(self, cmd, **kw):
+            if cmd[0] == "antigravity":
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return super().__call__(cmd, **kw)
+
+    b = _builder(tmp_path, FakeApp(), builders=[anti], builder="Antigravity", window_open_wait_s=0)
+    said = []
+    b.on_done = said.append
+    assert b.step() == "no builder available"
+    assert "Antigravity isn't signed in" in said[0]
+    assert b.state["current"]["attempts"] == 0
+
+
+@pytest.mark.parametrize("text", ["open antigravity", "close claude code", "what is antigravity",
+                                  "is claude code better than antigravity"])
+def test_just_naming_a_tool_is_not_a_switch(text):
+    b = DailyBuilder(DailyBuildsConfig(enabled=True, builders=ALL), Path("unused.json"), host=FakeGitHub.__new__(FakeGitHub))
+    assert not DailyBuildsTool(b).matches(text)
+
+
+def test_model_written_files_stay_inside_the_folder(tmp_path):
+    reply = ("=== FILE: ok.py ===\nx = 1\n=== END FILE ===\n"
+             "=== FILE: ../escape.py ===\nx = 2\n=== END FILE ===\n"
+             "=== FILE: C:/Windows/evil.py ===\nx = 3\n=== END FILE ===\n"
+             "=== FILE: .git/hooks/pre-commit ===\nx = 4\n=== END FILE ===\n")
+    assert write_files_from_reply(reply, tmp_path / "proj") == ["ok.py"]
+    assert not (tmp_path / "escape.py").exists()
+
+
+def test_the_real_sentence_reaches_her_through_the_full_registry():
+    from veronica.safety.permissions import PermissionGate
+    from veronica.tools.registry import build_default_registry
+    from veronica.config import Config
+    reg = build_default_registry(PermissionGate(), config=Config())
+    said = "Since Claude Code subscription ended, you can use Antigravity instead of Claude Code."
+    tool = reg.find_fast_match(said)
+    assert tool.name == "daily_builds" and tool.extract_arguments(said)["action"] == "use_builder"
+    assert reg.find_fast_match("open antigravity").name != "daily_builds"
