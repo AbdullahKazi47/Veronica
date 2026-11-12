@@ -57,6 +57,11 @@ class IslandLink:
         self._stop = threading.Event()
         self._restarts = 0
         self.console = _console_hwnd()
+        self.on_command: Optional[Callable[[str], None]] = None   # the island's buttons ("stop")
+        self._inbox = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._inbox.bind(("127.0.0.1", 0))
+        self._inbox.settimeout(0.5)
+        self.reply_port = self._inbox.getsockname()[1]
 
     # -- life ----------------------------------------------------------------------------
     def start(self) -> bool:
@@ -65,14 +70,15 @@ class IslandLink:
         if not self._launch():
             return False
         threading.Thread(target=self._pump, name="island", daemon=True).start()
+        threading.Thread(target=self._listen, name="island-buttons", daemon=True).start()
         import atexit
         atexit.register(self.close)
         return True
 
     def _launch(self) -> bool:
         self.port = _free_port()
-        cmd = [_pythonw(), "-m", "veronica.ui.island", "--port", str(self.port), "--parent", str(os.getpid()),
-               "--console", str(self.console), "--title", self.title]
+        cmd = [_pythonw(), "-m", "veronica.ui.island", "--port", str(self.port), "--reply-port", str(self.reply_port),
+               "--parent", str(os.getpid()), "--console", str(self.console), "--title", self.title]
         if self.hide_terminal:
             cmd.append("--hide")
         try:
@@ -96,6 +102,35 @@ class IslandLink:
         if state in STATES and state != self.state:
             self.state = state
             self._send({"s": state})
+
+    def you(self, text: str) -> None:
+        """What the user said (shown on the island's card)."""
+        if text:
+            self._send({"you": str(text)[:300]})
+
+    def say(self, piece: str) -> None:
+        """A sentence she is starting to say: its words light up on the island as she speaks."""
+        if piece:
+            self._send({"s": "speaking", "say": str(piece)[:400]})
+
+    def _listen(self) -> None:
+        """The island's buttons. Only 127.0.0.1 can reach this socket; only known commands count."""
+        while not self._stop.is_set():
+            try:
+                data, addr = self._inbox.recvfrom(1024)
+            except (socket.timeout, OSError):
+                continue
+            if addr[0] != "127.0.0.1":
+                continue
+            try:
+                cmd = json.loads(data.decode("utf-8")).get("cmd")
+            except (ValueError, AttributeError):
+                continue
+            if cmd in ("stop",) and self.on_command is not None:
+                try:
+                    self.on_command(cmd)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Island command failed.")
 
     def _send(self, msg: dict) -> None:
         if not self.port:

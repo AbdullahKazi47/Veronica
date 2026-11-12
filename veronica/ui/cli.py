@@ -317,6 +317,7 @@ class CLIApp:
 
                 if not text:
                     continue
+                self._island_say("you", text)
                 if self.voice_mode and quits_veronica(text):
                     # "Go to sleep" / "you can shut down now": close VERONICA herself — the
                     # program and its window (main() exits cleanly with code 0). Never the PC.
@@ -373,10 +374,28 @@ class CLIApp:
                 return float(getattr(hub, "last_level", 0.0) or 0.0), float(hub.ambient_rms() or 60.0)
             link = IslandLink(level, hide_terminal=bool(getattr(vcfg, "island_hides_terminal", True)),
                               title=self.config.assistant.name)
+            link.on_command = self._island_command
             return link if link.start() else None
         except Exception:  # noqa: BLE001 - optional; the terminal stays as it is
             logger.exception("Couldn't start the island.")
             return None
+
+    def _island_command(self, cmd: str) -> None:
+        """The island's 'Stop talking' button: she stops mid-sentence and goes back to listening
+        for her name (not the talk-over path, which would start listening at once)."""
+        if cmd == "stop":
+            stop = getattr(self, "_speech_stop", None)
+            if stop is not None:
+                self._quiet_stop = True
+                stop.set()
+
+    def _island_say(self, kind: str, text: str) -> None:
+        link = getattr(self, "island", None)
+        if link is not None:
+            try:
+                (link.you if kind == "you" else link.say)(text)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _island(self, state: str) -> None:
         link = getattr(self, "island", None)
@@ -1046,6 +1065,7 @@ class CLIApp:
                 self._island("speaking")
                 self._tts_active = True
                 stop = threading.Event()
+                self._speech_stop, self._quiet_stop = stop, False
                 monitor = self._start_barge_in(stop)
                 hub = getattr(self, "hub", None)
                 if hub is not None:
@@ -1058,6 +1078,7 @@ class CLIApp:
                     # ahead of her voice.
                     print((f"{self.config.assistant.name}: " if not shown else " ") + piece, end="", flush=True)
                     shown.append(piece)
+                    self._island_say("say", piece)
                     if monitor is not None:
                         monitor.arm_for(piece)
                 try:
@@ -1084,7 +1105,11 @@ class CLIApp:
                         hub.self_speaking = False
                     self._tts_active = False
                     self._island("open" if time.monotonic() < getattr(self, "_follow_up_until", 0.0) else "idle")
-                if not completed:
+                self._speech_stop = None
+                if not completed and getattr(self, "_quiet_stop", False):
+                    self._quiet_stop = False             # stopped from the island: just stop
+                    self._status("[stopped from the island]")
+                elif not completed:
                     self._barged = True
                     self._status("[you talked over me — listening]")
                     self._beep()

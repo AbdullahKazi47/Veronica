@@ -44,3 +44,6 @@ mem0ai>=2.2            # facts picked up from conversation, stored locally in da
 sherpa-onnx>=1.13      # "learn my voice": speaker check on this PC (model in data/models/sherpa)
 supertonic>=1.3        # "Female 2" (FreeTTS's local voices), her backup voice; model in data/models/supertonic
 kokoro-onnx>=0.4.7     # Kokoro voice on this PC; model files in data/models/kokoro (kokoro-v1.0.onnx, voices-v1.0.bin)
+
+# The island under the camera (ui/island.py): frosted glass, motion, anti-aliased drawing
+PyQt6>=6.6

@@ -82,3 +82,56 @@ def test_colours_never_hit_the_transparent_key():
 def test_off_unless_turned_on():
     from veronica.config import Config
     assert Config().voice.island is False
+
+
+def test_her_words_light_up_at_speaking_pace():
+    s = "It's 29 degrees in Bhatkal right now"
+    assert island.spoken_words(s, 0.0) == 0.0
+    assert 2.0 < island.spoken_words(s, 1.0) < 3.5
+    assert island.spoken_words(s, 60.0) == 7.0                 # never past the last word
+
+
+def test_a_long_reply_shows_its_end_cut_at_a_word():
+    out = island._fit("one two three four five six seven", 14)
+    assert out.startswith("…") and out.endswith("seven") and "fou" not in out.replace("four", "")
+
+
+def test_the_spring_settles_on_its_target():
+    sp = island.Spring(34.0)
+    sp.target = 400.0
+    for _ in range(200):
+        sp.step(1 / 60)
+    assert abs(sp.value - 400.0) < 0.5
+
+
+def test_what_she_says_reaches_the_island_and_its_stop_button_reaches_her(listener):
+    link, _ = _link(listener, [FakeProc()])
+    link.you("what's the weather")
+    link.say("It's 29 degrees.")
+    assert _messages(listener, 2) == [{"you": "what's the weather"}, {"s": "speaking", "say": "It's 29 degrees."}]
+    got = []
+    link.on_command = got.append
+    import threading
+    threading.Thread(target=link._listen, daemon=True).start()
+    out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out.sendto(json.dumps({"cmd": "stop"}).encode(), ("127.0.0.1", link.reply_port))
+    out.sendto(json.dumps({"cmd": "format_disk"}).encode(), ("127.0.0.1", link.reply_port))   # unknown: ignored
+    import time
+    for _ in range(40):
+        if got:
+            break
+        time.sleep(0.05)
+    link._stop.set()
+    assert got == ["stop"]
+
+
+def test_the_island_window_survives_being_built():
+    """The window object must be kept: a local one was garbage-collected and the island never showed."""
+    pytest.importorskip("PyQt6")
+    import argparse
+    from PyQt6.QtWidgets import QApplication
+    app = island.build(argparse.Namespace(port=0, reply_port=0, parent=0, console=0, title="VERONICA", hide=False))
+    try:
+        assert app.island.isVisible() and app.island in QApplication.topLevelWidgets()
+    finally:
+        app.island.close()
