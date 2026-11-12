@@ -135,3 +135,18 @@ def test_the_island_window_survives_being_built():
         assert app.island.isVisible() and app.island in QApplication.topLevelWidgets()
     finally:
         app.island.close()
+
+
+def test_ease_is_frame_rate_independent():
+    one = island.ease(0.0, 1.0, 5.0, 1 / 30)
+    two = island.ease(island.ease(0.0, 1.0, 5.0, 1 / 60), 1.0, 5.0, 1 / 60)
+    assert abs(one - two) < 1e-9                         # same motion at 30 or 60 fps
+
+
+def test_springs_glide_without_wobble():
+    sp = island.Spring(34.0)
+    sp.target = 400.0
+    peak = 0.0
+    for _ in range(240):
+        peak = max(peak, sp.step(1 / 60))
+    assert peak < 400.0 * 1.01                           # at most a hair of overshoot, never a bounce

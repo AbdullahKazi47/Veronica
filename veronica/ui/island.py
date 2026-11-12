@@ -69,16 +69,24 @@ def spoken_words(text: str, elapsed: float, rate: float = WORDS_PER_S) -> float:
 
 class Spring:
     """Critically-damped-ish spring: smooth, quick, a touch of overshoot."""
-    def __init__(self, value: float, stiffness: float = 180.0, damping: float = 22.0) -> None:
+    def __init__(self, value: float, stiffness: float = 170.0, damping: float = 0.0) -> None:
         self.value = self.target = value
         self.v = 0.0
-        self.k, self.d = stiffness, damping
+        self.k = stiffness
+        self.d = damping or 2 * math.sqrt(stiffness) * 0.9       # just under critical: glides, no wobble
 
     def step(self, dt: float) -> float:
-        a = self.k * (self.target - self.value) - self.d * self.v
-        self.v += a * dt
-        self.value += self.v * dt
+        for _ in range(2):                       # two half-steps: stable and smooth at any frame rate
+            h = dt / 2
+            a = self.k * (self.target - self.value) - self.d * self.v
+            self.v += a * h
+            self.value += self.v * h
         return self.value
+
+
+def ease(current: float, target: float, rate: float, dt: float) -> float:
+    """Frame-rate independent exponential approach (rate = 1/seconds)."""
+    return target + (current - target) * math.exp(-rate * dt)
 
 
 # -- Windows bits -----------------------------------------------------------------------------
@@ -160,8 +168,14 @@ def build(args):
             self.you, self.reply, self.piece, self.piece_t = "", "", "", 0.0
             self.w, self.h, self.r = Spring(ORB[0]), Spring(ORB[1]), Spring(ORB[2])
             self.tint = [list(TINT["idle"]), list(TINT["idle"])]
-            self.content = Spring(0.0, 120, 20)           # 0 = orb only, 1 = bar contents shown
-            self.cardness = Spring(0.0, 140, 22)
+            self.content = Spring(0.0, 110)               # 0 = orb only, 1 = bar contents shown
+            self.cardness = Spring(0.0, 130)
+            self.phase = 0.0                              # wave phase, accumulated (speed changes never jump it)
+            self.spin, self.spin_speed = 0.0, 0.0         # the arc around the orb
+            self.label_a = 1.0                            # "Listening" fades as you start talking
+            self.shift = 0.0                              # how far her line has scrolled
+            self.prev_piece, self.prev_t = "", 0.0        # the sentence before, fading up and out
+            self.shift_prev = 0.0
             self.hover = 0.0
             self.t0 = self.last = time.monotonic()
             self.card_touched = 0.0
@@ -177,9 +191,14 @@ def build(args):
             self.font_small = QFont("Segoe UI Variable Text", 9)
             self.font_big = QFont("Segoe UI Variable Display", 14)
             self.font_big.setWeight(QFont.Weight.DemiBold)
+            try:
+                ctypes.windll.winmm.timeBeginPeriod(1)    # 1 ms timer resolution for this process
+            except Exception:  # noqa: BLE001
+                pass
             self.timer = QTimer(self)
+            self.timer.setTimerType(Qt.TimerType.PreciseTimer)
             self.timer.timeout.connect(self.tick)
-            self.timer.start(16)
+            self.timer.start(16)                          # a steady 60 fps: what the screen can show
             self.watch = QTimer(self)
             self.watch.timeout.connect(self.check_parent)
             self.watch.start(500)
@@ -211,7 +230,10 @@ def build(args):
                 if m.get("you"):
                     self.you, self.reply = str(m["you"])[:300], ""
                 if m.get("say"):
+                    if self.piece:
+                        self.prev_piece, self.prev_t = self.piece, time.monotonic()
                     self.piece, self.piece_t = str(m["say"])[:400], time.monotonic()
+                    self.shift = 0.0
                     self.reply = (self.reply + " " + self.piece).strip()[-600:]
 
         def send(self, cmd: str) -> None:
@@ -252,9 +274,19 @@ def build(args):
             self.cardness.target = 1.0 if self.card else 0.0
             self.cardness.step(dt)
             want = TINT.get(self.state, TINT["idle"])
-            self.tint[0] = [a + (b - a) * min(1.0, dt * 6) for a, b in zip(self.tint[0], want)]
+            self.tint[0] = [ease(a, b, 6, dt) for a, b in zip(self.tint[0], want)]
             target_voice = level_to_height(self.level, self.ambient) if self.state in ("listening", "open") else 0.0
-            self.voice += (target_voice - self.voice) * min(1.0, dt * (18 if target_voice > self.voice else 6))
+            self.voice = ease(self.voice, target_voice, 14 if target_voice > self.voice else 4.5, dt)
+            self.phase += dt * (2.6 + 3.0 * self.voice)                     # waves speed up with you, smoothly
+            want_spin = {"thinking": 6.5, "speaking": 2.4}.get(self.state, 0.0)
+            self.spin_speed = ease(self.spin_speed, want_spin, 4, dt)
+            self.spin += dt * self.spin_speed
+            self.label_a = ease(self.label_a, 1.0 if self.voice < 0.1 else 0.0, 7, dt)
+            resting = (self.state == "idle" and not self.card and self.hover < 0.5
+                       and abs(self.w.value - ORB[0]) < 0.3 and abs(self.w.v) < 0.5)
+            want = 33 if resting else 16                  # only the slow breathing left: half the frames, half the CPU
+            if self.timer.interval() != want:
+                self.timer.setInterval(want)
             self.update()
 
         # -- input ------------------------------------------------------------------------
@@ -382,33 +414,42 @@ def build(args):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QBrush(spot))
             p.drawEllipse(center, rr, rr)
-            if self.state in ("thinking", "speaking"):
+            arc_a = max(0.0, min(1.0, self.spin_speed / 2.4))            # fades in and out with the spin
+            if arc_a > 0.02:
                 arc = QRectF(center.x() - rr - 3, center.y() - rr - 3, (rr + 3) * 2, (rr + 3) * 2)
-                speed = 420 if self.state == "thinking" else 160
-                p.setPen(QPen(QColor(255, 255, 255, 200), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                p.drawArc(arc, int(-(t * speed) % 360 * 16), 90 * 16)
+                p.setPen(QPen(QColor(255, 255, 255, int(200 * arc_a)), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawArc(arc, int(-math.degrees(self.spin) % 360 * 16), int((60 + 40 * arc_a) * 16))
 
         def draw_waves(self, p, box, t, tint, alpha) -> None:
-            mid = box.center().y()
-            amp = (3.0 + self.voice * (box.height() * 0.36))
+            label = LABEL.get(self.state, "")
+            p.setFont(self.font_ui)
+            fm = QFontMetricsF(self.font_ui)
+            lw = (fm.horizontalAdvance(label) + 16) * self.label_a if label else 0.0
+            if label and self.label_a > 0.02:
+                y = box.center().y() + fm.ascent() / 2 - 2
+                p.setPen(rgba((232, 232, 232), 180 * alpha * self.label_a))
+                p.drawText(QPointF(box.left() + 2 - (1 - self.label_a) * 10, y), label)
+            waves = QRectF(box.left() + lw, box.top(), max(10.0, box.width() - lw), box.height())
+            mid = waves.center().y()
+            amp = 2.2 + self.voice * (box.height() * 0.34)
+            p.save()
+            p.setClipRect(waves)
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            layers = [((235, 235, 235), 1.0, 1.0, 0.0), ((150, 150, 150), 0.75, 1.6, 1.7), ((95, 95, 95), 0.55, 2.3, 3.1)]
-            for color, scale, freq, phase in layers:
+            layers = [((235, 235, 235), 1.0, 1.0, 0.0, 2.0), ((150, 150, 150), 0.72, 1.55, 1.9, 1.6),
+                      ((95, 95, 95), 0.5, 2.2, 3.4, 1.4)]
+            for color, scale, freq, offset, width in layers:
                 path = QPainterPath()
-                steps = 80
+                steps = 120
                 for i in range(steps + 1):
                     x = i / steps
                     env = (1 - (2 * x - 1) ** 2) ** 2
-                    y = mid + math.sin(x * math.pi * 2 * freq + t * (5.0 + 3 * self.voice) + phase) * amp * scale * env
-                    pt = QPointF(box.left() + x * box.width(), y)
+                    y = mid + math.sin(x * math.pi * 2 * freq + self.phase * (1 + 0.15 * freq) + offset) * amp * scale * env
+                    pt = QPointF(waves.left() + x * waves.width(), y)
                     path.moveTo(pt) if i == 0 else path.lineTo(pt)
-                p.setPen(QPen(rgba(color, 200 * alpha), 2.2))
+                p.setPen(QPen(rgba(color, 205 * alpha), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(path)
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            label = LABEL.get(self.state, "")
-            if label and self.voice < 0.08:
-                self.draw_label(p, box, label, t, tint, alpha * 0.85 * (1 - self.voice * 10), shimmer=False, right=True)
+            p.restore()
 
         def draw_label(self, p, box, text, t, tint, alpha, shimmer, right=False) -> None:
             p.setFont(self.font_ui)
@@ -424,43 +465,68 @@ def build(args):
                 g.setColorAt(0.0, rgba((255, 255, 255), 110 * alpha))
                 g.setColorAt(1.0, rgba((255, 255, 255), 110 * alpha))
                 p.setPen(QPen(QBrush(g), 1))
-                dots = "." * (1 + int(t * 2.5) % 3)
-                p.drawText(QPointF(x, y), text + dots)
+                p.drawText(QPointF(x, y), text)          # the light sweeping across it is the motion
             else:
                 p.setPen(rgba((230, 230, 230), 170 * alpha))
                 p.drawText(QPointF(x, y), text)
 
         def draw_lyric(self, p, box, tint, alpha) -> None:
-            words = self.piece.split()
-            if not words:
-                return
-            said = spoken_words(self.piece, time.monotonic() - self.piece_t)
-            p.setFont(self.font_ui)
+            """Her line on its own layer, then a soft mask fades both ends: words glide in and out
+            of view instead of being sliced, and nothing can reach the orb."""
+            from PyQt6.QtGui import QImage
+            dpr = self.devicePixelRatioF()
+            layer = QImage(int(box.width() * dpr) + 2, int(box.height() * dpr) + 2,
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(0)
+            q = QPainter(layer)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            q.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            q.setFont(self.font_ui)
             fm = QFontMetricsF(self.font_ui)
-            space = fm.horizontalAdvance(" ")
-            widths = [fm.horizontalAdvance(w) for w in words]
-            cur = min(len(words) - 1, int(said))
-            upto = sum(widths[:cur + 1]) + space * cur
-            shift = max(0.0, upto - box.width() + 24)          # keep the current word in view
-            x = box.left() - shift
-            y = box.center().y() + fm.ascent() / 2 - 2
-            for i, (word, w) in enumerate(zip(words, widths)):
-                if x + w > box.left() - 4 and x < box.right() + 4:
-                    if i < int(said):
-                        col = rgba((250, 250, 250), 255 * alpha)
-                    elif i == int(said):
-                        frac = said - int(said)
-                        col = rgba([a + (b - a) * frac for a, b in zip((140, 140, 140), (255, 255, 255))], 255 * alpha)
-                    else:
-                        col = rgba((200, 200, 200), 90 * alpha)
-                    p.setPen(col)
-                    p.drawText(QPointF(x, y), word)
-                x += w + space
-            fade = QLinearGradient(QPointF(box.left(), 0), QPointF(box.left() + 18, 0))
-            if shift > 0:
-                fade.setColorAt(0.0, QColor(10, 10, 11, int(230 * alpha)))
-                fade.setColorAt(1.0, QColor(10, 10, 11, 0))
-                p.fillRect(QRectF(box.left(), box.top(), 18, box.height()), QBrush(fade))
+            now = time.monotonic()
+            base_y = box.height() / 2 + fm.ascent() / 2 - 2
+            out = min(1.0, (now - self.prev_t) / 0.35) if self.prev_piece else 1.0
+            if self.prev_piece and out < 1.0:                    # the last sentence lifts away
+                q.setPen(rgba((250, 250, 250), 255 * alpha * (1 - out) ** 2))
+                q.drawText(QPointF(-self.shift_prev, base_y - 14 * _smooth(out)), self.prev_piece)
+            words = self.piece.split()
+            if words:
+                said = spoken_words(self.piece, now - self.piece_t)
+                space = fm.horizontalAdvance(" ")
+                widths = [fm.horizontalAdvance(w) for w in words]
+                cur = min(len(words) - 1, int(said))
+                upto = sum(widths[:cur + 1]) + space * cur
+                want = max(0.0, upto - box.width() * 0.8)           # keep the current word in view
+                self.shift = self.shift + (want - self.shift) * 0.1   # glide, don't jump
+                self.shift_prev = self.shift
+                rise = 1.0 - _smooth(min(1.0, (now - self.piece_t) / 0.35))
+                y = base_y + 12 * rise
+                x = -self.shift
+                for i, (word, w) in enumerate(zip(words, widths)):
+                    if x + w >= -2 and x <= box.width() + 2:
+                        if i < int(said):
+                            col, a = (250, 250, 250), 255
+                        elif i == int(said):
+                            f = _smooth(said - int(said))
+                            col, a = tuple(140 + (255 - 140) * f for _ in range(3)), 160 + 95 * f
+                        else:
+                            col, a = (200, 200, 200), 90
+                        q.setPen(rgba(col, a * alpha * (1 - rise * 0.8)))
+                        q.drawText(QPointF(x, y), word)
+                    x += w + space
+            # the mask: transparent at both ends, solid in the middle
+            q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+            mask = QLinearGradient(QPointF(0, 0), QPointF(box.width(), 0))
+            left_fade = min(0.12, 30 / max(box.width(), 1)) if self.shift > 1 else 0.0
+            right_fade = min(0.1, 24 / max(box.width(), 1))
+            mask.setColorAt(0.0, QColor(0, 0, 0, 0 if left_fade else 255))
+            mask.setColorAt(max(0.001, left_fade), QColor(0, 0, 0, 255))
+            mask.setColorAt(1.0 - right_fade, QColor(0, 0, 0, 255))
+            mask.setColorAt(1.0, QColor(0, 0, 0, 0))
+            q.fillRect(QRectF(0, 0, box.width() + 2, box.height() + 2), QBrush(mask))
+            q.end()
+            p.drawImage(box.topLeft(), layer)
 
         def draw_card(self, p, rect, t, tint, k) -> None:
             a = max(0.0, min(1.0, (k - 0.45) / 0.55))
@@ -526,6 +592,12 @@ def build(args):
     app.island = Island()          # kept on the app: a local would be garbage-collected (window gone at once)
     app.island.show()
     return app
+
+
+def _smooth(x: float) -> float:
+    """Smoothstep: eases in and out."""
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
 
 
 def _fit(text: str, limit: int) -> str:

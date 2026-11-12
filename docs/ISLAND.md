@@ -34,6 +34,19 @@ She is never left invisible:
 The waveform is measured against the room's own background level, so a noisy room doesn't look
 like speech. It's the same meter as the line in the terminal.
 
+## Motion
+- Every change is eased, never stepped. Shapes move on springs tuned just under critical, so
+  they glide into place without bouncing. Colour, glow, the "Listening" label and the arc
+  around the globe all fade in and out.
+- The waves speed up as you talk by building up speed gradually, so a change in your volume
+  never makes them jump.
+- "Listening" sits beside the globe with the waves to its right. As you start talking it fades
+  out and the waves take its space.
+- Her line is drawn on its own layer with a soft fade at both ends. Words glide in and out of
+  view and never slide over the globe. A new sentence rises in as the last one lifts away.
+- Steady 60 fps, measured: no frame took more than 9.4 ms. It drops to 30 fps while idle, when
+  only the slow breathing moves. CPU use is about 2% idle and 4% while listening on this laptop.
+
 ## Settings (`config/config.yaml`, under `voice:`)
 ```yaml
 island: true                  # false = no island, the terminal as before
