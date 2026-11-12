@@ -529,6 +529,11 @@ console_mode: "conversation"
 
 # Voice / continuous listening — Phase 11C (disabled by default; transport layer only)
 voice:
+  # The island (ui/island.py): her presence at the top of the screen, under the camera. A small
+  # circle while she waits for her name; a pill with your voice as a live waveform when you say
+  # "Veronica"; amber while thinking; her voice while she speaks. Click it to show/hide her terminal.
+  island: true
+  island_hides_terminal: true     # terminal starts hidden behind the island (comes back by itself if she stops)
   enabled: false
   continuous_listening: false
   wake_words: ["Veronica", "Vero", "V"]

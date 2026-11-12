@@ -1042,6 +1042,7 @@ class Orchestrator:
         collected_results: list[dict] = []
         last_tool_name: Optional[str] = None
         guard = LoopGuard(LoopGuardConfig(max_turns=_MAX_TOOL_HOPS))
+        tainted = ""                                     # set when a tool result tries to instruct her
 
         for _hop in range(_MAX_TOOL_HOPS):
             if stream_provider is not None:
@@ -1133,16 +1134,28 @@ class Orchestrator:
                     logger.info("Loop guard warning: %s", verdict.reason)
                 if self.tool_event_callback:
                     self.tool_event_callback(f"tool {call.name}")
-                result = self.tools.dispatch(call.name, **call.arguments)
+                if tainted:                              # something read this turn tried to instruct her
+                    with self.tools.gate.stricter(tainted):
+                        result = self.tools.dispatch(call.name, **call.arguments)
+                else:
+                    result = self.tools.dispatch(call.name, **call.arguments)
                 self._turn.action = (call.name, dict(call.arguments or {}))
                 if hasattr(self._turn, "tool_text"):
                     self._turn.tool_text.append(str(result.message or "")[:6000])
                 last_tool_name = call.name
                 collected_results.append(result.__dict__)
+                content = result.message
+                findings = self._injection_findings(content)
+                if findings:
+                    from veronica.safety.injection_guard import ask_reason, warning_for
+                    logger.warning("Possible prompt injection in %s output: %s", call.name,
+                                   "; ".join(f"{f.kind}: {f.text!r}" for f in findings))
+                    content = warning_for(findings) + str(content)
+                    tainted = ask_reason(findings)
                 messages.append(
                     ChatMessage(
                         role="tool",
-                        content=result.message,
+                        content=content,
                         tool_call_id=call.id,
                         name=call.name,
                     )
@@ -1162,6 +1175,17 @@ class Orchestrator:
             tool_results=collected_results,
             routing=routing_meta,
         )
+
+    def _injection_findings(self, text) -> list:
+        """safety/injection_guard.py — on unless `safety.injection_guard` is turned off."""
+        if not getattr(getattr(self.config, "safety", None), "injection_guard", True) or not text:
+            return []
+        try:
+            from veronica.safety.injection_guard import scan
+            return scan(str(text))
+        except Exception:  # noqa: BLE001 - the guard must never break a turn
+            logger.exception("Injection scan failed.")
+            return []
 
     # -- streaming helpers (Streaming LLM V1) --------------------------------------
     def _streaming_enabled(self) -> bool:

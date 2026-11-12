@@ -50,19 +50,42 @@ class PermissionGate:
         self.threshold = threshold
         self.confirm_callback = confirm_callback
         self.dry_run = dry_run
+        import threading
+        self._strict = threading.local()
+
+    def stricter(self, reason: str):
+        """For a stretch of work (one turn): every action at MODERATE or above must be confirmed,
+        even ones that normally run without asking. Only ever raises the bar: the threshold used
+        is the LOWER of the two, and dry-run and refusals behave exactly as before."""
+        import contextlib
+        gate = self
+
+        @contextlib.contextmanager
+        def scope():
+            before = getattr(gate._strict, "reason", "")
+            gate._strict.reason = reason or "please confirm"
+            try:
+                yield
+            finally:
+                gate._strict.reason = before
+        return scope()
 
     def check(self, tool_name: str, level: PermissionLevel, description: str) -> PermissionDecision:
         if self.dry_run and level >= PermissionLevel.MODERATE:
             logger.info("DRY RUN: would require permission for %s (%s)", tool_name, level.name)
             return PermissionDecision(allowed=False, reason="dry-run mode: action simulated, not executed")
 
-        if level < self.threshold:
+        strict = getattr(getattr(self, "_strict", None), "reason", "")
+        threshold = min(self.threshold, PermissionLevel.MODERATE) if strict else self.threshold
+        if level < threshold:
             return PermissionDecision(allowed=True)
+        if strict:
+            description = f"{strict} {description}"
 
         if self.confirm_callback is None:
             logger.warning(
                 "Refusing '%s' (%s): no confirmation channel available for a "
-                "permission at or above %s.", tool_name, description, self.threshold.name
+                "permission at or above %s.", tool_name, description, threshold.name
             )
             return PermissionDecision(
                 allowed=False,

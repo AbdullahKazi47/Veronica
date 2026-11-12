@@ -132,6 +132,8 @@ class VoiceConfig:
     suppress_playback_during_capture: bool = True
     barge_in_enabled: bool = False
     show_mic_meter: bool = True             # live mic level line while she listens
+    island: bool = False                    # ui/island.py: her presence under the camera (circle / pill + waveform)
+    island_hides_terminal: bool = True      # the terminal starts hidden behind the island; click the island to show it
     speaker_check: bool = True              # once "learn my voice" is done, respond only to the owner
     barge_in_threshold: float = 0.02
     barge_in_min_speech_ms: int = 300
@@ -432,6 +434,9 @@ class StreamingConfig:
 class SafetyConfig:
     require_confirmation_above: str = "MODERATE"   # PermissionLevel name
     dry_run: bool = False
+    # safety/injection_guard.py: tool output that tries to instruct an AI is flagged to the model, and
+    # every action for the rest of that turn needs your yes. Only ever adds questions.
+    injection_guard: bool = True
 
 
 @dataclass
