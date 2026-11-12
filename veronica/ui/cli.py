@@ -303,6 +303,7 @@ class CLIApp:
         from veronica.core.background import BackgroundTasks
         self.background = BackgroundTasks(self.orchestrator, self._announce_task,
                                           store_path=self.config.resolve_path("data/background_tasks.json"))
+        self.island = self._start_island()
         self.daily_builder = self._start_daily_builds()
         self.proactive = self._start_proactive()
         self.health_monitor = self._start_self_heal()
@@ -323,6 +324,8 @@ class CLIApp:
                     self._say("Okay, going to sleep. Goodnight, boss." if re.search(r"\bsleep\b", text, re.I)
                               else "Okay, shutting myself down. Goodbye, boss.")
                     self.quit_requested = True
+                    if getattr(self, "island", None) is not None:
+                        self.island.close()
                     break
                 if self.voice_mode and self._ends_conversation(text):
                     # Voice: "bye" / "thanks" / "good night" end the conversation; she goes
@@ -353,6 +356,35 @@ class CLIApp:
                 self._open_follow_up()
         finally:
             self._stop.set()
+
+    # -- the island (ui/island.py) ---------------------------------------------------------
+    def _start_island(self):
+        """Her presence under the camera; the terminal is hidden behind it (click to show)."""
+        vcfg = getattr(self.config, "voice", None)
+        if not self.voice_mode or vcfg is None or not getattr(vcfg, "island", False):
+            return None
+        try:
+            from veronica.ui.island_link import IslandLink
+            hub = getattr(self, "hub", None)
+
+            def level():
+                if hub is None:
+                    return 0.0, 60.0
+                return float(getattr(hub, "last_level", 0.0) or 0.0), float(hub.ambient_rms() or 60.0)
+            link = IslandLink(level, hide_terminal=bool(getattr(vcfg, "island_hides_terminal", True)),
+                              title=self.config.assistant.name)
+            return link if link.start() else None
+        except Exception:  # noqa: BLE001 - optional; the terminal stays as it is
+            logger.exception("Couldn't start the island.")
+            return None
+
+    def _island(self, state: str) -> None:
+        link = getattr(self, "island", None)
+        if link is not None:
+            try:
+                link.set(state)
+            except Exception:  # noqa: BLE001
+                pass
 
     # -- proactive -----------------------------------------------------------------------
     def _start_proactive(self):
@@ -516,11 +548,13 @@ class CLIApp:
             with lock:              # never open the mic while she (or an announcement) is talking
                 pass
         self._capturing.set()
+        self._island("listening")
         meter = self._start_meter()
         try:
             return self.stt.listen_once(timeout_s=timeout_s)
         finally:
             self._capturing.clear()
+            self._island("thinking")
             if meter is not None:
                 meter.join(timeout=1.0)
 
@@ -677,6 +711,7 @@ class CLIApp:
                 return follow
             # Stage 0 (--wake only): wait for the wake word; the gate releases the mic for STT.
             if self.wake_gate is not None:
+                self._island("idle")
                 self._status(f"[waiting for \"{self.config.assistant.name}\"...]")
                 threshold = self.config.voice.wake_threshold
                 near_miss = lambda s: self._status(  # noqa: E731
@@ -695,6 +730,7 @@ class CLIApp:
                 ambient = getattr(self.wake_gate, "ambient_rms", None)
                 if ambient is not None:
                     self.stt.known_ambient_rms = ambient
+                self._island("listening")
                 self._beep()
             # Stage 1: LISTEN — microphone is active
             self._status("[listening...]")
@@ -1007,6 +1043,7 @@ class CLIApp:
                 print(f"{self.config.assistant.name}: {text}\n")
             if self.voice_mode:
                 # Stage 2: speak sentence by sentence; "Veronica" mid-reply stops her.
+                self._island("speaking")
                 self._tts_active = True
                 stop = threading.Event()
                 monitor = self._start_barge_in(stop)
@@ -1046,6 +1083,7 @@ class CLIApp:
                     if hub is not None:
                         hub.self_speaking = False
                     self._tts_active = False
+                    self._island("open" if time.monotonic() < getattr(self, "_follow_up_until", 0.0) else "idle")
                 if not completed:
                     self._barged = True
                     self._status("[you talked over me — listening]")
