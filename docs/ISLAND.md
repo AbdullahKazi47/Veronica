@@ -3,21 +3,25 @@
 When she starts (from **Start VERONICA.bat** or when you sign in), her terminal hides and a
 small island appears at the top centre of the screen, just under the camera.
 
-Its look follows a "live lyrics" island for Windows (a reel by TwoCode): frosted glass
-tinted with the current colour, springy motion between shapes, and words that light up as they're
-sung. Here the words are hers.
+Its look follows a "live lyrics" island for Windows (a reel by TwoCode): glass, springy motion
+between shapes, and words that light up as they're sung. Here the words are hers.
+
+It is black and white on purpose: no colours. You tell the states apart by shape and motion.
 
 | What you see | What it means |
 | --- | --- |
-| A small glass **orb** with a slowly turning cyan and violet core | She's waiting for her name |
-| It springs open into a **glass bar** tinted blue, with flowing waves that rise with your voice | You said "Veronica" and she's listening. In conversation mode it stays open between turns |
-| An **amber** tint and a shimmering "Thinking…" | She's working out the answer |
-| A taller **violet** bar where her sentence lights up word by word as she speaks | She's speaking |
+| A small black glass **orb** with a softly breathing white rim | She's waiting for her name |
+| It springs open into a black **glass bar** with flowing white waves that rise with your voice (the orb glows as you speak) | You said "Veronica" and she's listening. In conversation mode it stays open between turns |
+| A white arc spinning around the orb, and a shimmering "Thinking…" | She's working out the answer |
+| A taller bar where her sentence lights up white, word by word, as she speaks | She's speaking |
 
-**Click the island** and it drops into a glass card. The card shows what you said, her whole reply,
-and buttons: **Show/Hide terminal**, and **Stop talking** while she speaks (she stops and goes back
-to waiting for her name). Click it again, or leave it for about 12 seconds, and it folds back.
-Moving the mouse over the island lifts it slightly.
+**Click the island** and it drops into a black glass card. The card shows what you said and her whole
+reply, with two round icon buttons in the corner:
+- **`>_` (terminal):** shows or hides her terminal. White with a black icon means it's showing.
+- **■ (stop):** only while she speaks. She stops mid-sentence and goes back to waiting for her name.
+
+Click the card again, or leave it for about 12 seconds, and it folds back. Moving the mouse over the
+island lifts it slightly, and buttons light up under the mouse.
 
 The island is always on top and has no taskbar button. Clicks next to it go through to whatever is underneath.
 

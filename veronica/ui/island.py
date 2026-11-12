@@ -29,8 +29,9 @@ import sys
 import time
 
 KEY = "#010203"                              # kept for the tests' colour helper
-TINT = {"idle": (64, 196, 255), "listening": (56, 210, 255), "open": (56, 210, 255),
-        "thinking": (255, 176, 64), "speaking": (176, 132, 255)}
+# Black and white on purpose (the user asked for no colour): states differ by motion, not hue.
+TINT = {"idle": (255, 255, 255), "listening": (255, 255, 255), "open": (255, 255, 255),
+        "thinking": (255, 255, 255), "speaking": (255, 255, 255)}
 LABEL = {"listening": "Listening", "open": "I'm listening", "thinking": "Thinking", "speaking": "", "idle": ""}
 
 # shapes (logical px): width, height, corner radius
@@ -165,6 +166,7 @@ def build(args):
             self.t0 = self.last = time.monotonic()
             self.card_touched = 0.0
             self.buttons: dict[str, QRectF] = {}
+            self.mouse = None
             self.console = _terminal_window(args.console, args.title)
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.bind(("127.0.0.1", args.port))
@@ -262,6 +264,7 @@ def build(args):
 
         def mouseMoveEvent(self, e) -> None:
             inside = self.shape().contains(e.position())
+            self.mouse = e.position() if inside else None
             self.hover = 1.0 if inside else 0.0
             self.setCursor(Qt.CursorShape.PointingHandCursor if inside else Qt.CursorShape.ArrowCursor)
             if self.card and inside:
@@ -269,6 +272,7 @@ def build(args):
 
         def leaveEvent(self, e) -> None:
             self.hover = 0.0
+            self.mouse = None
 
         def mousePressEvent(self, e) -> None:
             p = e.position()
@@ -309,23 +313,23 @@ def build(args):
             # the glass: dark frosted base, a wash of her colour, a top sheen
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
             solid = self.cardness.value * 26                   # the card is for reading: less see-through
-            base.setColorAt(0.0, QColor(30, 32, 42, int(222 + solid)))
-            base.setColorAt(1.0, QColor(10, 11, 16, int(236 + solid * 0.7)))
+            base.setColorAt(0.0, QColor(20, 20, 22, int(232 + solid * 0.8)))
+            base.setColorAt(1.0, QColor(4, 4, 5, int(244 + solid * 0.4)))
             p.fillPath(path, QBrush(base))
             wash = QRadialGradient(QPointF(rect.left() + rect.height() * 0.6, rect.center().y()),
                                    max(rect.width(), rect.height()) * 0.9)
-            glow = 70 + 50 * self.voice + (25 if self.state == "speaking" else 0)
+            glow = 8 + 26 * self.voice + (6 if self.state == "speaking" else 0)
             wash.setColorAt(0.0, rgba(tint, glow))
             wash.setColorAt(0.55, rgba(tint, glow * 0.25))
             wash.setColorAt(1.0, rgba(tint, 0))
             p.fillPath(path, QBrush(wash))
             sheen = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + min(rect.height(), 40)))
-            sheen.setColorAt(0.0, QColor(255, 255, 255, 34))
+            sheen.setColorAt(0.0, QColor(255, 255, 255, 22))
             sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
             p.fillPath(path, QBrush(sheen))
             edge = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            edge.setColorAt(0.0, QColor(255, 255, 255, 70))
-            edge.setColorAt(1.0, rgba(tint, 40))
+            edge.setColorAt(0.0, QColor(255, 255, 255, 46))
+            edge.setColorAt(1.0, QColor(255, 255, 255, 12))
             p.setPen(QPen(QBrush(edge), 1.0))
             p.drawPath(path)
             p.setClipPath(path)
@@ -353,33 +357,42 @@ def build(args):
             p.end()
 
         def draw_orb(self, p, center, r, t, tint) -> None:
-            pulse = 1.0 + 0.06 * math.sin(t * 2.2) + 0.25 * self.voice
+            pulse = 1.0 + 0.04 * math.sin(t * 2.2) + 0.22 * self.voice
             rr = r * pulse
-            halo = QRadialGradient(center, rr * 2.2)
-            halo.setColorAt(0.0, rgba(tint, 90))
-            halo.setColorAt(1.0, rgba(tint, 0))
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QBrush(halo))
-            p.drawEllipse(center, rr * 2.2, rr * 2.2)
-            spin = QConicalGradient(center, (t * (220 if self.state == "thinking" else 70)) % 360)
-            spin.setColorAt(0.0, rgba(tint, 255))
-            spin.setColorAt(0.33, QColor(120, 90, 255, 230))
-            spin.setColorAt(0.66, QColor(60, 230, 210, 230))
-            spin.setColorAt(1.0, rgba(tint, 255))
-            p.setBrush(QBrush(spin))
+            if self.voice > 0.02:                                   # a soft white glow as you speak
+                halo = QRadialGradient(center, rr * 2.0)
+                halo.setColorAt(0.0, QColor(255, 255, 255, int(70 * self.voice)))
+                halo.setColorAt(1.0, QColor(255, 255, 255, 0))
+                p.setBrush(QBrush(halo))
+                p.drawEllipse(center, rr * 2.0, rr * 2.0)
+            body = QRadialGradient(QPointF(center.x() - rr * 0.25, center.y() - rr * 0.3), rr * 1.25)
+            body.setColorAt(0.0, QColor(58, 58, 62))
+            body.setColorAt(0.55, QColor(14, 14, 16))
+            body.setColorAt(1.0, QColor(0, 0, 0))
+            p.setBrush(QBrush(body))
             p.drawEllipse(center, rr, rr)
-            core = QRadialGradient(QPointF(center.x() - rr * 0.3, center.y() - rr * 0.35), rr * 1.1)
-            core.setColorAt(0.0, QColor(255, 255, 255, 200))
-            core.setColorAt(0.35, QColor(255, 255, 255, 40))
-            core.setColorAt(1.0, QColor(255, 255, 255, 0))
-            p.setBrush(QBrush(core))
+            breath = 0.5 + 0.5 * math.sin(t * 1.6)
+            p.setPen(QPen(QColor(255, 255, 255, int(55 + 45 * breath + 90 * self.voice)), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(center, rr, rr)
+            spot = QRadialGradient(QPointF(center.x() - rr * 0.35, center.y() - rr * 0.42), rr * 0.5)
+            spot.setColorAt(0.0, QColor(255, 255, 255, 150))
+            spot.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(spot))
+            p.drawEllipse(center, rr, rr)
+            if self.state in ("thinking", "speaking"):
+                arc = QRectF(center.x() - rr - 3, center.y() - rr - 3, (rr + 3) * 2, (rr + 3) * 2)
+                speed = 420 if self.state == "thinking" else 160
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawArc(arc, int(-(t * speed) % 360 * 16), 90 * 16)
 
         def draw_waves(self, p, box, t, tint, alpha) -> None:
             mid = box.center().y()
             amp = (3.0 + self.voice * (box.height() * 0.36))
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            layers = [(tint, 1.0, 1.0, 0.0), ((120, 100, 255), 0.75, 1.6, 1.7), ((70, 235, 205), 0.55, 2.3, 3.1)]
+            layers = [((235, 235, 235), 1.0, 1.0, 0.0), ((150, 150, 150), 0.75, 1.6, 1.7), ((95, 95, 95), 0.55, 2.3, 3.1)]
             for color, scale, freq, phase in layers:
                 path = QPainterPath()
                 steps = 80
@@ -407,14 +420,14 @@ def build(args):
                 g = QLinearGradient(QPointF(x, 0), QPointF(x + wtxt, 0))
                 sweep = (t * 0.8) % 1.6 - 0.3
                 for stop, a in ((max(0, sweep - 0.25), 110), (max(0, min(1, sweep)), 255), (min(1, sweep + 0.25), 110)):
-                    g.setColorAt(stop, rgba((255, 236, 205), a * alpha))
-                g.setColorAt(0.0, rgba((255, 236, 205), 110 * alpha))
-                g.setColorAt(1.0, rgba((255, 236, 205), 110 * alpha))
+                    g.setColorAt(stop, rgba((255, 255, 255), a * alpha))
+                g.setColorAt(0.0, rgba((255, 255, 255), 110 * alpha))
+                g.setColorAt(1.0, rgba((255, 255, 255), 110 * alpha))
                 p.setPen(QPen(QBrush(g), 1))
                 dots = "." * (1 + int(t * 2.5) % 3)
                 p.drawText(QPointF(x, y), text + dots)
             else:
-                p.setPen(rgba((225, 240, 255), 170 * alpha))
+                p.setPen(rgba((230, 230, 230), 170 * alpha))
                 p.drawText(QPointF(x, y), text)
 
         def draw_lyric(self, p, box, tint, alpha) -> None:
@@ -434,19 +447,19 @@ def build(args):
             for i, (word, w) in enumerate(zip(words, widths)):
                 if x + w > box.left() - 4 and x < box.right() + 4:
                     if i < int(said):
-                        col = rgba((246, 244, 255), 255 * alpha)
+                        col = rgba((250, 250, 250), 255 * alpha)
                     elif i == int(said):
                         frac = said - int(said)
-                        col = rgba([a + (b - a) * frac for a, b in zip((150, 140, 190), (255, 255, 255))], 255 * alpha)
+                        col = rgba([a + (b - a) * frac for a, b in zip((140, 140, 140), (255, 255, 255))], 255 * alpha)
                     else:
-                        col = rgba((200, 196, 225), 95 * alpha)
+                        col = rgba((200, 200, 200), 90 * alpha)
                     p.setPen(col)
                     p.drawText(QPointF(x, y), word)
                 x += w + space
             fade = QLinearGradient(QPointF(box.left(), 0), QPointF(box.left() + 18, 0))
             if shift > 0:
-                fade.setColorAt(0.0, QColor(14, 14, 22, int(220 * alpha)))
-                fade.setColorAt(1.0, QColor(14, 14, 22, 0))
+                fade.setColorAt(0.0, QColor(10, 10, 11, int(230 * alpha)))
+                fade.setColorAt(1.0, QColor(10, 10, 11, 0))
                 p.fillRect(QRectF(box.left(), box.top(), 18, box.height()), QBrush(fade))
 
         def draw_card(self, p, rect, t, tint, k) -> None:
@@ -456,40 +469,57 @@ def build(args):
             left = rect.left() + 64
             top = rect.top() + 18
             p.setFont(self.font_small)
-            p.setPen(rgba((200, 215, 235), 190 * a))
+            p.setPen(rgba((205, 205, 205), 190 * a))
             status = {"idle": "Waiting for “Veronica”", "listening": "Listening", "open": "Listening for a follow-up",
                       "thinking": "Thinking", "speaking": "Speaking"}.get(self.state, "")
             p.drawText(QPointF(left, top + 10), f"VERONICA  ·  {status}")
             box = QRectF(left, top + 22, rect.right() - left - 22, 26)
             if self.you:
-                p.setPen(rgba((170, 185, 210), 170 * a))
+                p.setPen(rgba((165, 165, 165), 170 * a))
                 p.drawText(box, Qt.TextFlag.TextSingleLine | Qt.AlignmentFlag.AlignVCenter,
                            QFontMetricsF(self.font_small).elidedText("You: " + self.you, Qt.TextElideMode.ElideRight, box.width()))
             p.setFont(self.font_big)
-            p.setPen(rgba((246, 246, 255), 245 * a))
-            body = QRectF(left, top + 50, rect.right() - left - 22, rect.bottom() - (top + 50) - 52)
+            p.setPen(rgba((248, 248, 248), 245 * a))
+            body = QRectF(left, top + 50, rect.right() - left - 70, rect.bottom() - (top + 50) - 14)
             text = self.reply or ("Say “Veronica” to start." if self.state == "idle" else "…")
             p.drawText(body, Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignTop, _fit(text, 150))
-            # buttons
+            # icon buttons: terminal, and stop while she speaks
             self.buttons = {}
-            bx = left
-            by = rect.bottom() - 42
-            labels = [("terminal", "Hide terminal" if _terminal_visible(self.console) else "Show terminal")]
-            if self.state == "speaking":
-                labels.append(("stop", "Stop talking"))
-            p.setFont(self.font_small)
-            for name, label in labels:
-                bw = QFontMetricsF(self.font_small).horizontalAdvance(label) + 28
-                r = QRectF(bx, by, bw, 28)
+            size = 34.0
+            by = rect.bottom() - size - 12
+            bx = rect.right() - 18 - size
+            icons = ["terminal"] + (["stop"] if self.state == "speaking" else [])
+            for name in reversed(icons):
+                r = QRectF(bx, by, size, size)
+                on = name == "terminal" and _terminal_visible(self.console)
+                hot = self.mouse is not None and r.contains(self.mouse)
                 bp = QPainterPath()
-                bp.addRoundedRect(r, 14, 14)
-                p.fillPath(bp, rgba((255, 255, 255), 26 * a))
-                p.setPen(QPen(rgba((255, 255, 255), 50 * a), 1))
+                bp.addEllipse(r)
+                p.fillPath(bp, QColor(255, 255, 255, int((235 if on else 44 if hot else 22) * a)))
+                p.setPen(QPen(QColor(255, 255, 255, int((90 if hot else 46) * a)), 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)       # the stop icon's fill must not leak into this outline
                 p.drawPath(bp)
-                p.setPen(rgba((235, 242, 255), 230 * a))
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                self.draw_icon(p, name, r, a, dark=on)        # on (terminal showing): black icon on white
                 self.buttons[name] = r
-                bx += bw + 10
+                bx -= size + 10
+
+        def draw_icon(self, p, name, r, a, dark=False) -> None:
+            c = r.center()
+            ink = QColor(10, 10, 10, int(255 * a)) if dark else QColor(245, 245, 245, int(235 * a))
+            pen = QPen(ink, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                       Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if name == "terminal":                                  # a little window with  >_
+                box = QRectF(c.x() - 8, c.y() - 6.5, 16, 13)
+                p.drawRoundedRect(box, 2.5, 2.5)
+                p.drawLine(QPointF(c.x() - 4.5, c.y() - 2.5), QPointF(c.x() - 1.5, c.y()))
+                p.drawLine(QPointF(c.x() - 1.5, c.y()), QPointF(c.x() - 4.5, c.y() + 2.5))
+                p.drawLine(QPointF(c.x() + 0.5, c.y() + 3), QPointF(c.x() + 4.5, c.y() + 3))
+            elif name == "stop":                                    # a rounded square
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(ink)
+                p.drawRoundedRect(QRectF(c.x() - 5.5, c.y() - 5.5, 11, 11), 2.5, 2.5)
 
     app = QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(True)
