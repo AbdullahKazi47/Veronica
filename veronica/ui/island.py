@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import datetime as dt
 import json
 import math
 import socket
@@ -39,6 +40,7 @@ ORB = (34, 34, 17)
 BAR = (400, 44, 22)
 BAR_TALL = (460, 52, 26)
 CARD = (520, 214, 30)
+GRID = (520, 252, 28)                         # the hover tool grid (music, timer, system, toggles)
 WIN_W, WIN_H, TOP = 600, 290, 8
 WORDS_PER_S = 2.7                            # her speaking pace (Kokoro / Supertonic / ElevenLabs ~2.5-3)
 
@@ -181,6 +183,20 @@ def build(args):
             self.card_touched = 0.0
             self.buttons: dict[str, QRectF] = {}
             self.mouse = None
+            # the hover tool grid
+            from veronica.ui import island_tools as tools
+            self.tools = tools
+            self.grid, self.gridness = False, Spring(0.0, 150)
+            self.hover_since: float | None = None
+            self.left_since: float | None = None
+            self.hits: dict[str, QRectF] = {}
+            self.timer_t = tools.Timer(5)
+            self.stats = tools.Stats()
+            self.music = tools.NowPlaying()
+            self.awake = False
+            self.muted = False
+            self.next_up = ""
+            self.toast, self.toast_until = "", 0.0
             self.console = _terminal_window(args.console, args.title)
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.bind(("127.0.0.1", args.port))
@@ -204,6 +220,28 @@ def build(args):
             self.watch.start(500)
             if args.hide:
                 QTimer.singleShot(900, lambda: show_terminal(self.console, False))
+            QTimer.singleShot(1500, self.warm_up)
+
+        def warm_up(self) -> None:
+            """Draw the hover grid once, off screen, soon after start. The first draw looks up fonts
+            for its symbols and imports psutil, which froze the first hover for about a second."""
+            try:
+                from PyQt6.QtGui import QImage
+                self.stats.sample()
+                img = QImage(WIN_W, WIN_H, QImage.Format.Format_ARGB32_Premultiplied)
+                img.fill(0)
+                q = QPainter(img)
+                q.setRenderHint(QPainter.RenderHint.Antialiasing)
+                q.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                rect = QRectF((WIN_W - GRID[0]) / 2, TOP, GRID[0], GRID[1])
+                self.draw_grid(q, rect, 0.0, 1.0)
+                for f in (self.font_ui, self.font_small, self.font_big):
+                    q.setFont(f)
+                    q.drawText(QPointF(0, 20), "Thinking Listening 0123456789 ↓↑↺⚡·“”")
+                q.end()
+                self.hits = {}
+            except Exception:  # noqa: BLE001 - only a speed-up
+                pass
 
         # -- messages ---------------------------------------------------------------------
         def read(self) -> None:
@@ -227,6 +265,10 @@ def build(args):
                 if "l" in m:
                     self.level = float(m.get("l") or 0.0)
                     self.ambient = float(m.get("a") or self.ambient or 60.0)
+                if "mic" in m:
+                    self.muted = not bool(m["mic"])
+                if "next" in m:
+                    self.next_up = str(m.get("next") or "")[:120]
                 if m.get("you"):
                     self.you, self.reply = str(m["you"])[:300], ""
                 if m.get("say"):
@@ -254,10 +296,41 @@ def build(args):
             now = time.monotonic()
             dt = min(0.05, now - self.last)
             self.last = now
+            # Where the mouse is, read every frame: movement events alone miss a cursor that jumps
+            # onto the island (and a "leave" that never arrives keeps it open).
+            from PyQt6.QtGui import QCursor
+            local = self.mapFromGlobal(QCursor.pos())
+            inside = self.shape().adjusted(-4, -4, 4, 4).contains(QPointF(local))
+            self.hover = 1.0 if inside else 0.0
+            self.mouse = QPointF(local) if inside else None
             if self.card and now - self.card_touched > 12 and self.hover < 0.5:
                 self.card = False                          # left alone: fold back
+            if self.state != "idle" or self.card:
+                self.grid, self.hover_since = False, None  # she's listening / talking: the tools make way
+            elif self.hover > 0.5:
+                self.left_since = None
+                self.hover_since = self.hover_since or now
+                if not self.grid and now - self.hover_since > 0.12:
+                    self.grid = True
+            else:
+                self.hover_since = None
+                if self.grid:
+                    self.left_since = self.left_since or now
+                    if now - self.left_since > 0.35:
+                        self.grid = False
+            if self.timer_t.done():                        # the timer ran out (grid open or not)
+                self.toast, self.toast_until = "Timer done", now + 4.0
+                self.send("timer_done")
+            if self.gridness.value > 0.05:
+                self.stats.sample(now)
+                self.music.poll(now)
+            toast = self.toast and now < self.toast_until and self.state == "idle" and not self.grid
             if self.card:
                 tw, th, tr = CARD
+            elif self.grid:
+                tw, th, tr = GRID
+            elif toast:
+                tw, th, tr = BAR
             elif self.state == "idle":
                 tw, th, tr = ORB
             elif self.state == "speaking":
@@ -269,8 +342,10 @@ def build(args):
             self.w.target, self.h.target, self.r.target = tw, th, tr
             for sp in (self.w, self.h, self.r):
                 sp.step(dt)
-            self.content.target = 0.0 if (self.state == "idle" and not self.card) else 1.0
+            self.content.target = 0.0 if (self.state == "idle" and not self.card and not self.grid and not toast) else 1.0
             self.content.step(dt)
+            self.gridness.target = 1.0 if self.grid else 0.0
+            self.gridness.step(dt)
             self.cardness.target = 1.0 if self.card else 0.0
             self.cardness.step(dt)
             want = TINT.get(self.state, TINT["idle"])
@@ -282,7 +357,7 @@ def build(args):
             self.spin_speed = ease(self.spin_speed, want_spin, 4, dt)
             self.spin += dt * self.spin_speed
             self.label_a = ease(self.label_a, 1.0 if self.voice < 0.1 else 0.0, 7, dt)
-            resting = (self.state == "idle" and not self.card and self.hover < 0.5
+            resting = (self.state == "idle" and not self.card and not self.grid and not toast and self.hover < 0.5
                        and abs(self.w.value - ORB[0]) < 0.3 and abs(self.w.v) < 0.5)
             want = 33 if resting else 16                  # only the slow breathing left: half the frames, half the CPU
             if self.timer.interval() != want:
@@ -313,6 +388,12 @@ def build(args):
                     self.card = False
                 return
             self.card_touched = time.monotonic()
+            if self.grid and self.gridness.value > 0.6:
+                for name, rect in self.hits.items():
+                    if rect.contains(p):
+                        self.grid_action(name)
+                        return
+                return
             if self.card and self.cardness.value > 0.7:
                 for name, rect in self.buttons.items():
                     if rect.contains(p):
@@ -324,6 +405,47 @@ def build(args):
                 self.card = False
                 return
             self.card = True
+
+        def grid_action(self, name: str) -> None:
+            now = time.monotonic()
+            if name == "orb":                                  # the globe opens the conversation card
+                self.grid, self.card, self.card_touched = False, True, now
+            elif name in ("previous", "play_pause", "next"):
+                self.tools.media_key(name)
+                self.music.pressed(name)
+            elif name == "timer":
+                self.timer_t.toggle()
+            elif name == "timer_plus1":
+                self.timer_t.add(1)
+            elif name == "timer_plus5":
+                self.timer_t.add(5)
+            elif name == "timer_reset":
+                self.timer_t.reset()
+            elif name == "awake":
+                self.awake = not self.awake
+                self.tools.keep_awake(self.awake)
+                self.flash("Staying awake" if self.awake else "Sleep allowed again")
+            elif name == "mic":
+                self.muted = not self.muted
+                self.send("mic_off" if self.muted else "mic_on")
+            elif name == "screenshot":
+                self.grid = False
+                QTimer.singleShot(420, self.shoot)             # let the grid fold away first
+
+        def shoot(self) -> None:
+            path = self.tools.take_screenshot()
+            if path is None:
+                self.flash("Couldn't take a screenshot")
+                return
+            try:
+                from PyQt6.QtGui import QImage
+                QApplication.clipboard().setImage(QImage(str(path)))
+            except Exception:  # noqa: BLE001
+                pass
+            self.flash("Screenshot saved and copied")
+
+        def flash(self, text: str) -> None:
+            self.toast, self.toast_until = text, time.monotonic() + 2.4
 
         # -- drawing ----------------------------------------------------------------------
         def paintEvent(self, _e) -> None:
@@ -374,7 +496,7 @@ def build(args):
             if c < 0.05:
                 p.end()
                 return
-            alpha = max(0.0, min(1.0, (c - 0.35) / 0.65)) * (1.0 - self.cardness.value)
+            alpha = max(0.0, min(1.0, (c - 0.35) / 0.65)) * (1.0 - self.cardness.value) * (1.0 - self.gridness.value)
             line = QRectF(orb_c.x() + orb_r + 12, rect.top(), rect.right() - (orb_c.x() + orb_r + 12) - 18,
                           min(rect.height(), 52))
             if alpha > 0.01:
@@ -384,6 +506,10 @@ def build(args):
                     self.draw_label(p, line, "Thinking", t, tint, alpha, shimmer=True)
                 elif self.state == "speaking":
                     self.draw_lyric(p, line, tint, alpha)
+                elif self.toast and time.monotonic() < self.toast_until:
+                    self.draw_label(p, line, self.toast, t, tint, alpha, shimmer=False)
+            if self.gridness.value > 0.02:
+                self.draw_grid(p, rect, t, self.gridness.value)
             if self.cardness.value > 0.02:
                 self.draw_card(p, rect, t, tint, self.cardness.value)
             p.end()
@@ -414,6 +540,16 @@ def build(args):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QBrush(spot))
             p.drawEllipse(center, rr, rr)
+            if self.timer_t.running or (self.timer_t.remaining() <= 0 and self.toast == "Timer done"):
+                ring = QRectF(center.x() - rr - 3, center.y() - rr - 3, (rr + 3) * 2, (rr + 3) * 2)
+                p.setPen(QPen(QColor(255, 255, 255, 40), 1.4))
+                p.drawEllipse(ring)
+                p.setPen(QPen(QColor(255, 255, 255, 210), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawArc(ring, 90 * 16, -int(360 * 16 * max(0.0, 1.0 - self.timer_t.progress())))
+            if self.muted:                                          # a small slash: she isn't listening
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(QPointF(center.x() - rr * 0.55, center.y() + rr * 0.55),
+                           QPointF(center.x() + rr * 0.55, center.y() - rr * 0.55))
             arc_a = max(0.0, min(1.0, self.spin_speed / 2.4))            # fades in and out with the spin
             if arc_a > 0.02:
                 arc = QRectF(center.x() - rr - 3, center.y() - rr - 3, (rr + 3) * 2, (rr + 3) * 2)
@@ -568,6 +704,236 @@ def build(args):
                 self.draw_icon(p, name, r, a, dark=on)        # on (terminal showing): black icon on white
                 self.buttons[name] = r
                 bx -= size + 10
+
+        def draw_grid(self, p, rect, t, k) -> None:
+            """Header (time, date, what's next) over three tiles; tiles spring in one after another."""
+            self.hits = {}
+            head_a = max(0.0, min(1.0, (k - 0.35) / 0.5))
+            orb_hit = QRectF(rect.left() + 4, rect.top() + 4, 48, 48)
+            self.hits["orb"] = orb_hit
+            if head_a > 0.01:
+                now = dt.datetime.now()
+                p.setFont(self.font_big)
+                p.setPen(rgba((250, 250, 250), 245 * head_a))
+                fm = QFontMetricsF(self.font_big)
+                clock = now.strftime("%I:%M").lstrip("0")
+                p.drawText(QPointF(rect.left() + 58, rect.top() + 33), clock)
+                p.setFont(self.font_small)
+                p.setPen(rgba((170, 170, 170), 220 * head_a))
+                p.drawText(QPointF(rect.left() + 64 + fm.horizontalAdvance(clock), rect.top() + 32),
+                           now.strftime("%p  ·  %a %d %b"))
+                if self.next_up:
+                    right = QRectF(rect.left() + 250, rect.top() + 18, rect.width() - 270, 20)
+                    p.setPen(rgba((200, 200, 200), 200 * head_a))
+                    p.drawText(right, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                               QFontMetricsF(self.font_small).elidedText("Next: " + self.next_up,
+                                                                        Qt.TextElideMode.ElideLeft, right.width()))
+            L, R = rect.left() + 14, rect.right() - 14
+            T, B = rect.top() + 56, rect.bottom() - 14
+            gap = 10.0
+            side = (R - L - gap) / 3
+            main_w = R - L - gap - side
+            mid = (T + B - gap) / 2
+            tiles = [("music", QRectF(L, T, main_w, mid - T)),
+                     ("timer", QRectF(L, mid + gap, (main_w - gap) / 2, B - mid - gap)),
+                     ("toggles", QRectF(L + (main_w + gap) / 2, mid + gap, (main_w - gap) / 2, B - mid - gap)),
+                     ("system", QRectF(R - side, T, side, B - T))]
+            for i, (name, box) in enumerate(tiles):
+                a = max(0.0, min(1.0, (k - 0.45 - 0.07 * i) / 0.35))        # one after another
+                if a <= 0.01:
+                    continue
+                box = box.translated(0, 10 * (1 - _smooth(a)))
+                tile = QPainterPath()
+                tile.addRoundedRect(box, 16, 16)
+                p.fillPath(tile, QColor(255, 255, 255, int(12 * a)))
+                p.setPen(QPen(QColor(255, 255, 255, int(20 * a)), 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(tile)
+                getattr(self, f"tile_{name}")(p, box, t, a)
+
+        def tile_music(self, p, box, t, a) -> None:
+            info = self.music.info
+            playing = bool(info.get("playing"))
+            # equaliser: moves while music plays, rests flat when paused
+            ex, ey = box.left() + 16, box.center().y() - 2
+            for i in range(4):
+                hgt = 4 + (10 * abs(math.sin(t * (5.5 + i * 1.3) + i)) if playing else 0)
+                p.fillRect(QRectF(ex + i * 5, ey + 7 - hgt, 3, hgt), QColor(255, 255, 255, int(200 * a)))
+            text_l = box.left() + 46
+            controls_w = 3 * 30 + 8
+            width = box.width() - (text_l - box.left()) - controls_w - 10
+            p.setFont(self.font_ui)
+            p.setPen(rgba((250, 250, 250), 245 * a))
+            title = info.get("title") or "Nothing playing"
+            p.drawText(QPointF(text_l, box.center().y() - 2),
+                       QFontMetricsF(self.font_ui).elidedText(title, Qt.TextElideMode.ElideRight, width))
+            p.setFont(self.font_small)
+            p.setPen(rgba((160, 160, 160), 220 * a))
+            sub_line = " · ".join(x for x in (info.get("artist"), info.get("app")) if x) or "Spotify, YouTube, any player"
+            p.drawText(QPointF(text_l, box.center().y() + 15),
+                       QFontMetricsF(self.font_small).elidedText(sub_line, Qt.TextElideMode.ElideRight, width))
+            x = box.right() - controls_w
+            for name in ("previous", "play_pause", "next"):
+                r = QRectF(x, box.center().y() - 15, 30, 30)
+                self.round_button(p, r, a, big=name == "play_pause")
+                self.media_icon(p, name, r.center(), a, playing)
+                self.hits[name] = r
+                x += 33
+
+        def tile_timer(self, p, box, t, a) -> None:
+            tm = self.timer_t
+            c = QPointF(box.left() + 34, box.center().y())
+            ring = QRectF(c.x() - 21, c.y() - 21, 42, 42)
+            p.setPen(QPen(QColor(255, 255, 255, int(40 * a)), 3))
+            p.drawEllipse(ring)
+            p.setPen(QPen(QColor(255, 255, 255, int(230 * a)), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(ring, 90 * 16, -int(360 * 16 * max(0.0, 1.0 - tm.progress())))
+            # play / pause in the ring
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, int(235 * a)))
+            if tm.running:
+                p.drawRoundedRect(QRectF(c.x() - 5, c.y() - 6, 3.5, 12), 1, 1)
+                p.drawRoundedRect(QRectF(c.x() + 1.5, c.y() - 6, 3.5, 12), 1, 1)
+            else:
+                tri = QPainterPath()
+                tri.moveTo(c.x() - 3.5, c.y() - 6.5)
+                tri.lineTo(c.x() + 6.5, c.y())
+                tri.lineTo(c.x() - 3.5, c.y() + 6.5)
+                tri.closeSubpath()
+                p.drawPath(tri)
+            self.hits["timer"] = ring.adjusted(-4, -4, 4, 4)
+            p.setFont(self.font_ui)
+            p.setPen(rgba((250, 250, 250), 245 * a))
+            p.drawText(QPointF(box.left() + 64, box.center().y() - 2), tm.label())
+            p.setFont(self.font_small)
+            bx = box.left() + 64
+            for name, label in (("timer_plus1", "+1"), ("timer_plus5", "+5"), ("timer_reset", "↺")):
+                r = QRectF(bx, box.center().y() + 6, 24, 18)
+                pill = QPainterPath()
+                pill.addRoundedRect(r, 9, 9)
+                hot = self.mouse is not None and r.contains(self.mouse)
+                p.fillPath(pill, QColor(255, 255, 255, int((40 if hot else 20) * a)))
+                p.setPen(rgba((235, 235, 235), 230 * a))
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                self.hits[name] = r
+                bx += 27
+
+        def tile_toggles(self, p, box, t, a) -> None:
+            size = 32.0
+            names = [("awake", self.awake), ("screenshot", False), ("mic", self.muted)]
+            total = len(names) * size + (len(names) - 1) * 10
+            x = box.center().x() - total / 2
+            for name, on in names:
+                r = QRectF(x, box.center().y() - size / 2 - 6, size, size)
+                self.round_button(p, r, a, on=on)
+                self.toggle_icon(p, name, r.center(), a, dark=on)
+                self.hits[name] = r
+                p.setFont(self.font_small)
+                p.setPen(rgba((150, 150, 150), 200 * a))
+                label = {"awake": "Awake", "screenshot": "Shot", "mic": "Muted" if self.muted else "Mic"}[name]
+                p.drawText(QRectF(r.left() - 8, r.bottom() + 2, size + 16, 14), Qt.AlignmentFlag.AlignCenter, label)
+                x += size + 10
+
+        def tile_system(self, p, box, t, a) -> None:
+            st = self.stats
+            p.setFont(self.font_small)
+            y = box.top() + 16
+            for label, value in (("CPU", st.cpu), ("Memory", st.mem)):
+                p.setPen(rgba((165, 165, 165), 220 * a))
+                p.drawText(QPointF(box.left() + 14, y + 10), label)
+                p.setPen(rgba((245, 245, 245), 240 * a))
+                p.drawText(QRectF(box.left() + 14, y, box.width() - 28, 14),
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{value:.0f}%")
+                bar = QRectF(box.left() + 14, y + 17, box.width() - 28, 4)
+                track = QPainterPath()
+                track.addRoundedRect(bar, 2, 2)
+                p.fillPath(track, QColor(255, 255, 255, int(28 * a)))
+                fill = QPainterPath()
+                shown = getattr(self, f"_shown_{label}", 0.0)
+                shown += (value - shown) * 0.12                       # bars glide to new values
+                setattr(self, f"_shown_{label}", shown)
+                fill.addRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * max(0.02, shown / 100), 4), 2, 2)
+                p.fillPath(fill, QColor(255, 255, 255, int(220 * a)))
+                y += 34
+            if st.battery:
+                pct, plugged = st.battery
+                p.setPen(rgba((165, 165, 165), 220 * a))
+                p.drawText(QPointF(box.left() + 14, y + 10), "Battery")
+                p.setPen(rgba((245, 245, 245), 240 * a))
+                p.drawText(QRectF(box.left() + 14, y, box.width() - 28, 14),
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                           f"{pct:.0f}%" + (" ⚡" if plugged else ""))
+                y += 22
+            if st.down:
+                p.setPen(rgba((165, 165, 165), 220 * a))
+                p.drawText(QRectF(box.left() + 14, y, box.width() - 28, 14),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"↓ {st.down}")
+                p.drawText(QRectF(box.left() + 14, y + 14, box.width() - 28, 14),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"↑ {st.up}")
+            # CPU history along the bottom
+            graph = QRectF(box.left() + 12, box.bottom() - 30, box.width() - 24, 20)
+            line = QPainterPath()
+            pts = list(st.history)
+            for i, v in enumerate(pts):
+                pt = QPointF(graph.left() + graph.width() * i / (len(pts) - 1), graph.bottom() - graph.height() * v)
+                line.moveTo(pt) if i == 0 else line.lineTo(pt)
+            p.setPen(QPen(QColor(255, 255, 255, int(150 * a)), 1.3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(line)
+
+        def round_button(self, p, r, a, big=False, on=False) -> None:
+            hot = self.mouse is not None and r.contains(self.mouse)
+            path = QPainterPath()
+            path.addEllipse(r)
+            p.fillPath(path, QColor(255, 255, 255, int((235 if on else 46 if hot else 24 if big else 16) * a)))
+            p.setPen(QPen(QColor(255, 255, 255, int((80 if hot else 30) * a)), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+        def media_icon(self, p, name, c, a, playing) -> None:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(245, 245, 245, int(235 * a)))
+
+            def tri(x, y, w, h, left=False):
+                path = QPainterPath()
+                if left:
+                    path.moveTo(x + w, y - h / 2); path.lineTo(x, y); path.lineTo(x + w, y + h / 2)
+                else:
+                    path.moveTo(x, y - h / 2); path.lineTo(x + w, y); path.lineTo(x, y + h / 2)
+                path.closeSubpath()
+                p.drawPath(path)
+            if name == "play_pause":
+                if playing:
+                    p.drawRoundedRect(QRectF(c.x() - 4.5, c.y() - 5.5, 3.2, 11), 1, 1)
+                    p.drawRoundedRect(QRectF(c.x() + 1.3, c.y() - 5.5, 3.2, 11), 1, 1)
+                else:
+                    tri(c.x() - 3, c.y(), 8.5, 11)
+            elif name == "next":
+                tri(c.x() - 5, c.y(), 6, 9); tri(c.x(), c.y(), 6, 9)
+            else:
+                tri(c.x() - 1, c.y(), 6, 9, left=True); tri(c.x() - 6, c.y(), 6, 9, left=True)
+
+        def toggle_icon(self, p, name, c, a, dark=False) -> None:
+            ink = QColor(10, 10, 10, int(255 * a)) if dark else QColor(245, 245, 245, int(235 * a))
+            p.setPen(QPen(ink, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if name == "awake":                                   # a coffee cup with steam
+                p.drawRoundedRect(QRectF(c.x() - 6, c.y() - 2, 9, 8), 2, 2)
+                p.drawArc(QRectF(c.x() + 1.5, c.y() - 0.5, 5, 5), -90 * 16, 180 * 16)
+                p.drawLine(QPointF(c.x() - 3, c.y() - 4.5), QPointF(c.x() - 3, c.y() - 7))
+                p.drawLine(QPointF(c.x() + 0.5, c.y() - 4.5), QPointF(c.x() + 0.5, c.y() - 7))
+            elif name == "screenshot":                            # a camera
+                p.drawRoundedRect(QRectF(c.x() - 7.5, c.y() - 4.5, 15, 10.5), 2.5, 2.5)
+                p.drawEllipse(QPointF(c.x(), c.y() + 0.7), 3, 3)
+                p.drawLine(QPointF(c.x() - 3, c.y() - 4.5), QPointF(c.x() - 1.5, c.y() - 6.5))
+                p.drawLine(QPointF(c.x() - 1.5, c.y() - 6.5), QPointF(c.x() + 1.5, c.y() - 6.5))
+                p.drawLine(QPointF(c.x() + 1.5, c.y() - 6.5), QPointF(c.x() + 3, c.y() - 4.5))
+            elif name == "mic":                                   # a microphone (struck through when muted)
+                p.drawRoundedRect(QRectF(c.x() - 2.6, c.y() - 7, 5.2, 9), 2.6, 2.6)
+                p.drawArc(QRectF(c.x() - 5.5, c.y() - 4, 11, 9), 200 * 16, 140 * 16)
+                p.drawLine(QPointF(c.x(), c.y() + 5), QPointF(c.x(), c.y() + 7.5))
+                if dark:
+                    p.drawLine(QPointF(c.x() - 6.5, c.y() + 6), QPointF(c.x() + 6.5, c.y() - 7))
 
         def draw_icon(self, p, name, r, a, dark=False) -> None:
             c = r.center()

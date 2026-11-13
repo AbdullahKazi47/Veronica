@@ -375,7 +375,10 @@ class CLIApp:
             link = IslandLink(level, hide_terminal=bool(getattr(vcfg, "island_hides_terminal", True)),
                               title=self.config.assistant.name)
             link.on_command = self._island_command
-            return link if link.start() else None
+            if not link.start():
+                return None
+            threading.Thread(target=self._island_next_up, args=(link,), name="island-next", daemon=True).start()
+            return link
         except Exception:  # noqa: BLE001 - optional; the terminal stays as it is
             logger.exception("Couldn't start the island.")
             return None
@@ -388,6 +391,33 @@ class CLIApp:
             if stop is not None:
                 self._quiet_stop = True
                 stop.set()
+        elif cmd in ("mic_off", "mic_on"):
+            # The island's mic button: she stops responding to her name (and to follow-ups) until
+            # it's pressed again. The mic itself stays open so the wake word can come back at once.
+            self._mic_muted = cmd == "mic_off"
+            if getattr(self, "island", None) is not None:
+                self.island.mic_on = not self._mic_muted
+            self._status("[mic muted from the island]" if self._mic_muted else "[mic back on]")
+        elif cmd == "timer_done":
+            threading.Thread(target=self._say, args=("Your timer's done.",), name="timer-done", daemon=True).start()
+
+    def _island_next_up(self, link) -> None:
+        """Her next reminder, for the clock in the island's hover grid (checked every 30 s)."""
+        import datetime as _dt
+        from veronica.tools.productivity_tools import ReminderStore, _speak_time
+        store = ReminderStore(self.config)
+        while not self._stop.is_set():
+            try:
+                pending = store.pending()
+                if pending:
+                    r = pending[0]
+                    when = _dt.datetime.fromisoformat(r["due"])
+                    link.next_up = f"{r['text']} {_speak_time(when, _dt.datetime.now())}"
+                else:
+                    link.next_up = ""
+            except Exception:  # noqa: BLE001
+                pass
+            self._stop.wait(30)
 
     def _island_say(self, kind: str, text: str) -> None:
         link = getattr(self, "island", None)
@@ -720,6 +750,11 @@ class CLIApp:
         return ""
 
     def _get_input(self) -> str:
+        if self.voice_mode and getattr(self, "_mic_muted", False):
+            self._island("idle")                 # muted from the island: not listening for anything
+            self._follow_up_until = 0.0
+            time.sleep(0.4)
+            return ""
         if self.voice_mode and self.stt is not None and getattr(self, "_barged", False):
             # The user talked over her: listen straight away, no wake word.
             self._barged = False

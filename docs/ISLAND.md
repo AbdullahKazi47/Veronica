@@ -34,6 +34,25 @@ She is never left invisible:
 The waveform is measured against the room's own background level, so a noisy room doesn't look
 like speech. It's the same meter as the line in the terminal.
 
+## Hover tools (idea from Fenn, fenn.click)
+Move the mouse onto the globe while she's idle, and after a moment the island springs open into a
+black glass grid. The tiles come in one after another. Move away and it folds back. The moment she
+starts listening, thinking or speaking, the grid makes way for her.
+
+| Tile | What it does |
+| --- | --- |
+| **Header** | Time and date, and your next reminder ("Next: Call mom at 6:00 PM"). Click the globe in the corner to open her conversation card |
+| **Music** | What's playing in Spotify, YouTube or any player, from Windows' own media controls, with previous / play-pause / next. The little equaliser moves while music plays |
+| **Timer** | Tap the ring to start or pause. **+1** and **+5** add minutes, **↺** resets to 5:00. While it runs, a thin white ring counts down around the globe, even with the grid closed. When it's done the island says "Timer done" and she tells you out loud |
+| **Awake** (cup) | Keeps the PC from sleeping or turning off the screen. White means on. It stops if the island stops |
+| **Shot** (camera) | The grid folds away, then she saves a screenshot to Pictures\Screenshots and copies it so you can paste it |
+| **Mic** | Mutes her: she stops answering her name and follow-ups until you press it again. The globe shows a small slash while she's muted |
+| **System** | Live CPU and memory (the bars glide to new values), battery and charging, network up and down, and a CPU graph |
+
+While the grid is closed it costs nothing. Stats are read once a second and music every 3 seconds,
+and only while it's open. It's pre-drawn once off screen at start, because the first draw looked
+up fonts and froze the first hover for about a second.
+
 ## Motion
 - Every change is eased, never stepped. Shapes move on springs tuned just under critical, so
   they glide into place without bouncing. Colour, glow, the "Listening" label and the arc

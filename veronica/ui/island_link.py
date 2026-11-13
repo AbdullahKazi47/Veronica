@@ -22,6 +22,7 @@ from veronica.logging_setup import get_logger
 logger = get_logger("ui.island")
 
 STATES = ("idle", "listening", "open", "thinking", "speaking")
+COMMANDS = ("stop", "mic_off", "mic_on", "timer_done")     # all the island may ask of her
 
 
 def _console_hwnd() -> int:
@@ -57,7 +58,9 @@ class IslandLink:
         self._stop = threading.Event()
         self._restarts = 0
         self.console = _console_hwnd()
-        self.on_command: Optional[Callable[[str], None]] = None   # the island's buttons ("stop")
+        self.on_command: Optional[Callable[[str], None]] = None   # the island's buttons ("stop", "mic_off", ...)
+        self.mic_on = True                   # echoed in the heartbeat, so a restarted island shows it right
+        self.next_up = ""                    # her next reminder, for the clock in the hover grid
         self._inbox = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._inbox.bind(("127.0.0.1", 0))
         self._inbox.settimeout(0.5)
@@ -126,7 +129,7 @@ class IslandLink:
                 cmd = json.loads(data.decode("utf-8")).get("cmd")
             except (ValueError, AttributeError):
                 continue
-            if cmd in ("stop",) and self.on_command is not None:
+            if cmd in COMMANDS and self.on_command is not None:
                 try:
                     self.on_command(cmd)
                 except Exception:  # noqa: BLE001
@@ -150,7 +153,7 @@ class IslandLink:
                 self._send({"s": self.state, "l": round(float(level or 0.0), 1), "a": round(float(ambient or 60.0), 1)})
                 self._stop.wait(0.04)
             else:
-                self._send({"s": self.state})       # a heartbeat, so a restarted island catches up
+                self._send({"s": self.state, "mic": self.mic_on, "next": self.next_up})   # heartbeat: a restarted island catches up
                 self._stop.wait(0.25)
             self._keep_alive()
 
