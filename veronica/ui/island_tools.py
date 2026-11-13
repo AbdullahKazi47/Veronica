@@ -1,12 +1,12 @@
 """
-The tools behind the island's hover grid (ui/island.py): music, timer, system monitor,
-keep-awake, screenshot. Kept free of drawing code so it can be tested on its own.
+The tools behind the island's hover grid (ui/island.py): music, system monitor, keep-awake,
+screenshot. Kept free of drawing code so it can be tested on its own.
 
 Inspired by Fenn's hover notch (fenn.click); written for VERONICA, in her island, so there is
 one presence at the top of the screen instead of two fighting over it.
 
 Costs nothing when the grid is closed: stats are sampled and music is polled only while it's open
-(the timer only does arithmetic).
+
 """
 from __future__ import annotations
 
@@ -19,62 +19,6 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
-
-# -- timer ------------------------------------------------------------------------------------
-class Timer:
-    """A countdown you tap to start/pause; +1 / +5 add minutes. done() is True exactly once."""
-
-    def __init__(self, minutes: float = 5.0, clock: Callable[[], float] = time.monotonic) -> None:
-        self.clock = clock
-        self.total = minutes * 60.0
-        self.left = self.total
-        self.started: Optional[float] = None        # clock() when it last started running
-        self._fired = False
-
-    @property
-    def running(self) -> bool:
-        return self.started is not None
-
-    def remaining(self) -> float:
-        if self.started is None:
-            return self.left
-        return max(0.0, self.left - (self.clock() - self.started))
-
-    def progress(self) -> float:
-        """0 at the start, 1 when it's done."""
-        return 1.0 - (self.remaining() / self.total if self.total else 0.0)
-
-    def toggle(self) -> None:
-        if self.started is None:
-            if self.remaining() <= 0:
-                self.reset()
-            self.started, self._fired = self.clock(), False
-        else:
-            self.left, self.started = self.remaining(), None
-
-    def add(self, minutes: float) -> None:
-        extra = minutes * 60.0
-        self.left = self.remaining() + extra
-        self.total = max(self.total, self.left) if self.running else self.left
-        if self.started is not None:
-            self.started = self.clock()
-        self._fired = False
-
-    def reset(self, minutes: Optional[float] = None) -> None:
-        self.total = (minutes * 60.0) if minutes else 300.0
-        self.left, self.started, self._fired = self.total, None, False
-
-    def done(self) -> bool:
-        if self.started is not None and self.remaining() <= 0 and not self._fired:
-            self._fired = True
-            self.left, self.started = 0.0, None
-            return True
-        return False
-
-    def label(self) -> str:
-        s = int(round(self.remaining()))
-        return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
-
 
 # -- system monitor ---------------------------------------------------------------------------
 def _rate(n: float) -> str:

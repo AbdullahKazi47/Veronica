@@ -191,7 +191,7 @@ def build(args):
             self.hover_since: float | None = None
             self.left_since: float | None = None
             self.hits: dict[str, QRectF] = {}
-            self.timer_t = tools.Timer(5)
+            self.power_armed = 0.0                        # the power button: press, then press again to confirm
             self.stats = tools.Stats()
             self.music = tools.NowPlaying()
             self.awake = False
@@ -375,9 +375,6 @@ def build(args):
                     self.left_since = self.left_since or now
                     if now - self.left_since > 0.35:
                         self.grid = False
-            if self.timer_t.done():                        # the timer ran out (grid open or not)
-                self.toast, self.toast_until = "Timer done", now + 4.0
-                self.send("timer_done")
             if self.gridness.value > 0.05:
                 self.stats.sample(now)
                 self.music.poll(now)
@@ -470,14 +467,16 @@ def build(args):
             elif name in ("previous", "play_pause", "next"):
                 self.tools.media_key(name)
                 self.music.pressed(name)
-            elif name == "timer":
-                self.timer_t.toggle()
-            elif name == "timer_plus1":
-                self.timer_t.add(1)
-            elif name == "timer_plus5":
-                self.timer_t.add(5)
-            elif name == "timer_reset":
-                self.timer_t.reset()
+            elif name == "terminal":
+                show_terminal(self.console, not _terminal_visible(self.console))
+            elif name == "power":
+                if now < self.power_armed:                     # second press: close VERONICA
+                    self.power_armed = 0.0
+                    self.grid = False
+                    self.flash("Goodbye")
+                    self.send("quit")
+                else:
+                    self.power_armed = now + 3.0               # first press: ask once more
             elif name == "awake":
                 self.awake = not self.awake
                 self.tools.keep_awake(self.awake)
@@ -520,32 +519,15 @@ def build(args):
             path = QPainterPath()
             path.addRoundedRect(rect, radius, radius)
 
-            # soft shadow
-            for i in range(10, 0, -2):
+            # a faint shadow so it reads on a dark wallpaper too
+            for i in range(8, 0, -2):
                 sh = QPainterPath()
-                sh.addRoundedRect(rect.adjusted(-i, -i * 0.3, i, i * 1.1), radius + i, radius + i)
-                p.fillPath(sh, QColor(0, 0, 0, 7))
-            # the glass: dark frosted base, a wash of her colour, a top sheen
-            base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            solid = self.cardness.value * 26                   # the card is for reading: less see-through
-            base.setColorAt(0.0, QColor(20, 20, 22, int(232 + solid * 0.8)))
-            base.setColorAt(1.0, QColor(4, 4, 5, int(244 + solid * 0.4)))
-            p.fillPath(path, QBrush(base))
-            wash = QRadialGradient(QPointF(rect.left() + rect.height() * 0.6, rect.center().y()),
-                                   max(rect.width(), rect.height()) * 0.9)
-            glow = 8 + 26 * self.voice + (6 if self.state == "speaking" else 0)
-            wash.setColorAt(0.0, rgba(tint, glow))
-            wash.setColorAt(0.55, rgba(tint, glow * 0.25))
-            wash.setColorAt(1.0, rgba(tint, 0))
-            p.fillPath(path, QBrush(wash))
-            sheen = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + min(rect.height(), 40)))
-            sheen.setColorAt(0.0, QColor(255, 255, 255, 22))
-            sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-            p.fillPath(path, QBrush(sheen))
-            edge = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            edge.setColorAt(0.0, QColor(255, 255, 255, 46))
-            edge.setColorAt(1.0, QColor(255, 255, 255, 12))
-            p.setPen(QPen(QBrush(edge), 1.0))
+                sh.addRoundedRect(rect.adjusted(-i, -i * 0.3, i, i), radius + i, radius + i)
+                p.fillPath(sh, QColor(0, 0, 0, 6))
+            # flat black: one solid surface and a hairline edge. No gloss, no gradient.
+            p.fillPath(path, QColor(0, 0, 0, 248))
+            p.setPen(QPen(QColor(255, 255, 255, 30), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
             p.setClipPath(path)
 
@@ -576,37 +558,17 @@ def build(args):
             p.end()
 
         def draw_orb(self, p, center, r, t, tint) -> None:
-            pulse = 1.0 + 0.04 * math.sin(t * 2.2) + 0.22 * self.voice
-            rr = r * pulse
-            p.setPen(Qt.PenStyle.NoPen)
-            if self.voice > 0.02:                                   # a soft white glow as you speak
-                halo = QRadialGradient(center, rr * 2.0)
-                halo.setColorAt(0.0, QColor(255, 255, 255, int(70 * self.voice)))
-                halo.setColorAt(1.0, QColor(255, 255, 255, 0))
-                p.setBrush(QBrush(halo))
-                p.drawEllipse(center, rr * 2.0, rr * 2.0)
-            body = QRadialGradient(QPointF(center.x() - rr * 0.25, center.y() - rr * 0.3), rr * 1.25)
-            body.setColorAt(0.0, QColor(58, 58, 62))
-            body.setColorAt(0.55, QColor(14, 14, 16))
-            body.setColorAt(1.0, QColor(0, 0, 0))
-            p.setBrush(QBrush(body))
-            p.drawEllipse(center, rr, rr)
-            breath = 0.5 + 0.5 * math.sin(t * 1.6)
-            p.setPen(QPen(QColor(255, 255, 255, int(55 + 45 * breath + 90 * self.voice)), 1.2))
+            """Plain and quiet: a thin white ring with a small dot in the middle. The ring breathes
+            slowly while she waits; the dot swells with your voice."""
+            rr = r * (1.0 + 0.10 * self.voice)
+            breath = 0.5 + 0.5 * math.sin(t * 1.5)
             p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, int(95 + 55 * breath + 100 * self.voice)), 1.4))
             p.drawEllipse(center, rr, rr)
-            spot = QRadialGradient(QPointF(center.x() - rr * 0.35, center.y() - rr * 0.42), rr * 0.5)
-            spot.setColorAt(0.0, QColor(255, 255, 255, 150))
-            spot.setColorAt(1.0, QColor(255, 255, 255, 0))
+            dot = rr * (0.26 + 0.34 * self.voice)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QBrush(spot))
-            p.drawEllipse(center, rr, rr)
-            if self.timer_t.running or (self.timer_t.remaining() <= 0 and self.toast == "Timer done"):
-                ring = QRectF(center.x() - rr - 3, center.y() - rr - 3, (rr + 3) * 2, (rr + 3) * 2)
-                p.setPen(QPen(QColor(255, 255, 255, 40), 1.4))
-                p.drawEllipse(ring)
-                p.setPen(QPen(QColor(255, 255, 255, 210), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                p.drawArc(ring, 90 * 16, -int(360 * 16 * max(0.0, 1.0 - self.timer_t.progress())))
+            p.setBrush(QColor(255, 255, 255, int(205 + 50 * self.voice)))
+            p.drawEllipse(center, dot, dot)
             if self.muted:                                          # a small slash: she isn't listening
                 p.setPen(QPen(QColor(255, 255, 255, 200), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 p.drawLine(QPointF(center.x() - rr * 0.55, center.y() + rr * 0.55),
@@ -797,8 +759,7 @@ def build(args):
             main_w = R - L - gap - side
             mid = (T + B - gap) / 2
             tiles = [("music", QRectF(L, T, main_w, mid - T)),
-                     ("timer", QRectF(L, mid + gap, (main_w - gap) / 2, B - mid - gap)),
-                     ("toggles", QRectF(L + (main_w + gap) / 2, mid + gap, (main_w - gap) / 2, B - mid - gap)),
+                     ("toggles", QRectF(L, mid + gap, main_w, B - mid - gap)),
                      ("system", QRectF(R - side, T, side, B - T)),
                      ("phone", QRectF(L, B + 10, R - L, phone_h))]
             for i, (name, box) in enumerate(tiles):
@@ -808,10 +769,7 @@ def build(args):
                 box = box.translated(0, 10 * (1 - _smooth(a)))
                 tile = QPainterPath()
                 tile.addRoundedRect(box, 16, 16)
-                p.fillPath(tile, QColor(255, 255, 255, int(12 * a)))
-                p.setPen(QPen(QColor(255, 255, 255, int(20 * a)), 1))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawPath(tile)
+                p.fillPath(tile, QColor(255, 255, 255, int(14 * a)))       # one quiet surface, no outline
                 getattr(self, f"tile_{name}")(p, box, t, a)
 
         def tile_music(self, p, box, t, a) -> None:
@@ -843,59 +801,26 @@ def build(args):
                 self.hits[name] = r
                 x += 33
 
-        def tile_timer(self, p, box, t, a) -> None:
-            tm = self.timer_t
-            c = QPointF(box.left() + 34, box.center().y())
-            ring = QRectF(c.x() - 21, c.y() - 21, 42, 42)
-            p.setPen(QPen(QColor(255, 255, 255, int(40 * a)), 3))
-            p.drawEllipse(ring)
-            p.setPen(QPen(QColor(255, 255, 255, int(230 * a)), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(ring, 90 * 16, -int(360 * 16 * max(0.0, 1.0 - tm.progress())))
-            # play / pause in the ring
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(235 * a)))
-            if tm.running:
-                p.drawRoundedRect(QRectF(c.x() - 5, c.y() - 6, 3.5, 12), 1, 1)
-                p.drawRoundedRect(QRectF(c.x() + 1.5, c.y() - 6, 3.5, 12), 1, 1)
-            else:
-                tri = QPainterPath()
-                tri.moveTo(c.x() - 3.5, c.y() - 6.5)
-                tri.lineTo(c.x() + 6.5, c.y())
-                tri.lineTo(c.x() - 3.5, c.y() + 6.5)
-                tri.closeSubpath()
-                p.drawPath(tri)
-            self.hits["timer"] = ring.adjusted(-4, -4, 4, 4)
-            p.setFont(self.font_ui)
-            p.setPen(rgba((250, 250, 250), 245 * a))
-            p.drawText(QPointF(box.left() + 64, box.center().y() - 2), tm.label())
-            p.setFont(self.font_small)
-            bx = box.left() + 64
-            for name, label in (("timer_plus1", "+1"), ("timer_plus5", "+5"), ("timer_reset", "↺")):
-                r = QRectF(bx, box.center().y() + 6, 24, 18)
-                pill = QPainterPath()
-                pill.addRoundedRect(r, 9, 9)
-                hot = self.mouse is not None and r.contains(self.mouse)
-                p.fillPath(pill, QColor(255, 255, 255, int((40 if hot else 20) * a)))
-                p.setPen(rgba((235, 235, 235), 230 * a))
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
-                self.hits[name] = r
-                bx += 27
-
         def tile_toggles(self, p, box, t, a) -> None:
-            size = 32.0
-            names = [("awake", self.awake), ("screenshot", False), ("mic", self.muted)]
-            total = len(names) * size + (len(names) - 1) * 10
-            x = box.center().x() - total / 2
-            for name, on in names:
-                r = QRectF(x, box.center().y() - size / 2 - 6, size, size)
+            size = 34.0
+            armed = time.monotonic() < self.power_armed
+            shown = _terminal_visible(self.console)
+            names = [("awake", self.awake, "Awake"), ("screenshot", False, "Shot"),
+                     ("mic", self.muted, "Muted" if self.muted else "Mic"),
+                     ("terminal", shown, "Terminal"), ("power", armed, "Sure?" if armed else "Power")]
+            step = (box.width() - 24) / len(names)
+            for i, (name, on, label) in enumerate(names):
+                cx = box.left() + 12 + step * (i + 0.5)
+                r = QRectF(cx - size / 2, box.center().y() - size / 2 - 7, size, size)
                 self.round_button(p, r, a, on=on)
-                self.toggle_icon(p, name, r.center(), a, dark=on)
+                if name == "terminal":
+                    self.draw_icon(p, "terminal", r, a, dark=on)
+                else:
+                    self.toggle_icon(p, name, r.center(), a, dark=on)
                 self.hits[name] = r
                 p.setFont(self.font_small)
-                p.setPen(rgba((150, 150, 150), 200 * a))
-                label = {"awake": "Awake", "screenshot": "Shot", "mic": "Muted" if self.muted else "Mic"}[name]
-                p.drawText(QRectF(r.left() - 8, r.bottom() + 2, size + 16, 14), Qt.AlignmentFlag.AlignCenter, label)
-                x += size + 10
+                p.setPen(rgba((235, 235, 235) if on else (150, 150, 150), 220 * a))
+                p.drawText(QRectF(cx - step / 2, r.bottom() + 3, step, 14), Qt.AlignmentFlag.AlignCenter, label)
 
         def tile_system(self, p, box, t, a) -> None:
             st = self.stats
@@ -986,10 +911,7 @@ def build(args):
             hot = self.mouse is not None and r.contains(self.mouse)
             path = QPainterPath()
             path.addEllipse(r)
-            p.fillPath(path, QColor(255, 255, 255, int((235 if on else 46 if hot else 24 if big else 16) * a)))
-            p.setPen(QPen(QColor(255, 255, 255, int((80 if hot else 30) * a)), 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(path)
+            p.fillPath(path, QColor(255, 255, 255, int((240 if on else 52 if hot else 26 if big else 20) * a)))
 
         def media_icon(self, p, name, c, a, playing) -> None:
             p.setPen(Qt.PenStyle.NoPen)
@@ -1029,6 +951,9 @@ def build(args):
                 p.drawLine(QPointF(c.x() - 3, c.y() - 4.5), QPointF(c.x() - 1.5, c.y() - 6.5))
                 p.drawLine(QPointF(c.x() - 1.5, c.y() - 6.5), QPointF(c.x() + 1.5, c.y() - 6.5))
                 p.drawLine(QPointF(c.x() + 1.5, c.y() - 6.5), QPointF(c.x() + 3, c.y() - 4.5))
+            elif name == "power":                                 # the power symbol
+                p.drawArc(QRectF(c.x() - 6.5, c.y() - 5.5, 13, 13), 125 * 16, -290 * 16)
+                p.drawLine(QPointF(c.x(), c.y() - 7.5), QPointF(c.x(), c.y() - 0.5))
             elif name == "mic":                                   # a microphone (struck through when muted)
                 p.drawRoundedRect(QRectF(c.x() - 2.6, c.y() - 7, 5.2, 9), 2.6, 2.6)
                 p.drawArc(QRectF(c.x() - 5.5, c.y() - 4, 11, 9), 200 * 16, 140 * 16)

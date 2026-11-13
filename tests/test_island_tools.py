@@ -13,31 +13,6 @@ from veronica.ui import island_tools as tools
 from veronica.ui.island_link import COMMANDS, IslandLink
 
 
-class Clock:
-    def __init__(self):
-        self.t = 0.0
-
-    def __call__(self):
-        return self.t
-
-
-def test_timer_counts_down_pauses_and_fires_once():
-    c = Clock()
-    tm = tools.Timer(5, clock=c)
-    assert tm.label() == "05:00" and not tm.running
-    tm.toggle(); c.t = 60
-    assert tm.label() == "04:00" and abs(tm.progress() - 0.2) < 1e-9
-    tm.toggle(); c.t = 500                       # paused: time stands still
-    assert tm.label() == "04:00"
-    tm.add(1)
-    assert tm.label() == "05:00"
-    tm.toggle(); c.t = 500 + 300
-    assert tm.done() and not tm.done()           # fires exactly once
-    assert tm.label() == "00:00" and not tm.running
-    tm.toggle()                                  # starting again after it finished restarts it
-    assert tm.running and tm.remaining() == 300
-
-
 def test_now_playing_is_read_and_named_plainly():
     out = json.dumps({"title": "Blinding Lights", "artist": "The Weeknd", "app": "Spotify.exe", "playing": True})
     assert tools.parse_now_playing(out) == {"title": "Blinding Lights", "artist": "The Weeknd", "app": "Spotify", "playing": True}
@@ -88,7 +63,7 @@ def test_media_keys_only_known_ones(monkeypatch):
 
 
 def test_the_island_may_only_ask_for_these():
-    assert set(COMMANDS) == {"stop", "mic_off", "mic_on", "timer_done",
+    assert set(COMMANDS) == {"stop", "mic_off", "mic_on", "quit",
                              "phone_text", "phone_text_file", "phone_image", "phone_file"}
 
 
@@ -114,3 +89,44 @@ def test_keep_awake_asks_windows_and_can_let_go(monkeypatch):
     assert tools.keep_awake(True) and tools.keep_awake(False)
     assert seen[0] == tools.ES_CONTINUOUS | tools.ES_SYSTEM_REQUIRED | tools.ES_DISPLAY_REQUIRED
     assert seen[1] == tools.ES_CONTINUOUS
+
+
+def test_go_to_sleep_inside_a_conversation_closes_her_not_just_the_conversation():
+    """Seen in the log three times: 'you can go to sleep now' only ended the conversation."""
+    import time as _time
+    from types import SimpleNamespace
+    from veronica.ui.cli import CLIApp, quits_veronica
+    app = CLIApp.__new__(CLIApp)
+    said = []
+    app.config = SimpleNamespace(voice=SimpleNamespace(conversation_idle_timeout_s=300, follow_up_seconds=8, conversation_mode=True),
+                                 assistant=SimpleNamespace(name="VERONICA"))
+    app._follow_up_until = _time.monotonic() + 60
+    app._stop = SimpleNamespace(is_set=lambda: False)
+    app._status = lambda m: None
+    app._say = said.append
+    app._island = lambda s: None
+    app._listen = lambda timeout_s=6: SimpleNamespace(success=True, text="Okay, Veronica, you can go to sleep now.", error="")
+    app._accept = lambda result, open_conversation: result.text
+    app.orchestrator = SimpleNamespace(tools=None)
+    text = app._conversation_turn()
+    assert quits_veronica(text)                       # handed up to the main loop, which closes her
+    assert said == []                                 # not answered with "Anytime." and left running
+
+
+def test_the_power_button_says_goodbye_and_exits(monkeypatch):
+    import threading
+    from veronica.ui.cli import CLIApp
+    app = CLIApp.__new__(CLIApp)
+    said, exited = [], []
+    app._status = lambda m: None
+    app._say = said.append
+    app._stop = threading.Event()
+    app.island = None
+    app.wake_gate = None
+    monkeypatch.setattr("veronica.main._exit_now", lambda code=0: exited.append(code))
+    monkeypatch.setattr("veronica.ui.cli.time.sleep", lambda s: None)
+    app._island_command("quit")
+    for t in threading.enumerate():
+        if t.name == "power-off":
+            t.join(5)
+    assert said == ["Goodbye, boss."] and exited == [0] and app.quit_requested and app._stop.is_set()

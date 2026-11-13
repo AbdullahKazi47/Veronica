@@ -6,12 +6,12 @@ small island appears at the top centre of the screen, just under the camera.
 Its look follows a "live lyrics" island for Windows (a reel by TwoCode): glass, springy motion
 between shapes, and words that light up as they're sung. Here the words are hers.
 
-It is black and white on purpose: no colours. You tell the states apart by shape and motion.
+It is flat black and white on purpose: no colours, no gloss. You tell the states apart by shape and motion.
 
 | What you see | What it means |
 | --- | --- |
-| A small black glass **orb** with a softly breathing white rim | She's waiting for her name |
-| It springs open into a black **glass bar** with flowing white waves that rise with your voice (the orb glows as you speak) | You said "Veronica" and she's listening. In conversation mode it stays open between turns |
+| A small black circle: a thin white **ring** that breathes slowly, with a dot in the middle | She's waiting for her name |
+| It springs open into a flat black **bar** with flowing white waves that rise with your voice (the dot swells as you speak) | You said "Veronica" and she's listening. In conversation mode it stays open between turns |
 | A white arc spinning around the orb, and a shimmering "Thinking…" | She's working out the answer |
 | A taller bar where her sentence lights up white, word by word, as she speaks | She's speaking |
 
@@ -43,10 +43,11 @@ starts listening, thinking or speaking, the grid makes way for her.
 | --- | --- |
 | **Header** | Time and date, and your next reminder ("Next: Call mom at 6:00 PM"). Click the globe in the corner to open her conversation card |
 | **Music** | What's playing in Spotify, YouTube or any player, from Windows' own media controls, with previous / play-pause / next. The little equaliser moves while music plays |
-| **Timer** | Tap the ring to start or pause. **+1** and **+5** add minutes, **↺** resets to 5:00. While it runs, a thin white ring counts down around the globe, even with the grid closed. When it's done the island says "Timer done" and she tells you out loud |
 | **Awake** (cup) | Keeps the PC from sleeping or turning off the screen. White means on. It stops if the island stops |
 | **Shot** (camera) | The grid folds away, then she saves a screenshot to Pictures\Screenshots and copies it so you can paste it |
 | **Mic** | Mutes her: she stops answering her name and follow-ups until you press it again. The globe shows a small slash while she's muted |
+| **Terminal** | Shows or hides her terminal. White means it's showing |
+| **Power** | Closes VERONICA completely: island, voice and terminal. Press it once and it asks "Sure?"; press again within 3 seconds to confirm. She says goodbye and exits. It never touches the PC itself |
 | **System** | Live CPU and memory (the bars glide to new values), battery and charging, network up and down, and a CPU graph |
 | **My phone** (bottom row) | Shows whether your phone page is open, with a live dot. **Send clipboard** and **Send file** send to it, and you can drag files onto the island. Files from the phone land in Downloads\From phone. See docs/PHONE.md |
 

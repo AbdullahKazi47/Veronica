@@ -22,7 +22,7 @@ from veronica.logging_setup import get_logger
 logger = get_logger("ui.island")
 
 STATES = ("idle", "listening", "open", "thinking", "speaking")
-COMMANDS = ("stop", "mic_off", "mic_on", "timer_done",        # all the island may ask of her
+COMMANDS = ("stop", "mic_off", "mic_on", "quit",              # all the island may ask of her
             "phone_text", "phone_text_file", "phone_image", "phone_file")
 
 

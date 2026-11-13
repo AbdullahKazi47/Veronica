@@ -392,6 +392,23 @@ class CLIApp:
             if stop is not None:
                 self._quiet_stop = True
                 stop.set()
+        elif cmd == "quit":
+            self._status("Closing from the island's power button.")
+            self._power_off = True
+            stop = getattr(self, "_speech_stop", None)
+            if stop is not None:                 # mid-sentence: stop talking first
+                self._quiet_stop = True
+                stop.set()
+            gate = getattr(self, "wake_gate", None)
+            for name in ("cancel", "stop", "close"):   # wake her from waiting for her name, if she can be
+                fn = getattr(gate, name, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+            threading.Thread(target=self._power_off_soon, name="power-off", daemon=True).start()
         elif cmd in ("mic_off", "mic_on"):
             # The island's mic button: she stops responding to her name (and to follow-ups) until
             # it's pressed again. The mic itself stays open so the wake word can come back at once.
@@ -403,6 +420,20 @@ class CLIApp:
             self._island_to_phone(cmd, msg or {})
         elif cmd == "timer_done":
             threading.Thread(target=self._say, args=("Your timer's done.",), name="timer-done", daemon=True).start()
+
+    def _power_off_soon(self) -> None:
+        """Say goodbye, then end the process for certain, whatever the main loop is waiting on."""
+        try:
+            self._say("Goodbye, boss.")
+        except Exception:  # noqa: BLE001
+            pass
+        self.quit_requested = True
+        self._stop.set()
+        if getattr(self, "island", None) is not None:
+            self.island.close()
+        time.sleep(0.3)
+        from veronica.main import _exit_now
+        _exit_now()
 
     def _island_to_phone(self, cmd: str, msg: dict) -> None:
         """The island's Phone tile: hand your clipboard or a file to the phone page (ui/remote/transfer.py)."""
@@ -741,6 +772,8 @@ class CLIApp:
         if not text:
             self._status(f"[back to waiting for \"{self.config.assistant.name}\"]")
             return ""
+        if quits_veronica(text):
+            return text                         # "go to sleep": the main loop closes her
         if self._ends_conversation(text):
             self._say("Okay.")
             return ""
@@ -765,6 +798,11 @@ class CLIApp:
             if not text:
                 continue                        # silence or background speech: keep it open
             logger.info("Conversation: heard %r", text)
+            if quits_veronica(text):
+                # "You can go to sleep now" inside a conversation used to only end the conversation
+                # (seen in the log three times): hand it to the main loop, which closes her.
+                self._follow_up_until = 0.0
+                return text
             if self._ends_conversation(text):
                 self._say("Anytime.")
                 self._follow_up_until = 0.0
