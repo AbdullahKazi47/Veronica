@@ -50,7 +50,10 @@ _ENDS_CONVERSATION = re.compile(
     r"nothing(?:\s+else)?|no(?:\s+thanks?)?|stop|cancel|bye|i'?m\s+done|that\s+will\s+be\s+all|"
     # "go to sleep" said to her means stop listening — never put the PC to sleep
     r"(?:you\s+can\s+)?(?:go\s+(?:to\s+)?)?sleep(?:\s+now)?|good\s*night|go\s+(?:to\s+)?rest|"
-    r"(?:ok(?:ay)?\s+)?that'?s\s+enough|see\s+you(?:\s+later)?|goodbye)\s*[.!]?\s*$", re.I)
+    r"(?:ok(?:ay)?\s+)?that'?s\s+enough|see\s+you(?:\s+later)?|goodbye|"
+    # 2026-11-13: "Okay, you can stop listening now" reached the model, which locked the PC
+    r"(?:you\s+can\s+)?(?:stop|quit)\s+listening(?:\s+(?:now|for\s+now))?|(?:you\s+can\s+)?take\s+a\s+break)"
+    r"\s*[.!]?\s*$", re.I)
 
 # Said TO her, these close VERONICA herself (program and window) — 2026-11-09, the user's
 # request: "if I tell her to go to sleep, or you can shut down now, she must close." Only at

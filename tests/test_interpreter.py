@@ -220,3 +220,21 @@ def test_a_model_exception_is_not_fatal():
     def chat(system, user):
         raise RuntimeError("no interpreter model is up")
     assert Interpreter(chat, _reg()).interpret("hello", history=[], ranked=[]) is None
+
+
+@pytest.mark.parametrize("said", ["Okay, you can stop listening now.", "stop listening", "You can take a break."])
+def test_telling_her_to_stop_listening_ends_the_conversation_before_any_model_sees_it(said):
+    """2026-11-13: 'Okay, you can stop listening now' reached the model, which locked the PC."""
+    from veronica.ui.cli import _ENDS_CONVERSATION
+    assert _ENDS_CONVERSATION.match(said)
+
+
+@pytest.mark.parametrize("said", ["stop listening to music", "lock my pc", "stop the music"])
+def test_other_stop_sentences_are_not_conversation_enders(said):
+    from veronica.ui.cli import _ENDS_CONVERSATION
+    assert not _ENDS_CONVERSATION.match(said)
+
+
+def test_the_interpreter_is_told_pc_power_actions_need_the_pc_named():
+    from veronica.core.interpreter import _SYSTEM
+    assert "unless the user names the PC" in _SYSTEM and "Stop listening" in _SYSTEM
