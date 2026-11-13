@@ -134,6 +134,8 @@ class VoiceConfig:
     show_mic_meter: bool = True             # live mic level line while she listens
     island: bool = False                    # ui/island.py: her presence under the camera (circle / pill + waveform)
     island_hides_terminal: bool = True      # the terminal starts hidden behind the island; click the island to show it
+    island_glass: bool = True               # see-through blurred glass (false = flat black). The glass hides the
+                                            # island from screenshots and screen recordings.
     speaker_check: bool = True              # once "learn my voice" is done, respond only to the owner
     barge_in_threshold: float = 0.02
     barge_in_min_speech_ms: int = 300

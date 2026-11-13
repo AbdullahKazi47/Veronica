@@ -147,6 +147,18 @@ def _terminal_visible(hwnd: int) -> bool:
         return False
 
 
+def hide_from_capture(hwnd: int) -> bool:
+    """Keep this window out of screen captures (Windows 10 2004+). The glass needs it: the island
+    photographs the screen behind itself, and must not photograph itself. Side effect: the island
+    doesn't appear in screenshots or screen recordings."""
+    try:
+        fn = ctypes.windll.user32.SetWindowDisplayAffinity
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        return bool(fn(hwnd, 0x11))                      # WDA_EXCLUDEFROMCAPTURE
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # -- the window -------------------------------------------------------------------------------
 def build(args):
     from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -224,6 +236,14 @@ def build(args):
             if args.hide:
                 QTimer.singleShot(900, lambda: show_terminal(self.console, False))
             QTimer.singleShot(1500, self.warm_up)
+            # Glass (the iPhone look): Windows' own blur can't follow a rounded, changing shape (tested:
+            # it always fills the window's whole rectangle), so the island blurs the screen behind
+            # itself: small snapshots, shrunk and stretched back, painted inside its own shape.
+            self.glass = False
+            self.backdrop = None                          # the blurred screen behind the window
+            self.backdrop_at = 0.0
+            if getattr(args, "glass", "on") != "off":
+                QTimer.singleShot(0, lambda: setattr(self, "glass", hide_from_capture(int(self.winId()))))
 
         def warm_up(self) -> None:
             """Draw the hover grid once, off screen, soon after start. The first draw looks up fonts
@@ -268,6 +288,11 @@ def build(args):
                 if "l" in m:
                     self.level = float(m.get("l") or 0.0)
                     self.ambient = float(m.get("a") or self.ambient or 60.0)
+                if m.get("snap"):                             # save what the island is showing (it hides from screenshots)
+                    try:
+                        self.grab().save(str(m["snap"]))
+                    except Exception:  # noqa: BLE001
+                        pass
                 if "mic" in m:
                     self.muted = not bool(m["mic"])
                 if "next" in m:
@@ -416,7 +441,29 @@ def build(args):
             want = 33 if resting else 16                  # only the slow breathing left: half the frames, half the CPU
             if self.timer.interval() != want:
                 self.timer.setInterval(want)
+            if self.glass and now - self.backdrop_at >= (0.5 if resting else 0.08):
+                self.backdrop_at = now                       # ~12 looks a second while active, 2 while resting
+                self.refresh_backdrop()
             self.update()
+
+        def refresh_backdrop(self) -> None:
+            """Photograph the screen behind the island's current shape and blur it (shrink, then stretch)."""
+            try:
+                rect = self.shape().adjusted(-6, -6, 6, 6)
+                origin = self.mapToGlobal(rect.topLeft().toPoint())
+                screen = self.screen() or QApplication.primaryScreen()
+                shot = screen.grabWindow(0, origin.x() - screen.geometry().x(), origin.y() - screen.geometry().y(),
+                                         int(rect.width()), int(rect.height()))
+                if shot.isNull():
+                    return
+                w, h = max(2, int(rect.width() / 5)), max(2, int(rect.height() / 5))
+                small = shot.toImage().scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation)
+                small = small.scaled(max(2, w // 3), max(2, h // 3), Qt.AspectRatioMode.IgnoreAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                self.backdrop = (small, rect)
+            except Exception:  # noqa: BLE001 - the glass is decoration; never break the island
+                self.backdrop = None
 
         # -- input ------------------------------------------------------------------------
         def shape(self) -> QRectF:
@@ -519,16 +566,40 @@ def build(args):
             path = QPainterPath()
             path.addRoundedRect(rect, radius, radius)
 
-            # a faint shadow so it reads on a dark wallpaper too
-            for i in range(8, 0, -2):
-                sh = QPainterPath()
-                sh.addRoundedRect(rect.adjusted(-i, -i * 0.3, i, i), radius + i, radius + i)
-                p.fillPath(sh, QColor(0, 0, 0, 6))
-            # flat black: one solid surface and a hairline edge. No gloss, no gradient.
-            p.fillPath(path, QColor(0, 0, 0, 248))
-            p.setPen(QPen(QColor(255, 255, 255, 30), 1.0))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(path)
+            if self.glass and self.backdrop is not None:
+                # Glass, like an iPhone's: your screen shows through, blurred. Over it, a smoky tint
+                # so white text stays readable, a soft light from above, and a bright rim.
+                small, _ = self.backdrop
+                p.save()
+                p.setClipPath(path)
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                p.drawImage(rect.adjusted(-6, -6, 6, 6), small)
+                p.restore()
+                busy = max(self.gridness.value, self.cardness.value)        # more to read: a little darker
+                p.fillPath(path, QColor(10, 10, 12, int(105 + 60 * busy)))
+                light = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + min(rect.height(), 60)))
+                light.setColorAt(0.0, QColor(255, 255, 255, 46))
+                light.setColorAt(1.0, QColor(255, 255, 255, 0))
+                p.fillPath(path, QBrush(light))
+                rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                rim.setColorAt(0.0, QColor(255, 255, 255, 150))
+                rim.setColorAt(0.5, QColor(255, 255, 255, 40))
+                rim.setColorAt(1.0, QColor(255, 255, 255, 90))
+                inner = QPainterPath()
+                inner.addRoundedRect(rect.adjusted(0.8, 0.8, -0.8, -0.8), max(2.0, radius - 0.8), max(2.0, radius - 0.8))
+                p.setPen(QPen(QBrush(rim), 1.3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(inner)
+            else:
+                # no glass available: flat black, one solid surface and a hairline edge
+                for i in range(8, 0, -2):
+                    sh = QPainterPath()
+                    sh.addRoundedRect(rect.adjusted(-i, -i * 0.3, i, i), radius + i, radius + i)
+                    p.fillPath(sh, QColor(0, 0, 0, 6))
+                p.fillPath(path, QColor(0, 0, 0, 248))
+                p.setPen(QPen(QColor(255, 255, 255, 30), 1.0))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(path)
             p.setClipPath(path)
 
             c = self.content.value
@@ -1009,6 +1080,7 @@ def main(argv=None) -> int:
     ap.add_argument("--console", type=int, default=0)
     ap.add_argument("--title", default="VERONICA")
     ap.add_argument("--hide", action="store_true")
+    ap.add_argument("--glass", default="on", choices=["on", "off"])
     args = ap.parse_args(argv)
     if sys.platform != "win32":
         return 0

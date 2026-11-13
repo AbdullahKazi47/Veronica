@@ -47,7 +47,8 @@ def _pythonw() -> str:
 
 class IslandLink:
     def __init__(self, level: Callable[[], tuple[float, float]] = lambda: (0.0, 60.0), *, hide_terminal: bool = True,
-                 title: str = "VERONICA", spawn=subprocess.Popen) -> None:
+                 title: str = "VERONICA", spawn=subprocess.Popen, glass: bool = True) -> None:
+        self.glass = glass
         self._level = level                  # () -> (mic level, room level)
         self.hide_terminal = hide_terminal
         self.title = title
@@ -85,6 +86,7 @@ class IslandLink:
                "--parent", str(os.getpid()), "--console", str(self.console), "--title", self.title]
         if self.hide_terminal:
             cmd.append("--hide")
+        cmd += ["--glass", "on" if getattr(self, "glass", True) else "off"]
         try:
             self.proc = self._spawn(cmd, cwd=str(Path(__file__).resolve().parents[2]),
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

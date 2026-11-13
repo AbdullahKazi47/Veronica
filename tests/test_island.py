@@ -150,3 +150,34 @@ def test_springs_glide_without_wobble():
     for _ in range(240):
         peak = max(peak, sp.step(1 / 60))
     assert peak < 400.0 * 1.01                           # at most a hair of overshoot, never a bounce
+
+
+def test_glass_paints_the_blurred_screen_inside_the_island_and_can_be_switched_off():
+    """The glass is the island's own blurred snapshot of the screen behind it, clipped to its shape."""
+    pytest.importorskip("PyQt6")
+    import argparse
+    from PyQt6.QtGui import QColor, QImage
+    app = island.build(argparse.Namespace(port=0, reply_port=0, parent=0, console=0, title="VERONICA", hide=False, glass="off"))
+    w = app.island
+    try:
+        for sp, v in ((w.w, 400), (w.h, 44), (w.r, 22), (w.content, 1)):
+            sp.value = sp.target = v
+        w.state = "listening"
+        flat = w.grab().toImage()
+        red = QImage(40, 8, QImage.Format.Format_ARGB32)
+        red.fill(QColor(255, 0, 0))
+        w.glass, w.backdrop = True, (red, w.shape())
+        glassy = w.grab().toImage()
+        inside = (int(w.shape().center().x()) + 120, int(w.shape().bottom()) - 6)
+        outside = (5, 200)
+        assert glassy.pixelColor(*inside).red() > flat.pixelColor(*inside).red() + 40     # the screen shows through
+        assert glassy.pixelColor(*outside).alpha() == 0                                    # and only inside the shape
+    finally:
+        w.close()
+
+
+def test_the_glass_setting_reaches_the_island(listener):
+    spawned = []
+    link = IslandLink(lambda: (0.0, 60.0), spawn=lambda cmd, **kw: (spawned.append(cmd), FakeProc())[1], glass=False)
+    link._launch()
+    assert spawned[0][spawned[0].index("--glass") + 1] == "off"

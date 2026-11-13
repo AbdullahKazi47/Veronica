@@ -374,7 +374,7 @@ class CLIApp:
                     return 0.0, 60.0
                 return float(getattr(hub, "last_level", 0.0) or 0.0), float(hub.ambient_rms() or 60.0)
             link = IslandLink(level, hide_terminal=bool(getattr(vcfg, "island_hides_terminal", True)),
-                              title=self.config.assistant.name)
+                              title=self.config.assistant.name, glass=bool(getattr(vcfg, "island_glass", True)))
             link.on_command = self._island_command
             if not link.start():
                 return None

@@ -6,7 +6,7 @@ small island appears at the top centre of the screen, just under the camera.
 Its look follows a "live lyrics" island for Windows (a reel by TwoCode): glass, springy motion
 between shapes, and words that light up as they're sung. Here the words are hers.
 
-It is flat black and white on purpose: no colours, no gloss. You tell the states apart by shape and motion.
+It is glass with white marks on purpose: no colours. You tell the states apart by shape and motion.
 
 | What you see | What it means |
 | --- | --- |
@@ -54,6 +54,20 @@ starts listening, thinking or speaking, the grid makes way for her.
 While the grid is closed it costs nothing. Stats are read once a second and music every 3 seconds,
 and only while it's open. It's pre-drawn once off screen at start, because the first draw looked
 up fonts and froze the first hover for about a second.
+
+## Glass
+The island is see-through glass, like an iPhone's: your screen shows through it, blurred, with a soft
+light from above and a bright rim. Open grids and cards are tinted a little darker so text stays readable.
+
+- **How:** Windows' own blur can't do this. Tested on this PC, it always fills the window's whole
+  rectangle and ignores a rounded shape. So the island takes small snapshots of the screen behind
+  itself (about 12 a second while it's active, 2 while idle), shrinks and stretches them back to
+  blur them, and paints the result inside its own rounded shape.
+- **Side effect:** to avoid photographing itself, the island is hidden from screen captures. It
+  **won't appear in screenshots or screen recordings**, including the island's own Shot button.
+- **Cost:** nothing measurable. About 1% CPU idle, the same as with glass off.
+- **Off switch:** `voice.island_glass: false` in `config/config.yaml` gives the flat black island.
+  If Windows refuses the capture exclusion, she falls back to flat black by herself.
 
 ## Motion
 - Every change is eased, never stepped. Shapes move on springs tuned just under critical, so

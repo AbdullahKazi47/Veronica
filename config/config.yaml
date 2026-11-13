@@ -534,6 +534,8 @@ voice:
   # "Veronica"; amber while thinking; her voice while she speaks. Click it to show/hide her terminal.
   island: true
   island_hides_terminal: true     # terminal starts hidden behind the island (comes back by itself if she stops)
+  island_glass: true              # see-through blurred glass like an iPhone's; false = flat black.
+                                  # With glass on, the island doesn't appear in screenshots or recordings.
   enabled: false
   continuous_listening: false
   wake_words: ["Veronica", "Vero", "V"]
