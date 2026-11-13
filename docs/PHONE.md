@@ -13,6 +13,24 @@ in `data/remote_link.txt` on the PC (it carries the access token); the phone rem
 - A permission question raised by a phone request is asked **on the phone**, never auto-approved; no
   answer in 60 s counts as no.
 
+## PC and phone: clipboard and files (idea from Fenn's Phone link)
+- **PC to phone:** hover over VERONICA's island and use the **My phone** tile at the bottom of the grid.
+  **Send clipboard** sends whatever you last copied (text, a link or a picture). **Send file** picks a
+  file, or you can drag files onto the island. They appear in the phone page's chat as **From your PC**:
+  text and links get **Copy** (and **Open** for links), pictures show a preview, and files get **Download**.
+- **Phone to PC:** tap the paperclip next to the message box. Files land in
+  **Downloads\From phone** on the PC, without overwriting anything (a second "IMG 1.jpg" becomes
+  "IMG 1 (2).jpg"). Up to 200 MB per file.
+- **"Connected":** the tile's dot is lit while your phone page is open on screen. The page checks
+  in every 3 seconds while it's visible and stops when the phone is locked.
+- **Safety:**
+  - It's the same private route as the rest of the page: Tailscale, your own devices only, and the
+    page's token on every request.
+  - A file you send is offered for one hour, then forgotten.
+  - Only the exact files you sent can be downloaded. Nothing else on the PC can be browsed, and the
+    phone is never shown a PC file path.
+  - Uploaded names are cleaned up so they can't escape the folder.
+
 ## The permission sheet (mobile)
 A question rises as a bottom sheet over the chat, so it can't scroll away, with:
 - what it means in plain words ("Shut down your PC? It turns off in 30 seconds. Your phone can't switch it

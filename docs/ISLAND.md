@@ -48,6 +48,7 @@ starts listening, thinking or speaking, the grid makes way for her.
 | **Shot** (camera) | The grid folds away, then she saves a screenshot to Pictures\Screenshots and copies it so you can paste it |
 | **Mic** | Mutes her: she stops answering her name and follow-ups until you press it again. The globe shows a small slash while she's muted |
 | **System** | Live CPU and memory (the bars glide to new values), battery and charging, network up and down, and a CPU graph |
+| **My phone** (bottom row) | Shows whether your phone page is open, with a live dot. **Send clipboard** and **Send file** send to it, and you can drag files onto the island. Files from the phone land in Downloads\From phone. See docs/PHONE.md |
 
 While the grid is closed it costs nothing. Stats are read once a second and music every 3 seconds,
 and only while it's open. It's pre-drawn once off screen at start, because the first draw looked

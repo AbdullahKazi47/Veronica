@@ -88,7 +88,8 @@ def test_media_keys_only_known_ones(monkeypatch):
 
 
 def test_the_island_may_only_ask_for_these():
-    assert set(COMMANDS) == {"stop", "mic_off", "mic_on", "timer_done"}
+    assert set(COMMANDS) == {"stop", "mic_off", "mic_on", "timer_done",
+                             "phone_text", "phone_text_file", "phone_image", "phone_file"}
 
 
 def test_the_mic_button_mutes_her_and_the_heartbeat_remembers_it():

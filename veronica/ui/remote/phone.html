@@ -193,6 +193,16 @@
     border: 0; background: transparent; color: var(--text); font: inherit; outline: none;
   }
   .round { width: 44px; height: 44px; border-radius: 50%; border: 0; flex: none; display: grid; place-items: center; }
+  .ghost-round { background: transparent; color: var(--muted, #9aa4b2); width: 30px; margin-right: -4px; }
+  footer textarea { min-width: 0; }
+  .ghost-round svg { width: 22px; height: 22px; }
+  .pc { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  .pc .from { display: block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; opacity: .6; margin-bottom: 4px; }
+  .pc img { display: block; max-width: 100%; max-height: 260px; border-radius: 10px; margin: 4px 0 6px; }
+  .pc .acts { display: flex; gap: 8px; margin-top: 8px; }
+  .pc .acts button { border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 999px;
+    padding: 6px 14px; font: inherit; font-size: 13px; }
+  .pc .file { font-weight: 600; }
   #send { background: rgba(57, 233, 255, .08); color: var(--accent); }
   @media (prefers-color-scheme: light) { #send { background: var(--bg); } }
   #mic { width: 50px; height: 50px; background: var(--accent); color: var(--accent-ink); touch-action: none; user-select: none; -webkit-user-select: none;
@@ -224,7 +234,11 @@
 <main id="log" aria-live="polite"></main>
 
 <footer>
-  <textarea id="text" rows="1" placeholder="Message VERONICA…" enterkeyhint="send"></textarea>
+  <button class="round ghost-round" id="attach" aria-label="Send a file to your PC" title="Send a file to your PC">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg>
+  </button>
+  <input type="file" id="attachInput" multiple hidden>
+  <textarea id="text" rows="1" placeholder="Message…" enterkeyhint="send"></textarea>
   <button class="round" id="send" aria-label="Send">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
   </button>
@@ -422,6 +436,72 @@
 
   const queue = [], seen = new Set();
   let polling = null, current = null, answering = false, deadline = 0, total = 60, tick = null, armedAt = 0;
+
+  // -- From your PC (island's Phone tile) and to your PC (the paperclip) -------------------------
+  const shown = new Set();
+  const size = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 1024 ? Math.round(n / 1024) + " KB" : n + " B";
+  async function fetchBlob(item) {
+    return await (await api("/api/file?id=" + encodeURIComponent(item.id))).blob();
+  }
+  async function saveItem(item, btn) {
+    btn.disabled = true; btn.textContent = "Downloading…";
+    try {
+      const url = URL.createObjectURL(await fetchBlob(item));
+      const a = document.createElement("a"); a.href = url; a.download = item.name || "file";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      btn.textContent = "Saved";
+    } catch { btn.textContent = "Couldn't download"; btn.disabled = false; }
+  }
+  function showFromPc(item) {
+    const d = document.createElement("div"); d.className = "msg pc";
+    const from = document.createElement("span"); from.className = "from"; from.textContent = "From your PC"; d.appendChild(from);
+    const acts = document.createElement("div"); acts.className = "acts";
+    const button = (label, fn) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+      b.onclick = () => fn(b); acts.appendChild(b); return b; };
+    if (item.kind === "text") {
+      const t = document.createElement("div"); t.textContent = item.text; d.appendChild(t);
+      button("Copy", async (b) => { try { await navigator.clipboard.writeText(item.text); b.textContent = "Copied"; } catch { b.textContent = "Couldn't copy"; } });
+      if (/^https?:\/\/\S+$/.test(item.text.trim())) button("Open", () => window.open(item.text.trim(), "_blank", "noopener"));
+    } else {
+      if (item.kind === "image") {
+        const img = document.createElement("img"); img.alt = item.name || "Picture";
+        fetchBlob(item).then((b) => { img.src = URL.createObjectURL(b); }).catch(() => {});
+        d.appendChild(img);
+      }
+      const f = document.createElement("div"); f.className = "file"; f.textContent = (item.name || "file") + " \u00b7 " + size(item.size || 0);
+      d.appendChild(f);
+      button("Download", (b) => saveItem(item, b));
+    }
+    d.appendChild(acts);
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    if (navigator.vibrate) navigator.vibrate(40);
+  }
+  async function checkInbox() {
+    try {
+      const r = await (await api("/api/inbox")).json();
+      for (const item of r.items || []) if (!shown.has(item.id)) { shown.add(item.id); showFromPc(item); }
+    } catch {}
+  }
+  async function uploadOne(file) {
+    const note = add("me", "Sending " + file.name + "…");
+    try {
+      const r = await (await api("/api/upload", { method: "POST", body: file,
+        headers: { "X-Filename": encodeURIComponent(file.name), "Content-Type": "application/octet-stream" } })).json();
+      note.textContent = r.ok ? "Sent " + r.name + " to your PC (Downloads \u203a From phone)" : (r.error || "Couldn't send it.");
+    } catch { note.textContent = "Couldn't send " + file.name + "."; }
+  }
+  $("attach").onclick = () => $("attachInput").click();
+  $("attachInput").onchange = async (e) => { for (const f of e.target.files || []) await uploadOne(f); e.target.value = ""; };
+
+  // Whatever the PC sends shows up within ~3 s while this page is on screen; nothing runs while
+  // the phone is locked or the page is in the background (battery).
+  let inboxTimer = null;
+  function startInbox() {
+    checkInbox();
+    if (!inboxTimer) inboxTimer = setInterval(() => { if (document.visibilityState === "visible" && token) checkInbox(); }, 3000);
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token) checkInbox(); });
 
   function startPolling() {
     if (polling) return;
@@ -680,7 +760,7 @@
     try {
       const r = await (await api("/api/ping")).json();
       $("title").textContent = (r.name || "VERONICA").toUpperCase(); document.title = r.name || "VERONICA";
-      setState("idle", "online"); checkPending();
+      setState("idle", "online"); checkPending(); startInbox();
       if (!log.children.length) add("sys", "Connected to your PC. Hold the mic to talk, or type.");
       if (!r.voice_in) mic.disabled = true;
     } catch (e) {

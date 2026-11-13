@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 from veronica.config import Config
@@ -383,7 +384,7 @@ class CLIApp:
             logger.exception("Couldn't start the island.")
             return None
 
-    def _island_command(self, cmd: str) -> None:
+    def _island_command(self, cmd: str, msg: Optional[dict] = None) -> None:
         """The island's 'Stop talking' button: she stops mid-sentence and goes back to listening
         for her name (not the talk-over path, which would start listening at once)."""
         if cmd == "stop":
@@ -398,8 +399,33 @@ class CLIApp:
             if getattr(self, "island", None) is not None:
                 self.island.mic_on = not self._mic_muted
             self._status("[mic muted from the island]" if self._mic_muted else "[mic back on]")
+        elif cmd.startswith("phone_"):
+            self._island_to_phone(cmd, msg or {})
         elif cmd == "timer_done":
             threading.Thread(target=self._say, args=("Your timer's done.",), name="timer-done", daemon=True).start()
+
+    def _island_to_phone(self, cmd: str, msg: dict) -> None:
+        """The island's Phone tile: hand your clipboard or a file to the phone page (ui/remote/transfer.py)."""
+        import tempfile
+        from veronica.ui.remote.transfer import get_phone_link
+        phone = get_phone_link()
+        try:
+            if cmd == "phone_text":
+                phone.send_text(str(msg.get("text", "")))
+            elif cmd in ("phone_image", "phone_text_file"):
+                path = Path(str(msg.get("path", "")))
+                # only the island's own temporary clipboard files, read once and removed
+                if path.parent != Path(tempfile.gettempdir()) or not path.name.startswith("veronica-clip-"):
+                    raise ValueError("not a clipboard file")
+                data = path.read_bytes()
+                path.unlink(missing_ok=True)
+                phone.send_image(data) if cmd == "phone_image" else phone.send_text(data.decode("utf-8", "replace"))
+            elif cmd == "phone_file":
+                phone.send_file(str(msg.get("path", "")))
+            logger.info("Island -> phone: %s", phone.last)
+        except Exception as e:  # noqa: BLE001
+            phone.last = f"Couldn't send: {e}"
+            logger.warning("Island -> phone failed (%s): %s", cmd, e)
 
     def _island_next_up(self, link) -> None:
         """Her next reminder, for the clock in the island's hover grid (checked every 30 s)."""

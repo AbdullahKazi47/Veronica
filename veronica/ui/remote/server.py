@@ -20,6 +20,9 @@ What the page can do:
   * POST /api/speak  {"text": ...}        -> the reply as audio (her configured voice)
   * GET  /api/pending                     -> a permission question waiting for you
   * POST /api/confirm {"id", "allow"}     -> answer it
+  * GET  /api/inbox                       -> what the PC sent to the phone (ui/remote/transfer.py)
+  * GET  /api/file?id=...                 -> download one shared file (shared items only, 1 hour)
+  * POST /api/upload  (X-Filename header) -> a file from the phone into Downloads/From phone
 Every request goes through the same Orchestrator and PermissionGate as anything said
 at the PC. A permission question raised by a remote request is asked on the device that
 sent it (never by voice at the PC, never auto-approved); no answer within the timeout
@@ -247,7 +250,7 @@ class RemoteService:
 _PAGE_HEADERS = {
     "Content-Security-Policy": ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
                                 "style-src 'self' 'unsafe-inline'; media-src 'self' blob:; "
-                                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
+                                "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'"),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
@@ -325,9 +328,53 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "name": name, "voice_in": self.service.stt is not None,
                         "voice_out": self.service.tts is not None})
         elif path == "/api/pending":
+            self._phone().seen()                     # the page is open: the island shows "connected"
             self._json({"ok": True, "questions": self.service.questions.pending()})
+        elif path == "/api/inbox":
+            self._phone().seen()
+            self._json({"ok": True, "items": self._phone().items_for_phone()})
+        elif path == "/api/file":
+            self._file(self.path.split("?", 1)[1] if "?" in self.path else "")
         else:
             self._json({"ok": False, "error": "not found"}, 404)
+
+    def _phone(self):
+        from veronica.ui.remote.transfer import get_phone_link
+        return get_phone_link()
+
+    def _file(self, query: str) -> None:
+        from urllib.parse import parse_qs, quote
+        item_id = (parse_qs(query).get("id") or [""])[0]
+        found = self._phone().file_for(item_id)
+        if found is None:
+            self._json({"ok": False, "error": "That file is no longer shared."}, 404)
+            return
+        path, name, mime = found
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(name)}")
+        for k, v in _PAGE_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        with path.open("rb") as f:
+            shutil.copyfileobj(f, self.wfile, 1024 * 1024)
+
+    def _upload(self) -> None:
+        from urllib.parse import unquote
+        from veronica.ui.remote.transfer import MAX_UPLOAD
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_UPLOAD:
+            self._json({"ok": False, "error": "That file is too big (over 200 MB)."}, 413)
+            return
+        try:
+            saved = self._phone().receive(unquote(self.headers.get("X-Filename", "") or "file"), self.rfile, length)
+        except ValueError as e:
+            self._json({"ok": False, "error": str(e)}, 400)
+            return
+        logger.info("Remote: received %s from the phone (%d bytes).", saved.name, length)
+        self._json({"ok": True, "name": saved.name, "folder": str(saved.parent)})
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -335,6 +382,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "not found"}, 404)
             return
         if not self._auth():
+            return
+        if path == "/api/upload":                    # streamed to disk, past the small-body limit
+            self._upload()
             return
         body = self._body()
         if body is None:

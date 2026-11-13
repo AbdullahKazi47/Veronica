@@ -22,7 +22,8 @@ from veronica.logging_setup import get_logger
 logger = get_logger("ui.island")
 
 STATES = ("idle", "listening", "open", "thinking", "speaking")
-COMMANDS = ("stop", "mic_off", "mic_on", "timer_done")     # all the island may ask of her
+COMMANDS = ("stop", "mic_off", "mic_on", "timer_done",        # all the island may ask of her
+            "phone_text", "phone_text_file", "phone_image", "phone_file")
 
 
 def _console_hwnd() -> int:
@@ -126,14 +127,27 @@ class IslandLink:
             if addr[0] != "127.0.0.1":
                 continue
             try:
-                cmd = json.loads(data.decode("utf-8")).get("cmd")
+                msg = json.loads(data.decode("utf-8"))
+                cmd = msg.get("cmd")
             except (ValueError, AttributeError):
                 continue
             if cmd in COMMANDS and self.on_command is not None:
                 try:
-                    self.on_command(cmd)
+                    if cmd.startswith("phone_"):
+                        self.on_command(cmd, msg)
+                    else:
+                        self.on_command(cmd)
                 except Exception:  # noqa: BLE001
                     logger.exception("Island command failed.")
+
+    @staticmethod
+    def _phone() -> dict:
+        try:
+            from veronica.ui.remote.transfer import get_phone_link
+            link = get_phone_link()
+            return {"on": link.connected(), "last": link.last}
+        except Exception:  # noqa: BLE001
+            return {"on": False, "last": ""}
 
     def _send(self, msg: dict) -> None:
         if not self.port:
@@ -153,7 +167,8 @@ class IslandLink:
                 self._send({"s": self.state, "l": round(float(level or 0.0), 1), "a": round(float(ambient or 60.0), 1)})
                 self._stop.wait(0.04)
             else:
-                self._send({"s": self.state, "mic": self.mic_on, "next": self.next_up})   # heartbeat: a restarted island catches up
+                self._send({"s": self.state, "mic": self.mic_on, "next": self.next_up,   # heartbeat: a restarted island catches up
+                            "phone": self._phone()})
                 self._stop.wait(0.25)
             self._keep_alive()
 

@@ -28,6 +28,7 @@ import math
 import socket
 import sys
 import time
+from pathlib import Path
 
 KEY = "#010203"                              # kept for the tests' colour helper
 # Black and white on purpose (the user asked for no colour): states differ by motion, not hue.
@@ -40,8 +41,8 @@ ORB = (34, 34, 17)
 BAR = (400, 44, 22)
 BAR_TALL = (460, 52, 26)
 CARD = (520, 214, 30)
-GRID = (520, 252, 28)                         # the hover tool grid (music, timer, system, toggles)
-WIN_W, WIN_H, TOP = 600, 290, 8
+GRID = (520, 318, 28)                         # the hover tool grid (music, timer, system, toggles)
+WIN_W, WIN_H, TOP = 600, 350, 8
 WORDS_PER_S = 2.7                            # her speaking pace (Kokoro / Supertonic / ElevenLabs ~2.5-3)
 
 
@@ -197,6 +198,8 @@ def build(args):
             self.muted = False
             self.next_up = ""
             self.toast, self.toast_until = "", 0.0
+            self.phone_on, self.phone_last = False, ""        # from VERONICA's phone page (ui/remote/transfer.py)
+            self.setAcceptDrops(True)
             self.console = _terminal_window(args.console, args.title)
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.bind(("127.0.0.1", args.port))
@@ -269,6 +272,9 @@ def build(args):
                     self.muted = not bool(m["mic"])
                 if "next" in m:
                     self.next_up = str(m.get("next") or "")[:120]
+                if isinstance(m.get("phone"), dict):
+                    self.phone_on = bool(m["phone"].get("on"))
+                    self.phone_last = str(m["phone"].get("last") or "")[:80]
                 if m.get("you"):
                     self.you, self.reply = str(m["you"])[:300], ""
                 if m.get("say"):
@@ -278,12 +284,63 @@ def build(args):
                     self.shift = 0.0
                     self.reply = (self.reply + " " + self.piece).strip()[-600:]
 
-        def send(self, cmd: str) -> None:
+        def send(self, cmd: str, **extra) -> None:
             if self.reply_to:
                 try:
-                    self.sock.sendto(json.dumps({"cmd": cmd}).encode("utf-8"), self.reply_to)
+                    self.sock.sendto(json.dumps({"cmd": cmd, **extra}).encode("utf-8"), self.reply_to)
                 except OSError:
                     pass
+
+        # -- the Phone tile: clipboard, files, drag and drop ------------------------------
+        def send_clipboard(self) -> None:
+            import tempfile
+            cb = QApplication.clipboard()
+            img = cb.image()
+            if not img.isNull():
+                path = Path(tempfile.gettempdir()) / f"veronica-clip-{int(time.time() * 1000)}.png"
+                img.save(str(path), "PNG")
+                self.send("phone_image", path=str(path))
+                self.flash("Sending the picture to your phone")
+                return
+            text = (cb.text() or "").strip()
+            if not text:
+                self.flash("Your clipboard is empty")
+                return
+            if len(text.encode("utf-8")) > 6000:                # too big for one message: hand over a file
+                path = Path(tempfile.gettempdir()) / f"veronica-clip-{int(time.time() * 1000)}.txt"
+                path.write_text(text, encoding="utf-8")
+                self.send("phone_text_file", path=str(path))
+            else:
+                self.send("phone_text", text=text)
+            self.flash("Sending your clipboard to your phone")
+
+        def pick_file(self) -> None:
+            from PyQt6.QtWidgets import QFileDialog
+            self.grid = False
+            path, _ = QFileDialog.getOpenFileName(None, "Send a file to your phone", str(Path.home()))
+            if path:
+                self.send("phone_file", path=path)
+                self.flash(f"Sending {Path(path).name} to your phone")
+
+        def dragEnterEvent(self, e) -> None:
+            if e.mimeData().hasUrls() and self.state == "idle":
+                self.grid = True                                  # open the grid so the Phone tile is there
+                self.hover_since = time.monotonic()
+                e.acceptProposedAction()
+
+        def dragMoveEvent(self, e) -> None:
+            if e.mimeData().hasUrls():
+                self.grid, self.left_since = True, None
+                e.acceptProposedAction()
+
+        def dropEvent(self, e) -> None:
+            files = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+            for path in files[:10]:
+                if Path(path).is_file():
+                    self.send("phone_file", path=path)
+            if files:
+                self.flash(f"Sending {len(files)} file{'s' if len(files) != 1 else ''} to your phone")
+            e.acceptProposedAction()
 
         def check_parent(self) -> None:
             if not _alive(args.parent):
@@ -431,6 +488,10 @@ def build(args):
             elif name == "screenshot":
                 self.grid = False
                 QTimer.singleShot(420, self.shoot)             # let the grid fold away first
+            elif name == "phone_clip":
+                self.send_clipboard()
+            elif name == "phone_file":
+                QTimer.singleShot(50, self.pick_file)
 
         def shoot(self) -> None:
             path = self.tools.take_screenshot()
@@ -729,7 +790,8 @@ def build(args):
                                QFontMetricsF(self.font_small).elidedText("Next: " + self.next_up,
                                                                         Qt.TextElideMode.ElideLeft, right.width()))
             L, R = rect.left() + 14, rect.right() - 14
-            T, B = rect.top() + 56, rect.bottom() - 14
+            phone_h = 56.0
+            T, B = rect.top() + 56, rect.bottom() - 14 - phone_h - 10
             gap = 10.0
             side = (R - L - gap) / 3
             main_w = R - L - gap - side
@@ -737,7 +799,8 @@ def build(args):
             tiles = [("music", QRectF(L, T, main_w, mid - T)),
                      ("timer", QRectF(L, mid + gap, (main_w - gap) / 2, B - mid - gap)),
                      ("toggles", QRectF(L + (main_w + gap) / 2, mid + gap, (main_w - gap) / 2, B - mid - gap)),
-                     ("system", QRectF(R - side, T, side, B - T))]
+                     ("system", QRectF(R - side, T, side, B - T)),
+                     ("phone", QRectF(L, B + 10, R - L, phone_h))]
             for i, (name, box) in enumerate(tiles):
                 a = max(0.0, min(1.0, (k - 0.45 - 0.07 * i) / 0.35))        # one after another
                 if a <= 0.01:
@@ -880,6 +943,44 @@ def build(args):
             p.setPen(QPen(QColor(255, 255, 255, int(150 * a)), 1.3))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(line)
+
+        def tile_phone(self, p, box, t, a) -> None:
+            # a phone outline with a live dot
+            c = QPointF(box.left() + 26, box.center().y())
+            p.setPen(QPen(QColor(245, 245, 245, int(220 * a)), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(c.x() - 7, c.y() - 11, 14, 22), 3.5, 3.5)
+            p.drawLine(QPointF(c.x() - 2, c.y() + 7.5), QPointF(c.x() + 2, c.y() + 7.5))
+            dot = QColor(255, 255, 255, int((235 if self.phone_on else 70) * a))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot)
+            pulse = 1.0 + (0.25 * math.sin(t * 3.0) if self.phone_on else 0.0)
+            p.drawEllipse(QPointF(c.x() + 9, c.y() - 10), 3.2 * pulse, 3.2 * pulse)
+            p.setFont(self.font_ui)
+            p.setPen(rgba((250, 250, 250), 245 * a))
+            p.drawText(QPointF(box.left() + 48, box.center().y() - 3), "My phone")
+            p.setFont(self.font_small)
+            p.setPen(rgba((160, 160, 160), 220 * a))
+            sub_line = self.phone_last or ("Connected, phone page open" if self.phone_on
+                                           else "Open your phone page to connect \u00b7 drop files here")
+            width = box.width() - 48 - 210
+            p.drawText(QPointF(box.left() + 48, box.center().y() + 14),
+                       QFontMetricsF(self.font_small).elidedText(sub_line, Qt.TextElideMode.ElideRight, width))
+            x = box.right() - 12
+            for name, label in (("phone_file", "Send file"), ("phone_clip", "Send clipboard")):
+                w = QFontMetricsF(self.font_small).horizontalAdvance(label) + 26
+                r = QRectF(x - w, box.center().y() - 14, w, 28)
+                hot = self.mouse is not None and r.contains(self.mouse)
+                pill = QPainterPath()
+                pill.addRoundedRect(r, 14, 14)
+                p.fillPath(pill, QColor(255, 255, 255, int((48 if hot else 22) * a)))
+                p.setPen(QPen(QColor(255, 255, 255, int((80 if hot else 30) * a)), 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(pill)
+                p.setPen(rgba((240, 240, 240), 235 * a))
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                self.hits[name] = r
+                x -= w + 8
 
         def round_button(self, p, r, a, big=False, on=False) -> None:
             hot = self.mouse is not None and r.contains(self.mouse)
