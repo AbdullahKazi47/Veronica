@@ -390,8 +390,13 @@
       body: "I'll run the program I wrote, on your PC" + (a.project ? ": " + clip(a.project, 40) + "." : "."), facts: [] };
     if (t === "delete_file") return { icon: "trash", sev: "danger", hold: true, title: "Delete this?", label: "Hold to delete",
       body: "This can't be undone.", facts: [["File", clip(a.path || a.file || a.name || "")]] };
-    if (t === "run_shell_command") return { icon: "terminal", sev: "danger", hold: true, title: "Run a command?", label: "Hold to run",
+    if (t === "run_shell_command") {
+      const plain = String(q.plain || "");
+      const readable = plain && !plain.startsWith("run a command I can't");
+      return { icon: "terminal", sev: "danger", hold: true, label: "Hold to run",
+      title: readable ? clip(plain.charAt(0).toUpperCase() + plain.slice(1), 70) + "?" : "Run a command?",
       body: "It runs on your PC exactly as written.", facts: [["Command", clip(a.command || a.cmd || "", 200)]] };
+    }
     if (t === "write_file") return { icon: "file", sev: "caution", title: "Save a file?", label: "Save it",
       body: "I'll write this file on your PC. If it exists, it's replaced.", facts: [["File", clip(a.path || a.file || a.name || "")]] };
     if (t === "download_file") return { icon: "download", sev: "caution", title: "Download a file?", label: "Download",

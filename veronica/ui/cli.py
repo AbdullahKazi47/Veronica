@@ -622,7 +622,8 @@ class CLIApp:
         critical = level >= PermissionLevel.CRITICAL
         how = "Say confirm to go ahead, or no to cancel." if critical else "Say yes or no."
         self._status(f"[permission {level.name}] {description}")
-        prompt = f"I need your permission to {spoken_permission(description)}. {how}"
+        from veronica.safety.plain_words import permission_question
+        prompt = permission_question(description, critical)   # "Are you sure you want to empty the Recycle Bin?"
         for attempt in range(2):
             self._say(prompt)
             heard = self._listen()

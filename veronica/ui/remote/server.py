@@ -114,8 +114,13 @@ class PendingQuestions:
             out = []
             for i in self._items.values():
                 tool, args = split_description(i["description"])
+                try:
+                    from veronica.safety.plain_words import describe
+                    plain = describe(tool, args) if tool else ""
+                except Exception:  # noqa: BLE001
+                    plain = ""
                 out.append({"id": i["id"], "description": i["description"], "level": i["level"],
-                            "tool": tool, "args": args,
+                            "tool": tool, "args": args, "plain": plain,
                             "expires_in": max(0, int(self.timeout_s - (time.time() - i["asked_at"])))})
             return out
 
