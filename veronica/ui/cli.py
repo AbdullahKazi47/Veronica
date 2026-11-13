@@ -627,6 +627,9 @@ class CLIApp:
             self._say(prompt)
             heard = self._listen()
             answer = parse_confirmation(heard.text if heard.success else "", level)
+            # On record: a "confirm" that wasn't accepted used to leave no trace of what she heard.
+            logger.info("Permission answer heard: %r -> %s", heard.text if heard.success else f"(nothing: {heard.error})",
+                        {True: "yes", False: "no"}.get(answer, "unclear"))
             if heard.success:
                 print(f"You: {heard.text}")
             if answer is not None:
